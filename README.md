@@ -8,23 +8,6 @@
 comparison/<Method>/
 ```
 
-每个方法独立保存自身代码、配置和实验产物：
-
-```text
-comparison/
-├── README.md
-└── EMR-Diff/
-    ├── Train.py
-    ├── Test.py
-    ├── arch/
-    ├── model/
-    ├── config/
-    ├── dataset_loader/
-    ├── checkpoints/
-    ├── outputs/
-    └── logs/
-```
-
 所有方法统一直接在 `main` 分支维护，不通过额外分支隔离不同对比实验。
 
 ## 所有对比实验固定协议
@@ -35,9 +18,7 @@ comparison/
 scale factor = x4
 ```
 
-### 2. LR-HSI 退化必须支持两种模式切换
-
-仓库根目录 `degradations/` 和 `data_loader.py` 提供所有对比方法共享的退化算子。
+### 2. LR-HSI 双退化模式
 
 #### 常规退化
 
@@ -59,55 +40,15 @@ stride sampling x4
 PSF truncate = 3.0
 ```
 
-物理退化中的 Gaussian PSF 标准差由 `MTF_Nyq` 和尺度自动计算，随后执行光学模糊、探测器面积积分和空间采样。
+所有新增对比方法都必须支持这两个模式，并复用仓库根目录公共实现。
 
-**所有新增对比方法都必须支持这两个模式，并复用仓库根目录公共实现，不允许各方法自行定义另一套同名退化。**
-
-推荐统一暴露：
-
-```bash
---degradation_mode gaussian_bicubic
---degradation_mode physical
-```
-
-默认正式实验模式仍为：
-
-```text
-gaussian_bicubic
-```
-
-需要物理退化实验时显式切换为 `physical`。
-
-### 3. HR-MSI 传感器协议固定
-
-MSI 模拟协议与 LR-HSI 退化模式独立。无论使用常规退化还是物理退化，MSI 始终固定为：
+### 3. HR-MSI 传感器协议
 
 | Dataset | MSI simulation | Channels |
 |---|---|---:|
 | PaviaU | IKONOS Blue / Green / Red / NIR SRF | 4 |
 | Houston13 | WorldView-2 all8 SRF | 8 |
 | Chikusei | WorldView-2 all8 SRF | 8 |
-
-即：
-
-```text
-PaviaU    -> IKONOS SRF -> 4-channel MSI
-Houston13 -> WV2 all8 SRF -> 8-channel MSI
-Chikusei  -> WV2 all8 SRF -> 8-channel MSI
-```
-
-PaviaU 标准 103-band 数据使用：
-
-```text
-data/wavelengths/PaviaU_nominal_430_860.txt
-data/srf/ikonos_relative_spectral_response.csv
-```
-
-Houston13 与 Chikusei 使用各自波长文件及：
-
-```text
-data/srf/wv2_relative_spectral_response_data_for_i.atcorr.csv
-```
 
 ### 4. Train / validation / test 空间协议
 
@@ -118,13 +59,11 @@ validation region = fixed 128x128, disjoint from test
 final test region = center 128x128
 ```
 
-公共 `data_loader.py` 为需要 early stopping 的方法提供独立 train / validation / test loader。验证区优先选择左上角 128x128；若与中心测试区重叠则自动选择其他角落。训练 patch 同时排除验证区和最终测试区。
+公共 `data_loader.py` 提供独立 train / validation / test loader。训练 patch 同时排除验证区和最终测试区；最终测试区只用于训练结束后对选定 best checkpoint 做正式评价。
 
-训练过程中不得访问最终中心测试区。最终测试区只用于训练结束后对选定 `best` checkpoint 做一次正式评价，避免通过测试指标选 epoch 或调参。
+### 5. Early stopping 与验证频率
 
-### 5. Early stopping
-
-需要迭代训练的对比方法默认采用独立验证区 PSNR 早停：
+默认早停规则：
 
 ```text
 monitor = PSNR
@@ -133,9 +72,15 @@ patience = 2 validation evaluations
 eval_seed = 1234
 ```
 
-EMR-Diff 当前默认每 100 epoch 验证一次。只有验证 PSNR 比历史最佳至少提高 0.02 dB 才视为有效提升；连续 2 次验证没有有效提升即停止训练。
+验证间隔按数据集统一设置，不再固定每 100 epoch 才评估一次：
 
-扩散模型或其他随机推理模型必须固定验证随机种子，避免随机噪声导致 early stopping 判定不稳定。
+| Dataset | Validation interval | Max additional epochs after best under patience=2 |
+|---|---:|---:|
+| PaviaU | 20 | 40 |
+| Houston13 | 10 | 20 |
+| Chikusei | 5 | 10 |
+
+这样 PaviaU 这种较小数据集不会在明显收敛后继续空跑很久，Chikusei 这种单 epoch 成本较高的数据集也能在接近收敛后快速触发验证和早停。
 
 新最佳模型统一保存为：
 
@@ -147,23 +92,17 @@ best.pth.tar
 
 ### 6. 评价指标
 
-正式对比统一调用根目录 `metrics.py`：
-
 ```text
 PSNR / RMSE / SAM / ERGAS / SSIM / CC
 ```
 
 ## 双退化模式实验产物隔离
 
-每个方法都应按退化模式隔离训练产物：
-
 ```text
 comparison/<Method>/checkpoints/<degradation_mode>/<Dataset>/
 comparison/<Method>/logs/<degradation_mode>/<Dataset>/
 comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 ```
-
-避免同一数据集的常规退化与物理退化 checkpoint、日志和测试结果互相覆盖。
 
 ## 公共组件
 
@@ -174,18 +113,14 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 | `degradations/` | `gaussian_bicubic` 与 `physical` 公共退化算子 |
 | `metrics.py` | PSNR / RMSE / SAM / ERGAS / SSIM / CC |
 | `srf_utils.py` | SRF 加载、插值、权重构建和 HSI→MSI |
-| `data/srf/` | IKONOS / WV2 SRF |
-| `data/wavelengths/` | 数据集波长网格 |
 | `comparison/` | 所有独立对比方法 |
 
 ## 扩展原则
 
 - 新增方法放在 `comparison/<Method>/`。
-- 模型权重、日志和结果全部保存在方法自己的目录内。
-- 对比方法必须复用公共 `data_loader.py` 或对其做轻量适配，不能改变公平对比协议。
 - 所有方法必须支持 `gaussian_bicubic` 与 `physical` 两种 LR-HSI 退化。
 - PaviaU 固定 IKONOS 4通道；Houston13 与 Chikusei 固定 WV2 8通道。
-- 两种退化模式下 MSI 传感器协议保持完全一致。
 - 训练 patch 必须避开验证区与最终测试区。
 - Early stopping 只能使用独立验证区，禁止使用最终测试指标选择 epoch。
+- 同一数据集的对比方法尽量统一使用 PaviaU=20、Houston13=10、Chikusei=5 的验证间隔。
 - 正式测试优先采用验证阶段选出的 best checkpoint。
