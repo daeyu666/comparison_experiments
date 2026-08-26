@@ -47,25 +47,37 @@ def save_checkpoint(
     dataset,
     degradation_mode,
     state_channels,
+    filename=None,
+    validation_metrics=None,
+    best_metric=None,
+    best_score=None,
 ):
     checkpoint_dir = os.path.join(
         EMR_ROOT, "checkpoints", degradation_mode, dataset
     )
     os.makedirs(checkpoint_dir, exist_ok=True)
-    model_out_path = os.path.join(
-        checkpoint_dir, f"model_epoch_{epoch}.pth.tar"
-    )
-    torch.save(
-        {
-            "epoch": int(epoch),
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "dataset": dataset,
-            "degradation_mode": degradation_mode,
-            "state_channels": int(state_channels),
-        },
-        model_out_path,
-    )
+    if filename is None:
+        filename = f"model_epoch_{epoch}.pth.tar"
+    model_out_path = os.path.join(checkpoint_dir, filename)
+
+    payload = {
+        "epoch": int(epoch),
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "dataset": dataset,
+        "degradation_mode": degradation_mode,
+        "state_channels": int(state_channels),
+    }
+    if validation_metrics is not None:
+        payload["validation_metrics"] = {
+            key: float(value) for key, value in validation_metrics.items()
+        }
+    if best_metric is not None:
+        payload["best_metric"] = str(best_metric)
+    if best_score is not None:
+        payload["best_score"] = float(best_score)
+
+    torch.save(payload, model_out_path)
     return model_out_path
 
 
@@ -87,12 +99,40 @@ def latest_checkpoint(dataset, degradation_mode):
     return max(paths, key=_epoch)
 
 
+def default_checkpoint(dataset, degradation_mode):
+    best_path = os.path.join(
+        EMR_ROOT,
+        "checkpoints",
+        degradation_mode,
+        dataset,
+        "best.pth.tar",
+    )
+    if os.path.exists(best_path):
+        return best_path
+    return latest_checkpoint(dataset, degradation_mode)
+
+
 class ResShiftTrainer:
     def __init__(self, configs):
         self.configs = configs
         self.epochs = int(self.configs.train["epochs"])
         self.num_timesteps = int(self.configs.diffusion.params.get("steps"))
         self.diffusion_sf = int(self.configs.diffusion.params.get("sf"))
+
+        self.early_stop_metric = str(
+            self.configs.train.get("early_stop_metric", "PSNR")
+        )
+        self.early_stop_patience = int(
+            self.configs.train.get("early_stop_patience", 2)
+        )
+        self.early_stop_min_delta = float(
+            self.configs.train.get("early_stop_min_delta", 0.02)
+        )
+        self.eval_seed = int(self.configs.train.get("eval_seed", 1234))
+        if self.early_stop_patience < 0:
+            raise ValueError("early_stop_patience must be >= 0")
+        if self.early_stop_min_delta < 0:
+            raise ValueError("early_stop_min_delta must be >= 0")
 
         seed = int(self.configs.train.get("seed", 10))
         random.seed(seed)
@@ -108,7 +148,8 @@ class ResShiftTrainer:
 
         (
             self.train_dataloader,
-            self.val_dataloader,
+            self.validation_dataloader,
+            self.test_dataloader,
             self.data_info,
             self.shared_cfg,
         ) = build_ufg_loaders(self.configs)
@@ -133,6 +174,15 @@ class ResShiftTrainer:
             f"MSI={self.msi_channels}, state={self.state_channels}, "
             f"scale=x{self.diffusion_sf}, degradation={self.degradation_mode}, "
             f"sensor={self.data_info.get('srf_profile')}"
+        )
+        print(
+            f"[split] validation_rect={self.data_info.get('validation_rect')}, "
+            f"test_rect={self.data_info.get('test_rect')}"
+        )
+        print(
+            f"[early-stop] metric={self.early_stop_metric}, "
+            f"min_delta={self.early_stop_min_delta}, "
+            f"patience={self.early_stop_patience}, eval_seed={self.eval_seed}"
         )
 
         self._apply_dynamic_channel_config()
@@ -240,36 +290,61 @@ class ResShiftTrainer:
                 )
         return x_t[:, : self.hsi_channels, :, :]
 
-    def evaluate(self, save_predictions=False):
+    def evaluate(self, loader=None, save_predictions=False, split_name="validation"):
+        loader = loader or self.validation_dataloader
         averager = MetricAverager()
-        for step, batch in enumerate(tqdm(self.val_dataloader, desc="EMR-Diff eval")):
-            gt, lq, msi = self._prepare_batch(batch)
-            prediction = self._reconstruct(lq, msi)
-            metric_values = calc_metrics(
-                prediction, gt, scale_ratio=self.diffusion_sf
-            )
-            averager.update(metric_values)
-            print(" ".join(f"{name}={value:.6f}" for name, value in metric_values.items()))
 
-            if save_predictions:
-                sio.savemat(
-                    os.path.join(self.output_dir, f"prediction_{step}.mat"),
-                    {
-                        "data": prediction.squeeze(0).detach().cpu().numpy(),
-                        "gt": gt.squeeze(0).detach().cpu().numpy(),
-                    },
+        cuda_devices = []
+        if self.device.type == "cuda" and self.device.index is not None:
+            cuda_devices = [self.device.index]
+
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.manual_seed(self.eval_seed)
+            if self.device.type == "cuda":
+                torch.cuda.manual_seed_all(self.eval_seed)
+
+            for step, batch in enumerate(
+                tqdm(loader, desc=f"EMR-Diff {split_name} eval")
+            ):
+                gt, lq, msi = self._prepare_batch(batch)
+                prediction = self._reconstruct(lq, msi)
+                metric_values = calc_metrics(
+                    prediction, gt, scale_ratio=self.diffusion_sf
                 )
+                averager.update(metric_values)
+                print(
+                    " ".join(
+                        f"{name}={value:.6f}"
+                        for name, value in metric_values.items()
+                    )
+                )
+
+                if save_predictions:
+                    sio.savemat(
+                        os.path.join(
+                            self.output_dir,
+                            f"prediction_{split_name}_{step}.mat",
+                        ),
+                        {
+                            "data": prediction.squeeze(0).detach().cpu().numpy(),
+                            "gt": gt.squeeze(0).detach().cpu().numpy(),
+                        },
+                    )
 
         average = averager.average()
         print(
-            f"[EMR-Diff:{self.dataset}:{self.degradation_mode}] "
+            f"[EMR-Diff:{self.dataset}:{self.degradation_mode}:{split_name}] "
             + " ".join(f"{k}={v:.6f}" for k, v in average.items())
         )
-        metrics_path = os.path.join(self.output_dir, "metrics.txt")
+
+        metrics_name = "metrics.txt" if split_name == "test" else "validation_metrics.txt"
+        metrics_path = os.path.join(self.output_dir, metrics_name)
         with open(metrics_path, "w", encoding="utf-8") as f:
+            f.write(f"split: {split_name}\n")
             f.write(f"dataset: {self.dataset}\n")
             f.write(f"degradation_mode: {self.degradation_mode}\n")
             f.write(f"srf_profile: {self.data_info.get('srf_profile')}\n")
+            f.write(f"eval_seed: {self.eval_seed}\n")
             for key, value in average.items():
                 f.write(f"{key}: {value:.8f}\n")
         return average
@@ -280,7 +355,21 @@ class ResShiftTrainer:
             with open(history_path, "w", encoding="utf-8") as f:
                 f.write("epoch,loss\n")
 
+        validation_history_path = os.path.join(
+            self.log_dir, "validation_history.csv"
+        )
+        if not os.path.exists(validation_history_path):
+            with open(validation_history_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "epoch,PSNR,SAM,best_score,bad_evals,is_best\n"
+                )
+
+        best_score = float("-inf")
+        best_epoch = 0
+        bad_evals = 0
+
         for epoch_index in range(int(epoch)):
+            current_epoch = epoch_index + 1
             self.Net.train()
             running_loss = 0.0
             num_batches = 0
@@ -288,7 +377,7 @@ class ResShiftTrainer:
                 self.train_dataloader,
                 desc=(
                     f"EMR-Diff {self.dataset} {self.degradation_mode} "
-                    f"epoch {epoch_index + 1}"
+                    f"epoch {current_epoch}"
                 ),
             )
 
@@ -326,26 +415,92 @@ class ResShiftTrainer:
 
             mean_loss = running_loss / max(num_batches, 1)
             with open(history_path, "a", encoding="utf-8") as f:
-                f.write(f"{epoch_index + 1},{mean_loss:.8f}\n")
+                f.write(f"{current_epoch},{mean_loss:.8f}\n")
             print(
                 f"[EMR-Diff:{self.dataset}:{self.degradation_mode}] "
-                f"epoch={epoch_index + 1} train_loss={mean_loss:.6f}"
+                f"epoch={current_epoch} train_loss={mean_loss:.6f}"
             )
 
-            if (epoch_index + 1) % int(verbose) == 0:
-                self.evaluate(save_predictions=False)
-                path = save_checkpoint(
+            if current_epoch % int(verbose) != 0:
+                continue
+
+            validation_metrics = self.evaluate(
+                loader=self.validation_dataloader,
+                save_predictions=False,
+                split_name="validation",
+            )
+            if self.early_stop_metric not in validation_metrics:
+                raise KeyError(
+                    f"Early-stop metric {self.early_stop_metric!r} not found in "
+                    f"validation metrics: {sorted(validation_metrics.keys())}"
+                )
+
+            current_score = float(validation_metrics[self.early_stop_metric])
+            improved = current_score > best_score + self.early_stop_min_delta
+
+            if improved:
+                best_score = current_score
+                best_epoch = current_epoch
+                bad_evals = 0
+                best_path = save_checkpoint(
                     self.Net,
                     self.optimizer,
-                    epoch_index + 1,
+                    current_epoch,
                     self.dataset,
                     self.degradation_mode,
                     self.state_channels,
+                    filename="best.pth.tar",
+                    validation_metrics=validation_metrics,
+                    best_metric=self.early_stop_metric,
+                    best_score=best_score,
                 )
-                print(f"checkpoint={path}")
+                print(
+                    f"[best] epoch={best_epoch} {self.early_stop_metric}="
+                    f"{best_score:.6f} checkpoint={best_path}"
+                )
+            else:
+                bad_evals += 1
+                print(
+                    f"[early-stop] no significant improvement: current "
+                    f"{self.early_stop_metric}={current_score:.6f}, "
+                    f"best={best_score:.6f} at epoch={best_epoch}, "
+                    f"bad_evals={bad_evals}/{self.early_stop_patience}"
+                )
+
+            epoch_path = save_checkpoint(
+                self.Net,
+                self.optimizer,
+                current_epoch,
+                self.dataset,
+                self.degradation_mode,
+                self.state_channels,
+                validation_metrics=validation_metrics,
+                best_metric=self.early_stop_metric,
+                best_score=best_score,
+            )
+            print(f"checkpoint={epoch_path}")
+
+            with open(validation_history_path, "a", encoding="utf-8") as f:
+                f.write(
+                    f"{current_epoch},"
+                    f"{float(validation_metrics.get('PSNR', float('nan'))):.8f},"
+                    f"{float(validation_metrics.get('SAM', float('nan'))):.8f},"
+                    f"{best_score:.8f},{bad_evals},{int(improved)}\n"
+                )
+
+            if (
+                self.early_stop_patience > 0
+                and bad_evals >= self.early_stop_patience
+            ):
+                print(
+                    f"[early-stop] triggered at epoch={current_epoch}; "
+                    f"best_epoch={best_epoch}, best_{self.early_stop_metric}="
+                    f"{best_score:.6f}. Use best.pth.tar for final test."
+                )
+                break
 
     def load_checkpoint(self, checkpoint_path=None):
-        checkpoint_path = checkpoint_path or latest_checkpoint(
+        checkpoint_path = checkpoint_path or default_checkpoint(
             self.dataset, self.degradation_mode
         )
         checkpoint = torch.load(
@@ -372,4 +527,8 @@ class ResShiftTrainer:
         self.load_checkpoint(checkpoint_path)
         parameter_count = sum(p.numel() for p in self.Net.parameters())
         print(f"Params: {parameter_count}")
-        return self.evaluate(save_predictions=True)
+        return self.evaluate(
+            loader=self.test_dataloader,
+            save_predictions=True,
+            split_name="test",
+        )
