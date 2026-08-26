@@ -5,6 +5,29 @@
 提供可直接复用的 dataloader、损失函数、评估指标、SRF 工具和通用训练辅助函数，
 不依赖任何具体的模型结构。
 
+## 默认传感器协议
+
+当前默认采用真实光谱响应函数生成 HR-MSI：
+
+- `PaviaU`：默认使用 **IKONOS 4-band**，即 Blue / Green / Red / NIR；标准 103-band PaviaU 使用 `data/wavelengths/PaviaU_nominal_430_860.txt` 与 `data/srf/ikonos_relative_spectral_response.csv`。
+- `Houston13`、`Chikusei`：`auto` 模式下仍使用 WV2 all8。
+- 原来的 **WV2 visible6** 没有删除，仍可通过 `--srf_band_set wv2_visible6` 显式启用，已有 `PaviaU_wv2_visible6_*` 权重文件也继续保留。
+
+PaviaU 默认运行时无需额外指定传感器：
+
+```bash
+python main.py --dataset PaviaU
+```
+
+如需复现旧的 PaviaU WV2 六通道实验：
+
+```bash
+python main.py \
+  --dataset PaviaU \
+  --msi_mode srf \
+  --srf_band_set wv2_visible6
+```
+
 ## 模板内容
 
 | 文件 | 说明 |
