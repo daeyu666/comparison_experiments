@@ -4,16 +4,40 @@
 
 ## Shared comparison protocol
 
-EMR-Diff 通过 `dataset_loader/ufg_adapter.py` 复用仓库根目录的公共数据接口。当前第一阶段固定协议为：
+EMR-Diff 通过 `dataset_loader/ufg_adapter.py` 复用仓库根目录的公共数据接口。所有对比实验统一使用以下协议：
 
 ```text
 scale factor = x4
 LR-HSI = 5x5 Gaussian blur, sigma=2 + bicubic downsampling
-HR-MSI = 8 uniformly selected bands
+
+PaviaU:
+  HR-MSI = IKONOS SRF
+  channels = Blue / Green / Red / NIR
+  MSI channels = 4
+
+Houston13:
+  HR-MSI = WorldView-2 all8 SRF
+  MSI channels = 8
+
+Chikusei:
+  HR-MSI = WorldView-2 all8 SRF
+  MSI channels = 8
+
 train patch = 64x64
 stride = 32
 test region = center 128x128
 ```
+
+EMR-Diff 不再使用 uniform band selection。PaviaU 固定使用 IKONOS 4通道 SRF，Houston13 与 Chikusei 固定使用 WV2 all8 SRF，和本仓库其他对比方法保持一致。
+
+当前动态状态通道数为：
+
+```text
+PaviaU:    103 HSI + 4 MSI = 107 channels
+Chikusei:  128 HSI + 8 MSI = 136 channels
+```
+
+Houston13 的状态通道数同样按实际 HSI 波段数加 8 个 WV2 MSI 通道自动确定。
 
 评价指标统一调用仓库根目录 `metrics.py`。原始 HSI 数据统一放在：
 
@@ -33,11 +57,16 @@ python comparison/EMR-Diff/Train.py --dataset Houston13
 python comparison/EMR-Diff/Train.py --dataset Chikusei
 ```
 
-快速检查：
+建议正式训练前先分别做1轮快速检查：
 
 ```bash
 python comparison/EMR-Diff/Train.py \
   --dataset PaviaU \
+  --epochs 1 \
+  --test_frequency 1
+
+python comparison/EMR-Diff/Train.py \
+  --dataset Chikusei \
   --epochs 1 \
   --test_frequency 1
 ```
