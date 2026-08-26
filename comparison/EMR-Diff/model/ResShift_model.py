@@ -159,7 +159,17 @@ class ResShiftTrainer:
         ) = build_ufg_loaders(self.configs)
 
         self.dataset = str(self.shared_cfg.dataset)
-        self.degradation_mode = str(self.data_info["degradation_mode"])
+        requested_mode = str(self.configs.data.get("degradation_mode", "gaussian_bicubic"))
+        adapter_mode = str(self.shared_cfg.degradation_mode)
+        resolved_mode = str(self.data_info["degradation_mode"])
+        if not (requested_mode == adapter_mode == resolved_mode):
+            raise RuntimeError(
+                "Degradation protocol mismatch: "
+                f"requested={requested_mode}, adapter={adapter_mode}, resolved={resolved_mode}. "
+                "Training is aborted before any checkpoint is written."
+            )
+        self.degradation_mode = resolved_mode
+
         self.hsi_channels = int(self.data_info["n_bands"])
         self.msi_channels = int(self.data_info["n_select_bands"])
         self.state_channels = self.hsi_channels + self.msi_channels
