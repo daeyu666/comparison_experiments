@@ -48,13 +48,13 @@ def _resolve_sensor_paths(dataset):
 def build_ufg_loaders(configs):
     """Build EMR-Diff loaders from the shared comparison protocol.
 
-    Fixed protocol for all comparison methods:
-      - x4 super-resolution;
-      - LR-HSI: 5x5 Gaussian blur (sigma=2) + bicubic downsampling;
+    Fixed sensor protocol:
       - PaviaU HR-MSI: IKONOS Blue/Green/Red/NIR, 4 channels;
-      - Houston13 / Chikusei HR-MSI: WorldView-2 all8, 8 channels;
-      - 64x64 train patches, stride 32;
-      - center 128x128 test region.
+      - Houston13 / Chikusei HR-MSI: WorldView-2 all8, 8 channels.
+
+    Switchable LR-HSI degradation:
+      - gaussian_bicubic: Gaussian 5x5, sigma=2 + bicubic x4;
+      - physical: MTF-derived optical PSF + detector area integration + x4 sampling.
     """
     cfg = TrainConfig()
     cfg.datasets = get_dataset_configs()
@@ -71,9 +71,16 @@ def build_ufg_loaders(configs):
     cfg.stride = int(configs.data.get("stride", 32))
     cfg.scale_ratio = int(configs.diffusion.params.get("sf", 4))
 
-    # Spatial degradation is shared by every comparison method.
-    # comparison_experiments/data_loader.py implements Gaussian(5x5, sigma=2)
-    # followed by bicubic downsampling.
+    cfg.degradation_mode = str(
+        configs.data.get("degradation_mode", "gaussian_bicubic")
+    )
+    cfg.degradation_sigma = float(configs.data.get("degradation_sigma", 2.0))
+    cfg.degradation_kernel_size = int(
+        configs.data.get("degradation_kernel_size", 5)
+    )
+    cfg.mtf_nyquist = float(configs.data.get("mtf_nyquist", 0.2))
+    cfg.psf_truncate = float(configs.data.get("psf_truncate", 3.0))
+
     cfg.msi_mode = "srf"
     (
         cfg.srf_band_set,
@@ -87,11 +94,6 @@ def build_ufg_loaders(configs):
     cfg.device = str(configs.train.get("device", "cuda"))
 
     train_loader, test_loader, info = build_loaders(cfg)
-    info["degradation_mode"] = "gaussian_bicubic"
-    info["gaussian_kernel_size"] = int(
-        configs.data.get("gaussian_kernel_size", 5)
-    )
-    info["gaussian_sigma"] = float(configs.data.get("gaussian_sigma", 2.0))
 
     expected_channels = EXPECTED_MSI_CHANNELS[cfg.dataset]
     actual_channels = int(info["n_select_bands"])
