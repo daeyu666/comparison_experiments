@@ -16,6 +16,11 @@ from metrics import MetricAverager, calc_metrics
 
 
 EMR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXPECTED_MSI_CHANNELS = {
+    "PaviaU": 4,
+    "Houston13": 8,
+    "Chikusei": 8,
+}
 
 
 def _sample_or_resize(x, target_hw):
@@ -99,15 +104,21 @@ class ResShiftTrainer:
         self.msi_channels = int(self.data_info["n_select_bands"])
         self.state_channels = self.hsi_channels + self.msi_channels
 
-        if self.msi_channels != 8:
+        expected_msi_channels = EXPECTED_MSI_CHANNELS.get(self.dataset)
+        if expected_msi_channels is None:
+            raise ValueError(f"Unsupported comparison dataset: {self.dataset}")
+        if self.msi_channels != expected_msi_channels:
             raise ValueError(
-                f"Current comparison protocol requires 8 MSI bands, got {self.msi_channels}."
+                f"{self.dataset} comparison protocol requires {expected_msi_channels} "
+                f"MSI channels, got {self.msi_channels}."
             )
 
         print(
             f"[EMR-Diff] dataset={self.dataset}, HSI={self.hsi_channels}, "
             f"MSI={self.msi_channels}, state={self.state_channels}, "
-            f"scale=x{self.diffusion_sf}, degradation={self.data_info.get('degradation_mode')}"
+            f"scale=x{self.diffusion_sf}, "
+            f"degradation={self.data_info.get('degradation_mode')}, "
+            f"sensor={self.data_info.get('srf_profile')}"
         )
 
         self._apply_dynamic_channel_config()
