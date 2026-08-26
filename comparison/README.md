@@ -35,8 +35,6 @@ comparison/
 
 ### LR-HSI 退化模式
 
-公共退化模式由仓库根目录 `degradations/` 与 `data_loader.py` 实现：
-
 ```text
 gaussian_bicubic:
   Gaussian PSF kernel = 5x5
@@ -51,24 +49,9 @@ physical:
   PSF truncate = 3.0
 ```
 
-默认模式为：
-
-```text
-degradation_mode = gaussian_bicubic
-```
-
-所有新增对比方法必须提供等价的模式入口，例如：
-
-```bash
---degradation_mode gaussian_bicubic
---degradation_mode physical
-```
-
-禁止某个方法自行实现另一套退化公式后仍标记为同名模式。正式结果必须复用仓库根目录公共退化算子。
+正式结果必须复用仓库根目录公共退化算子。
 
 ### HR-MSI 传感器协议
-
-MSI 模拟方式与 LR-HSI 退化模式相互独立，始终固定为：
 
 | Dataset | MSI simulation | Channels |
 |---|---|---:|
@@ -76,52 +59,43 @@ MSI 模拟方式与 LR-HSI 退化模式相互独立，始终固定为：
 | Houston13 | WorldView-2 all8 SRF | 8 |
 | Chikusei | WorldView-2 all8 SRF | 8 |
 
-即：
-
-```text
-PaviaU    -> IKONOS SRF -> 4-channel MSI
-Houston13 -> WV2 all8 SRF -> 8-channel MSI
-Chikusei  -> WV2 all8 SRF -> 8-channel MSI
-```
-
 无论选择 `gaussian_bicubic` 还是 `physical`，上述 MSI 协议都不得改变。
 
 ### Train / validation / test 空间划分
 
-为避免 early stopping 使用最终测试区造成测试泄漏，公共数据管线固定使用三部分空间划分：
-
 ```text
-train patch      = 64x64
-train stride     = 32
+train patch       = 64x64
+train stride      = 32
 validation region = fixed 128x128 region disjoint from test
 final test region = center 128x128
 ```
 
-验证区优先取图像左上角 128x128；若与中心测试区发生重叠，则公共 `data_loader.py` 自动依次尝试其余角落，确保验证区与测试区不重叠。
-
 训练 patch 必须同时避开验证区和最终测试区。训练过程中只允许访问训练集和验证集；最终测试区不得用于选择 epoch、调参或 early stopping。
 
-### Early stopping
+### Early stopping 与验证频率
 
-对需要迭代训练的对比方法，默认采用独立验证区 PSNR 进行早停：
-
-```text
-monitor            = PSNR
-min_delta          = 0.02 dB
-patience           = 2 validation evaluations
-evaluation interval = method config, EMR-Diff default 100 epochs
-eval_seed          = 1234
-```
-
-含义：只有当验证 PSNR 比历史最佳至少提高 0.02 dB 时才视为有效提升；连续 2 次验证无有效提升则终止训练。扩散/随机模型验证时必须固定评估随机种子，避免随机噪声造成假提升或误触发早停。
-
-每次出现新最佳验证 PSNR，应额外保存：
+默认监控独立验证区 PSNR：
 
 ```text
-best.pth.tar
+monitor   = PSNR
+min_delta = 0.02 dB
+patience  = 2 validation evaluations
+eval_seed = 1234
 ```
 
-正式最终测试优先使用 `best.pth.tar`，而不是最后一个 epoch 的权重。
+验证间隔不再固定为 100 epoch，而按数据集计算成本统一设置：
+
+| Dataset | Validation interval |
+|---|---:|
+| PaviaU | 20 epochs |
+| Houston13 | 10 epochs |
+| Chikusei | 5 epochs |
+
+这套验证频率属于同一数据集的统一公平协议。后续新增对比方法在可实现 early stopping 的情况下，应采用相同的数据集验证间隔，避免某个方法因为验证过稀而额外训练大量无效 epoch。
+
+连续 2 次验证无有效提升则终止训练。对应最佳点之后的默认最大额外训练量约为 PaviaU 40 epoch、Houston13 20 epoch、Chikusei 10 epoch。
+
+每次出现新最佳验证 PSNR，应额外保存 `best.pth.tar`；正式最终测试优先使用 `best.pth.tar`，而不是最后一个 epoch 的权重。
 
 ### 评价指标
 
@@ -133,28 +107,12 @@ PSNR / RMSE / SAM / ERGAS / SSIM / CC
 
 ## 不同退化模式的实验产物隔离
 
-同一方法、同一数据集在两种退化模式下得到的权重和结果必须分开保存：
-
 ```text
 comparison/<Method>/checkpoints/<degradation_mode>/<Dataset>/
 comparison/<Method>/logs/<degradation_mode>/<Dataset>/
 comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 ```
 
-例如：
-
-```text
-comparison/EMR-Diff/checkpoints/
-├── gaussian_bicubic/
-│   ├── PaviaU/
-│   └── Chikusei/
-└── physical/
-    ├── PaviaU/
-    └── Chikusei/
-```
-
-这样常规退化与物理退化不会互相覆盖 checkpoint、日志或测试结果。
-
 ## 当前方法
 
-- `EMR-Diff/`：已接入公共 SRF、双退化、独立验证区、best checkpoint 与 validation-based early stopping。
+- `EMR-Diff/`：已接入公共 SRF、双退化、独立验证区、dataset-aware validation interval、best checkpoint 与 validation-based early stopping。
