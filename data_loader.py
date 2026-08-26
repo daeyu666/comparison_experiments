@@ -5,14 +5,16 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
+
+from degradations import build_degradation
 from srf_utils import (
+    WV2_ALL_8_BANDS,
     WV2_VISIBLE_5_BANDS,
     WV2_VISIBLE_6_BANDS,
-    WV2_ALL_8_BANDS,
-    load_hsi_wavelengths,
     build_srf_weights,
     hsi_to_msi_numpy,
+    load_hsi_wavelengths,
     print_srf_summary,
 )
 
@@ -26,11 +28,6 @@ IKONOS_4_BANDS = [
 WV2_SRF_PATH = "./data/srf/wv2_relative_spectral_response_data_for_i.atcorr.csv"
 IKONOS_SRF_PATH = "./data/srf/ikonos_relative_spectral_response.csv"
 PAVIA_NOMINAL_WAVELENGTH_PATH = "./data/wavelengths/PaviaU_nominal_430_860.txt"
-
-try:
-    import cv2
-except ImportError:
-    cv2 = None
 
 try:
     import scipy.io as scio
@@ -49,15 +46,11 @@ except ImportError:
 
 
 def read_hsi_mat(file_path: str, candidate_keys: List[str]) -> np.ndarray:
-    """
-    读取.mat格式高光谱数据，返回H×W×C格式。
-    优先按candidate_keys读取，读取失败时自动寻找第一个三维数组。
-    """
+    """读取 .mat 高光谱数据并统一返回 H×W×C。"""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Cannot find data file: {file_path}")
 
     mat_data = None
-
     if hdf5storage is not None:
         try:
             mat_data = hdf5storage.loadmat(file_path)
@@ -73,9 +66,7 @@ def read_hsi_mat(file_path: str, candidate_keys: List[str]) -> np.ndarray:
     if mat_data is not None:
         for key in candidate_keys:
             if key in mat_data and isinstance(mat_data[key], np.ndarray):
-                img = mat_data[key]
-                return fix_hsi_shape(img)
-
+                return fix_hsi_shape(mat_data[key])
         for key, value in mat_data.items():
             if key.startswith("__"):
                 continue
@@ -86,9 +77,7 @@ def read_hsi_mat(file_path: str, candidate_keys: List[str]) -> np.ndarray:
         with h5py.File(file_path, "r") as f:
             for key in candidate_keys:
                 if key in f:
-                    img = np.array(f[key])
-                    return fix_hsi_shape(img)
-
+                    return fix_hsi_shape(np.array(f[key]))
             for key in f.keys():
                 value = np.array(f[key])
                 if value.ndim == 3:
@@ -98,13 +87,7 @@ def read_hsi_mat(file_path: str, candidate_keys: List[str]) -> np.ndarray:
 
 
 def fix_hsi_shape(img: np.ndarray) -> np.ndarray:
-    """
-    将输入统一为H×W×C。
-    部分v7.3 mat文件读出后可能是C×W×H或C×H×W，需要做简单判断。
-    """
-    img = np.array(img)
-    img = np.squeeze(img)
-
+    img = np.asarray(img).squeeze()
     if img.ndim != 3:
         raise ValueError(f"HSI data must be 3D, but got shape: {img.shape}")
 
@@ -113,95 +96,88 @@ def fix_hsi_shape(img: np.ndarray) -> np.ndarray:
     elif img.shape[1] <= 256 and img.shape[0] > 256 and img.shape[2] > 256:
         img = np.transpose(img, (0, 2, 1))
 
-    img = img.astype(np.float32)
-    return img
-
-
-def normalize_hsi(img: np.ndarray) -> np.ndarray:
-    """归一化到[0,1]。"""
-    img = img.astype(np.float32)
-    min_value = float(np.min(img))
-    max_value = float(np.max(img))
-
-    if max_value - min_value < 1e-8:
-        return np.zeros_like(img, dtype=np.float32)
-
-    img = (img - min_value) / (max_value - min_value)
     return img.astype(np.float32)
 
 
+def normalize_hsi(img: np.ndarray) -> np.ndarray:
+    img = img.astype(np.float32)
+    min_value = float(np.min(img))
+    max_value = float(np.max(img))
+    if max_value - min_value < 1e-8:
+        return np.zeros_like(img, dtype=np.float32)
+    return ((img - min_value) / (max_value - min_value)).astype(np.float32)
+
+
 def crop_to_scale(img: np.ndarray, scale_ratio: int) -> np.ndarray:
-    """裁掉不能被scale_ratio整除的边缘。"""
     h, w, _ = img.shape
     new_h = h // scale_ratio * scale_ratio
     new_w = w // scale_ratio * scale_ratio
     return img[:new_h, :new_w, :]
 
 
-def gaussian_blur_bandwise(
-    img: np.ndarray,
-    kernel_size: int = 5,
-    sigma: float = 2.0,
+def hsi_to_tensor(img: np.ndarray) -> torch.Tensor:
+    """H×W×C -> C×H×W。"""
+    return torch.from_numpy(img).permute(2, 0, 1).contiguous().float()
+
+
+def tensor_to_hsi(x: torch.Tensor) -> np.ndarray:
+    """C×H×W -> H×W×C。"""
+    if x.ndim != 3:
+        raise ValueError(f"Expected C×HxW tensor, got {tuple(x.shape)}")
+    return x.detach().cpu().permute(1, 2, 0).numpy().astype(np.float32)
+
+
+def build_hsi_degradation(cfg):
+    """构建所有对比方法共享的 LR-HSI 观测退化算子。"""
+    mode = getattr(cfg, "degradation_mode", "gaussian_bicubic")
+    if mode == "gaussian_bicubic":
+        return build_degradation(
+            mode,
+            scale_ratio=cfg.scale_ratio,
+            sigma=getattr(cfg, "degradation_sigma", 2.0),
+            kernel_size=getattr(cfg, "degradation_kernel_size", 5),
+        )
+    if mode == "physical":
+        return build_degradation(
+            mode,
+            scale_ratio=cfg.scale_ratio,
+            mtf_nyquist=getattr(cfg, "mtf_nyquist", 0.2),
+            truncate=getattr(cfg, "psf_truncate", 3.0),
+        )
+    raise ValueError(
+        f"Unsupported degradation_mode={mode!r}; expected gaussian_bicubic or physical"
+    )
+
+
+def make_lr_hsi(
+    hr_hsi: np.ndarray,
+    scale_ratio: int,
+    degradation_operator=None,
 ) -> np.ndarray:
-    """对每个光谱波段分别做高斯模糊。"""
-    if cv2 is None:
-        return img
-
-    blurred = np.zeros_like(img, dtype=np.float32)
-    for i in range(img.shape[2]):
-        blurred[:, :, i] = cv2.GaussianBlur(
-            img[:, :, i], (kernel_size, kernel_size), sigma
+    """由共享退化算子生成 LR-HSI。"""
+    if degradation_operator is None:
+        degradation_operator = build_degradation(
+            "gaussian_bicubic",
+            scale_ratio=scale_ratio,
+            sigma=2.0,
+            kernel_size=5,
         )
-    return blurred
 
-
-def resize_hsi(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
-    """对H×W×C格式HSI逐波段resize。"""
-    if cv2 is None:
-        tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
-        tensor = torch.nn.functional.interpolate(
-            tensor,
-            size=(target_h, target_w),
-            mode="bilinear",
-            align_corners=False,
-        )
-        return tensor.squeeze(0).permute(1, 2, 0).numpy().astype(np.float32)
-
-    out = np.zeros((target_h, target_w, img.shape[2]), dtype=np.float32)
-    for i in range(img.shape[2]):
-        out[:, :, i] = cv2.resize(
-            img[:, :, i],
-            (target_w, target_h),
-            interpolation=cv2.INTER_CUBIC,
-        )
-    return out
-
-
-def make_lr_hsi(hr_hsi: np.ndarray, scale_ratio: int) -> np.ndarray:
-    """HR-HSI -> GaussianBlur(5x5, sigma=2) -> bicubic resize。"""
-    h, w, _ = hr_hsi.shape
-    blurred = gaussian_blur_bandwise(hr_hsi, kernel_size=5, sigma=2.0)
-    lr_hsi = resize_hsi(blurred, h // scale_ratio, w // scale_ratio)
-    return lr_hsi.astype(np.float32)
+    x = hsi_to_tensor(hr_hsi).unsqueeze(0)
+    with torch.no_grad():
+        y = degradation_operator.degrade(x).squeeze(0)
+    return tensor_to_hsi(y)
 
 
 def make_hr_msi(hr_hsi: np.ndarray, n_select_bands: int) -> np.ndarray:
-    """没有SRF时，从HR-HSI均匀抽取波段生成HR-MSI。"""
+    """仅在关闭 SRF 模式时使用的均匀波段回退实现。"""
     n_bands = hr_hsi.shape[2]
-
     if n_select_bands > n_bands:
         raise ValueError(
             f"n_select_bands={n_select_bands} is larger than HSI bands={n_bands}"
         )
-
     band_indices = np.linspace(0, n_bands - 1, n_select_bands).round().astype(np.int64)
-    hr_msi = hr_hsi[:, :, band_indices]
-    return hr_msi.astype(np.float32)
-
-
-def hsi_to_tensor(img: np.ndarray) -> torch.Tensor:
-    """H×W×C -> C×H×W。"""
-    return torch.from_numpy(img).permute(2, 0, 1).contiguous().float()
+    return hr_hsi[:, :, band_indices].astype(np.float32)
 
 
 def get_center_test_rect(h: int, w: int, test_size: int) -> Tuple[int, int, int, int]:
@@ -250,10 +226,7 @@ def build_patch_coords(
 
 
 class HSIHSRDataset(Dataset):
-    """
-    HSI-MSI融合超分数据集。
-    返回：lr_hsi C×h×w，hr_msi M×H×W，gt C×H×W。
-    """
+    """HSI-MSI 融合超分数据集。"""
 
     def __init__(
         self,
@@ -267,6 +240,7 @@ class HSIHSRDataset(Dataset):
         test_size: int = 128,
         augment: bool = True,
         srf_weights=None,
+        degradation_operator=None,
     ):
         super().__init__()
 
@@ -279,6 +253,7 @@ class HSIHSRDataset(Dataset):
         self.split = split
         self.augment = augment and split == "train"
         self.srf_weights = srf_weights
+        self.degradation_operator = degradation_operator
 
         h, w, _ = img.shape
         self.test_rect = get_center_test_rect(h, w, test_size)
@@ -314,31 +289,27 @@ class HSIHSRDataset(Dataset):
         if self.augment:
             gt = self.random_augment(gt)
 
-        lr_hsi = make_lr_hsi(gt, self.scale_ratio)
+        lr_hsi = make_lr_hsi(
+            gt,
+            self.scale_ratio,
+            degradation_operator=self.degradation_operator,
+        )
         if self.srf_weights is not None:
             hr_msi = hsi_to_msi_numpy(gt, self.srf_weights)
         else:
             hr_msi = make_hr_msi(gt, self.n_select_bands)
 
-        sample = {
+        return {
             "lr_hsi": hsi_to_tensor(lr_hsi),
             "hr_msi": hsi_to_tensor(hr_msi),
             "gt": hsi_to_tensor(gt),
             "dataset_id": torch.tensor(0, dtype=torch.long),
             "n_bands": torch.tensor(gt.shape[2], dtype=torch.long),
         }
-        return sample
 
 
 def _resolve_srf_spec(cfg, n_bands: int):
-    """解析数据集默认传感器及对应 HSI 波长网格。
-
-    auto 模式下：
-      - PaviaU -> IKONOS Blue/Green/Red/NIR（4通道）；
-      - Houston13 / Chikusei -> WV2 all8。
-
-    `wv2_visible6` 保留为兼容旧 PaviaU 六通道实验的显式选项。
-    """
+    """解析固定公平对比传感器及 HSI 波长网格。"""
     requested = getattr(cfg, "srf_band_set", "auto")
     if requested == "auto":
         resolved = "ikonos4" if cfg.dataset == "PaviaU" else "wv2_all8"
@@ -402,6 +373,9 @@ def build_datasets(cfg):
     n_bands = img.shape[2]
     print(f"Loaded {cfg.dataset}: shape={img.shape}, bands={n_bands}")
 
+    degradation_operator = build_hsi_degradation(cfg)
+    print(f"Resolved degradation: {degradation_operator}")
+
     srf_weights = None
     srf_band_names = None
     hsi_wavelengths = None
@@ -409,7 +383,7 @@ def build_datasets(cfg):
     resolved_srf_path = None
     resolved_wavelength_path = None
 
-    if getattr(cfg, "msi_mode", "uniform") == "srf":
+    if getattr(cfg, "msi_mode", "srf") == "srf":
         (
             resolved_srf_path,
             selected_bands,
@@ -435,35 +409,35 @@ def build_datasets(cfg):
             band_names=srf_band_names,
             hsi_wavelengths=hsi_wavelengths,
         )
-
         n_select_bands = srf_weights.shape[0]
     else:
         n_select_bands = cfg.n_select_bands
 
-    train_set = HSIHSRDataset(
+    dataset_kwargs = dict(
         img=img,
         dataset_name=cfg.dataset,
-        patch_size=cfg.patch_size,
-        stride=cfg.stride,
         scale_ratio=cfg.scale_ratio,
         n_select_bands=n_select_bands,
         srf_weights=srf_weights,
+        degradation_operator=degradation_operator,
+    )
+
+    train_set = HSIHSRDataset(
+        patch_size=cfg.patch_size,
+        stride=cfg.stride,
         split="train",
         test_size=cfg.image_size,
         augment=True,
+        **dataset_kwargs,
     )
 
     test_set = HSIHSRDataset(
-        img=img,
-        dataset_name=cfg.dataset,
         patch_size=cfg.image_size,
         stride=cfg.image_size,
-        scale_ratio=cfg.scale_ratio,
-        n_select_bands=n_select_bands,
-        srf_weights=srf_weights,
         split="test",
         test_size=cfg.image_size,
         augment=False,
+        **dataset_kwargs,
     )
 
     info = {
@@ -473,7 +447,13 @@ def build_datasets(cfg):
         "scale_ratio": cfg.scale_ratio,
         "train_samples": len(train_set),
         "test_samples": len(test_set),
-        "msi_mode": getattr(cfg, "msi_mode", "uniform"),
+        "degradation_mode": degradation_operator.mode,
+        "degradation_sigma": getattr(cfg, "degradation_sigma", 2.0),
+        "degradation_kernel_size": getattr(cfg, "degradation_kernel_size", 5),
+        "mtf_nyquist": getattr(cfg, "mtf_nyquist", 0.2),
+        "psf_truncate": getattr(cfg, "psf_truncate", 3.0),
+        "degradation_repr": repr(degradation_operator),
+        "msi_mode": getattr(cfg, "msi_mode", "srf"),
         "srf_profile": resolved_band_set,
         "srf_path": resolved_srf_path,
         "wavelength_path": resolved_wavelength_path,
