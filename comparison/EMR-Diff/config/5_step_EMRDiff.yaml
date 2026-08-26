@@ -52,7 +52,13 @@ train:
 
   # Maximum training budget. Early stopping normally terminates before this.
   epochs: 3000
-  test_frequency: 100
+
+  # Dataset-aware validation cadence. Large datasets use shorter epoch intervals
+  # because each epoch is much more expensive.
+  validation_interval_by_dataset:
+    PaviaU: 20
+    Houston13: 10
+    Chikusei: 5
 
   # Leakage-free early stopping on the independent validation region.
   early_stop_metric: PSNR
