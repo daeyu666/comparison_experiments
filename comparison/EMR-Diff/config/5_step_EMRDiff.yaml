@@ -29,6 +29,7 @@ data:
   data_root: ../../data/raw
   patch_size: 64
   stride: 32
+  validation_size: 128
   test_size: 128
 
   # Shared comparison degradation switch.
@@ -48,6 +49,15 @@ train:
   batch: [1,1]
   num_workers: 0
   microbatch: 1
+
+  # Maximum training budget. Early stopping normally terminates before this.
   epochs: 3000
   test_frequency: 100
+
+  # Leakage-free early stopping on the independent validation region.
+  early_stop_metric: PSNR
+  early_stop_min_delta: 0.02
+  early_stop_patience: 2
+  eval_seed: 1234
+
   device: cuda
