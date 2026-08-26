@@ -90,9 +90,23 @@ if __name__ == "__main__":
         configs.train.eval_seed = args.eval_seed
 
     print(
+        f"[request] dataset={args.dataset}, degradation_mode={args.degradation_mode}"
+    )
+    print(
         f"Validation interval for {args.dataset}: "
         f"every {validation_interval} epoch(s)"
     )
 
     trainer = ResShiftTrainer(configs=configs)
+    if trainer.degradation_mode != args.degradation_mode:
+        raise RuntimeError(
+            "Degradation-mode mismatch before training: "
+            f"requested={args.degradation_mode}, resolved={trainer.degradation_mode}. "
+            "Training is aborted to prevent checkpoints from being written to the wrong protocol directory."
+        )
+    print(
+        f"[resolved] degradation_mode={trainer.degradation_mode}, "
+        f"checkpoint_dir={os.path.join(root, 'checkpoints', trainer.degradation_mode, trainer.dataset)}"
+    )
+
     trainer.train(configs.train.epochs, validation_interval)
