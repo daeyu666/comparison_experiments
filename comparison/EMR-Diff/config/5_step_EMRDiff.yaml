@@ -30,9 +30,18 @@ data:
   patch_size: 64
   stride: 32
   test_size: 128
+
+  # Shared comparison degradation switch.
+  degradation_mode: gaussian_bicubic
+  degradation_sigma: 2.0
+  degradation_kernel_size: 5
+  mtf_nyquist: 0.2
+  psf_truncate: 3.0
+
+  # Shared MSI protocol is resolved by dataset:
+  # PaviaU -> IKONOS4; Houston13/Chikusei -> WV2 all8.
+  msi_mode: srf
   srf_band_set: auto
-  gaussian_kernel_size: 5
-  gaussian_sigma: 2.0
 
 train:
   lr: 1e-4
