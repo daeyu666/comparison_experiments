@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+checkpoints/*
+!checkpoints/.gitkeep
+
+outputs/*
+!outputs/.gitkeep
+
+logs/*
+!logs/.gitkeep
