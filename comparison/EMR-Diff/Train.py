@@ -40,8 +40,6 @@ def parse_args():
             "PaviaU=20, Houston13=10, Chikusei=5."
         ),
     )
-    # Backward-compatible alias for old commands. New scripts/readmes use
-    # --validation_interval because this is validation, not final testing.
     parser.add_argument("--test_frequency", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--early_stop_patience", type=int, default=None)
     parser.add_argument("--early_stop_min_delta", type=float, default=None)
@@ -71,10 +69,7 @@ if __name__ == "__main__":
     else:
         configured = configs.train.get("validation_interval_by_dataset", {})
         validation_interval = int(
-            configured.get(
-                args.dataset,
-                DEFAULT_VALIDATION_INTERVALS[args.dataset],
-            )
+            configured.get(args.dataset, DEFAULT_VALIDATION_INTERVALS[args.dataset])
         )
     if validation_interval < 1:
         raise ValueError("validation_interval must be >= 1")
@@ -89,20 +84,22 @@ if __name__ == "__main__":
     if args.eval_seed is not None:
         configs.train.eval_seed = args.eval_seed
 
-    print(
-        f"[request] dataset={args.dataset}, degradation_mode={args.degradation_mode}"
-    )
+    print(f"[request] dataset={args.dataset}, degradation_mode={args.degradation_mode}")
     print(
         f"Validation interval for {args.dataset}: "
         f"every {validation_interval} epoch(s)"
     )
 
     trainer = ResShiftTrainer(configs=configs)
+    if trainer.dataset != args.dataset:
+        raise RuntimeError(
+            "Dataset mismatch before training: "
+            f"requested={args.dataset}, resolved={trainer.dataset}."
+        )
     if trainer.degradation_mode != args.degradation_mode:
         raise RuntimeError(
             "Degradation-mode mismatch before training: "
-            f"requested={args.degradation_mode}, resolved={trainer.degradation_mode}. "
-            "Training is aborted to prevent checkpoints from being written to the wrong protocol directory."
+            f"requested={args.degradation_mode}, resolved={trainer.degradation_mode}."
         )
 
     checkpoint_dir = os.path.join(
@@ -115,7 +112,8 @@ if __name__ == "__main__":
 
     protocol_path = os.path.join(checkpoint_dir, "run_protocol.txt")
     with open(protocol_path, "w", encoding="utf-8") as f:
-        f.write(f"dataset: {trainer.dataset}\n")
+        f.write(f"requested_dataset: {args.dataset}\n")
+        f.write(f"resolved_dataset: {trainer.dataset}\n")
         f.write(f"requested_degradation_mode: {args.degradation_mode}\n")
         f.write(f"resolved_degradation_mode: {trainer.degradation_mode}\n")
         f.write(f"validation_interval: {validation_interval}\n")
@@ -125,7 +123,8 @@ if __name__ == "__main__":
         f.write(f"eval_seed: {trainer.eval_seed}\n")
 
     print(
-        f"[resolved] degradation_mode={trainer.degradation_mode}, "
+        f"[resolved] dataset={trainer.dataset}, "
+        f"degradation_mode={trainer.degradation_mode}, "
         f"checkpoint_dir={checkpoint_dir}"
     )
     print(f"[protocol] {protocol_path}")
