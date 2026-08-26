@@ -1,0 +1,44 @@
+diffusion:
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.3
+    etas_end: 0.999
+    steps: 5
+    min_noise_level: 0.001
+    kappa: 2.0
+    band_dim: 0
+    normalize_input: False
+    latent_flag: None
+
+model:
+  params:
+    image_size: 64
+    in_channels: 0
+    model_channels: 0
+    out_channels: 0
+    channel_mult: [1,1,1,1,1]
+    num_res_blocks: [1,1,1,1,1]
+    dims: 2
+    lqrgb_channels: 0
+    rgb_channels: 0
+
+data:
+  dataset: PaviaU
+  data_root: ../../data/raw
+  patch_size: 64
+  stride: 32
+  test_size: 128
+  msi_bands: 8
+  gaussian_kernel_size: 5
+  gaussian_sigma: 2.0
+
+train:
+  lr: 1e-4
+  batch: [1,1]
+  num_workers: 0
+  microbatch: 1
+  epochs: 3000
+  test_frequency: 100
+  device: cuda
