@@ -53,7 +53,9 @@ validation region = fixed 128x128 region, disjoint from test
 final test region = center 128x128
 ```
 
-验证区优先取图像左上角 128x128；若与中心测试区重叠，公共数据加载器自动尝试其他角落。所有训练 patch 同时避开验证区与最终测试区。
+PaviaU 保持既定的左上角 128x128 验证区。Chikusei 由于整幅场景远大于 PaviaU，极端左上角单块可能出现低能量或低动态范围，从而使 validation PSNR 虚高，因此固定改为左上象限内部的 128x128 验证区；位置只由图像尺寸决定，不依据模型结果选择。最终测试区仍固定为中心 128x128，训练 patch 同时避开验证区与最终测试区。
+
+数据加载时会额外打印验证块的 `min / mean / max / std`，用于检查验证区是否异常接近零或缺乏动态范围。
 
 训练阶段只使用训练集与验证集。最终中心 128x128 测试区不用于 epoch 选择、调参或 early stopping，避免测试泄漏。
 
@@ -65,6 +67,12 @@ Chikusei:  128 HSI + 8 MSI = 136 channels
 ```
 
 Houston13 按实际 HSI 波段数加 8 个 WV2 MSI 通道自动确定。
+
+### Metric consistency
+
+公共 `metrics.py` 对预测值与 GT 统一在 `[0,1]` 数值域计算 PSNR、RMSE、SAM、ERGAS、SSIM 和 CC，不再出现 PSNR/RMSE 使用 clamp 而 SAM/ERGAS/SSIM/CC 使用未裁剪预测值的情况。
+
+SAM 使用有效非零光谱像素上的标准余弦夹角计算。旧实现把 `eps` 同时加入两个光谱范数和最终分母，在 Chikusei 近零光谱区域会把余弦值人为压低，使几乎相同的低幅值光谱也可能得到几十度的 SAM。该数值不稳定问题已经修复。
 
 ## Early stopping
 
@@ -177,7 +185,7 @@ python comparison/EMR-Diff/Train.py \
 comparison/EMR-Diff/checkpoints/<degradation_mode>/<Dataset>/run_protocol.txt
 ```
 
-该文件记录 `requested_degradation_mode`、`resolved_degradation_mode`、验证间隔和 early stopping 参数。这样执行 `--degradation_mode physical` 后无需等待第 20/10/5 epoch，即可立刻确认当前运行对应的 checkpoint 目录和实际退化模式。
+该文件记录 `requested_dataset`、`resolved_dataset`、`requested_degradation_mode`、`resolved_degradation_mode`、验证间隔和 early stopping 参数。这样无需等待第一个 validation epoch，即可确认当前运行对应的数据集、退化模式和 checkpoint 目录。
 
 ### 1轮 smoke test
 
@@ -225,7 +233,9 @@ comparison/EMR-Diff/outputs/<degradation_mode>/<Dataset>/
 
 在引入独立验证区之前，旧版 EMR-Diff 训练代码把中心 128x128 区域既作为训练期评估区域又作为最终测试区域。该旧流程会造成测试集参与 epoch 选择，因此旧版 100/200/300 epoch 评估结果只能用于调试与趋势观察，不应直接作为采用新版协议后的正式最终测试结果。
 
-新版代码已经将验证区与中心测试区完全分离，并采用数据集自适应验证频率。正式实验建议从新版空间划分重新训练，并以 `best.pth.tar` 在最终测试区上执行正式测试。
+Chikusei 早期新版实验若使用极端左上角 128x128 验证块，并出现类似 `PSNR≈60 dB` 与 `SAM≈50°` 的矛盾组合，也只作为诊断结果，不用于正式模型选择。正式 Chikusei 实验应使用当前 interior validation 规则及修正后的公共 metrics。
+
+新版代码已经将验证区与中心测试区完全分离，并采用数据集自适应验证频率。正式实验以 `best.pth.tar` 在最终测试区上执行正式测试。
 
 ## Shared implementation
 
