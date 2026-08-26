@@ -8,7 +8,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from config import TrainConfig, get_dataset_configs
-from data_loader import build_loaders
+from data_loader import build_train_val_test_loaders
 
 
 EXPECTED_MSI_CHANNELS = {
@@ -46,9 +46,14 @@ def _resolve_sensor_paths(dataset):
 
 
 def build_ufg_loaders(configs):
-    """Build EMR-Diff loaders from the shared comparison protocol.
+    """Build leakage-free EMR-Diff loaders from the shared protocol.
 
-    Fixed sensor protocol:
+    Spatial protocol:
+      - train: 64x64 patches, stride 32, excluding validation and test regions;
+      - validation: fixed 128x128 region disjoint from the test region;
+      - test: center 128x128 region, not accessed during training.
+
+    Sensor protocol:
       - PaviaU HR-MSI: IKONOS Blue/Green/Red/NIR, 4 channels;
       - Houston13 / Chikusei HR-MSI: WorldView-2 all8, 8 channels.
 
@@ -67,6 +72,7 @@ def build_ufg_loaders(configs):
         cfg.data_root = os.path.abspath(os.path.join(EMR_ROOT, cfg.data_root))
 
     cfg.image_size = int(configs.data.get("test_size", 128))
+    cfg.validation_size = int(configs.data.get("validation_size", 128))
     cfg.patch_size = int(configs.data.get("patch_size", 64))
     cfg.stride = int(configs.data.get("stride", 32))
     cfg.scale_ratio = int(configs.diffusion.params.get("sf", 4))
@@ -93,7 +99,9 @@ def build_ufg_loaders(configs):
     cfg.num_workers = int(configs.train.get("num_workers", 0))
     cfg.device = str(configs.train.get("device", "cuda"))
 
-    train_loader, test_loader, info = build_loaders(cfg)
+    train_loader, validation_loader, test_loader, info = (
+        build_train_val_test_loaders(cfg)
+    )
 
     expected_channels = EXPECTED_MSI_CHANNELS[cfg.dataset]
     actual_channels = int(info["n_select_bands"])
@@ -104,4 +112,4 @@ def build_ufg_loaders(configs):
         )
 
     cfg.n_select_bands = actual_channels
-    return train_loader, test_loader, info, cfg
+    return train_loader, validation_loader, test_loader, info, cfg
