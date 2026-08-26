@@ -15,3 +15,11 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/
 checkpoints/
+
+# Method-local comparison artifacts
+comparison/*/checkpoints/*
+!comparison/*/checkpoints/.gitkeep
+comparison/*/outputs/*
+!comparison/*/outputs/.gitkeep
+comparison/*/logs/*
+!comparison/*/logs/.gitkeep
