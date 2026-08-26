@@ -129,6 +129,10 @@ class ResShiftTrainer:
             self.configs.train.get("early_stop_min_delta", 0.02)
         )
         self.eval_seed = int(self.configs.train.get("eval_seed", 1234))
+        if self.early_stop_metric != "PSNR":
+            raise ValueError(
+                "The shared comparison protocol currently requires PSNR for early stopping."
+            )
         if self.early_stop_patience < 0:
             raise ValueError("early_stop_patience must be >= 0")
         if self.early_stop_min_delta < 0:
@@ -295,8 +299,13 @@ class ResShiftTrainer:
         averager = MetricAverager()
 
         cuda_devices = []
-        if self.device.type == "cuda" and self.device.index is not None:
-            cuda_devices = [self.device.index]
+        if self.device.type == "cuda":
+            device_index = (
+                self.device.index
+                if self.device.index is not None
+                else torch.cuda.current_device()
+            )
+            cuda_devices = [device_index]
 
         with torch.random.fork_rng(devices=cuda_devices):
             torch.manual_seed(self.eval_seed)
