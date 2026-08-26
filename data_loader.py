@@ -181,11 +181,13 @@ def make_hr_msi(hr_hsi: np.ndarray, n_select_bands: int) -> np.ndarray:
 
 
 def get_center_test_rect(h: int, w: int, test_size: int) -> Tuple[int, int, int, int]:
-    top = max((h - test_size) // 2, 0)
-    left = max((w - test_size) // 2, 0)
-    bottom = min(top + test_size, h)
-    right = min(left + test_size, w)
-    return top, left, bottom, right
+    if h < test_size or w < test_size:
+        raise ValueError(
+            f"Image size {(h, w)} is smaller than test_size={test_size}."
+        )
+    top = (h - test_size) // 2
+    left = (w - test_size) // 2
+    return top, left, top + test_size, left + test_size
 
 
 def intersects(rect1: Tuple[int, int, int, int], rect2: Tuple[int, int, int, int]) -> bool:
@@ -194,34 +196,89 @@ def intersects(rect1: Tuple[int, int, int, int], rect2: Tuple[int, int, int, int
     return not (r1 <= l2 or r2 <= l1 or b1 <= t2 or b2 <= t1)
 
 
+def get_validation_rect(
+    h: int,
+    w: int,
+    validation_size: int,
+    test_rect: Tuple[int, int, int, int],
+) -> Tuple[int, int, int, int]:
+    """选择固定且与中心测试区不重叠的验证区域。
+
+    优先使用左上角 validation_size×validation_size；若与测试区重叠，
+    依次尝试其余三个角。这样验证区位置确定、可复现，并与最终测试区隔离。
+    """
+    if h < validation_size or w < validation_size:
+        raise ValueError(
+            f"Image size {(h, w)} is smaller than validation_size={validation_size}."
+        )
+
+    candidates = [
+        (0, 0, validation_size, validation_size),
+        (0, w - validation_size, validation_size, w),
+        (h - validation_size, 0, h, validation_size),
+        (h - validation_size, w - validation_size, h, w),
+    ]
+    for rect in candidates:
+        if not intersects(rect, test_rect):
+            return rect
+
+    for top in range(0, h - validation_size + 1, validation_size):
+        for left in range(0, w - validation_size + 1, validation_size):
+            rect = (top, left, top + validation_size, left + validation_size)
+            if not intersects(rect, test_rect):
+                return rect
+
+    raise ValueError(
+        "Cannot place a validation region that is disjoint from the test region."
+    )
+
+
 def build_patch_coords(
     h: int,
     w: int,
     patch_size: int,
     stride: int,
+    validation_rect: Tuple[int, int, int, int],
     test_rect: Tuple[int, int, int, int],
     split: str,
 ) -> List[Tuple[int, int]]:
-    coords = []
+    split = split.lower()
+
+    if split in ("validation", "val"):
+        top, left, bottom, right = validation_rect
+        if bottom - top != patch_size or right - left != patch_size:
+            raise ValueError(
+                f"Validation patch_size={patch_size} must match validation region "
+                f"size={(bottom - top, right - left)}."
+            )
+        return [(top, left)]
 
     if split == "test":
         top, left, bottom, right = test_rect
-        if bottom - top < patch_size or right - left < patch_size:
-            top = max((h - patch_size) // 2, 0)
-            left = max((w - patch_size) // 2, 0)
+        if bottom - top != patch_size or right - left != patch_size:
+            raise ValueError(
+                f"Test patch_size={patch_size} must match test region "
+                f"size={(bottom - top, right - left)}."
+            )
         return [(top, left)]
 
+    if split != "train":
+        raise ValueError(f"Unsupported split: {split}")
+
+    coords = []
     for top in range(0, h - patch_size + 1, stride):
         for left in range(0, w - patch_size + 1, stride):
             patch_rect = (top, left, top + patch_size, left + patch_size)
-            if not intersects(patch_rect, test_rect):
-                coords.append((top, left))
+            if intersects(patch_rect, validation_rect):
+                continue
+            if intersects(patch_rect, test_rect):
+                continue
+            coords.append((top, left))
 
-    if len(coords) == 0:
-        for top in range(0, h - patch_size + 1, stride):
-            for left in range(0, w - patch_size + 1, stride):
-                coords.append((top, left))
-
+    if not coords:
+        raise RuntimeError(
+            "No training patches remain after excluding validation and test regions."
+        )
     return coords
 
 
@@ -238,6 +295,7 @@ class HSIHSRDataset(Dataset):
         n_select_bands: int,
         split: str = "train",
         test_size: int = 128,
+        validation_size: int = 128,
         augment: bool = True,
         srf_weights=None,
         degradation_operator=None,
@@ -257,11 +315,18 @@ class HSIHSRDataset(Dataset):
 
         h, w, _ = img.shape
         self.test_rect = get_center_test_rect(h, w, test_size)
+        self.validation_rect = get_validation_rect(
+            h,
+            w,
+            validation_size,
+            self.test_rect,
+        )
         self.coords = build_patch_coords(
             h=h,
             w=w,
             patch_size=patch_size,
             stride=stride,
+            validation_rect=self.validation_rect,
             test_rect=self.test_rect,
             split=split,
         )
@@ -362,7 +427,7 @@ def _resolve_srf_spec(cfg, n_bands: int):
     return srf_path, selected_bands, hsi_wavelengths, wavelength_path, resolved
 
 
-def build_datasets(cfg):
+def build_datasets(cfg, include_validation: bool = False):
     dataset_cfg = cfg.datasets[cfg.dataset]
     file_path = os.path.join(cfg.data_root, dataset_cfg.file_name)
 
@@ -413,6 +478,17 @@ def build_datasets(cfg):
     else:
         n_select_bands = cfg.n_select_bands
 
+    validation_size = int(getattr(cfg, "validation_size", cfg.image_size))
+    test_size = int(cfg.image_size)
+    test_rect = get_center_test_rect(img.shape[0], img.shape[1], test_size)
+    validation_rect = get_validation_rect(
+        img.shape[0], img.shape[1], validation_size, test_rect
+    )
+    print(
+        f"Spatial split: validation_rect={validation_rect}, test_rect={test_rect}; "
+        "training patches exclude both regions."
+    )
+
     dataset_kwargs = dict(
         img=img,
         dataset_name=cfg.dataset,
@@ -420,22 +496,28 @@ def build_datasets(cfg):
         n_select_bands=n_select_bands,
         srf_weights=srf_weights,
         degradation_operator=degradation_operator,
+        test_size=test_size,
+        validation_size=validation_size,
     )
 
     train_set = HSIHSRDataset(
         patch_size=cfg.patch_size,
         stride=cfg.stride,
         split="train",
-        test_size=cfg.image_size,
         augment=True,
         **dataset_kwargs,
     )
-
+    validation_set = HSIHSRDataset(
+        patch_size=validation_size,
+        stride=validation_size,
+        split="validation",
+        augment=False,
+        **dataset_kwargs,
+    )
     test_set = HSIHSRDataset(
-        patch_size=cfg.image_size,
-        stride=cfg.image_size,
+        patch_size=test_size,
+        stride=test_size,
         split="test",
-        test_size=cfg.image_size,
         augment=False,
         **dataset_kwargs,
     )
@@ -446,7 +528,10 @@ def build_datasets(cfg):
         "n_select_bands": n_select_bands,
         "scale_ratio": cfg.scale_ratio,
         "train_samples": len(train_set),
+        "validation_samples": len(validation_set),
         "test_samples": len(test_set),
+        "validation_rect": validation_rect,
+        "test_rect": test_rect,
         "degradation_mode": degradation_operator.mode,
         "degradation_sigma": getattr(cfg, "degradation_sigma", 2.0),
         "degradation_kernel_size": getattr(cfg, "degradation_kernel_size", 5),
@@ -462,28 +547,70 @@ def build_datasets(cfg):
         "hsi_wavelengths": hsi_wavelengths,
     }
 
+    if include_validation:
+        return train_set, validation_set, test_set, info
     return train_set, test_set, info
 
 
-def build_loaders(cfg):
-    train_set, test_set, info = build_datasets(cfg)
+def _make_loader(dataset, batch_size, shuffle, num_workers, drop_last):
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=drop_last,
+    )
 
-    train_loader = DataLoader(
+
+def build_loaders(cfg):
+    """Backward-compatible train/test loader API.
+
+    Training patches still exclude the fixed validation region, even when a caller
+    does not request a validation loader.
+    """
+    train_set, test_set, info = build_datasets(cfg, include_validation=False)
+    train_loader = _make_loader(
         train_set,
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=cfg.num_workers,
-        pin_memory=True,
         drop_last=True,
     )
-
-    test_loader = DataLoader(
+    test_loader = _make_loader(
         test_set,
         batch_size=1,
         shuffle=False,
         num_workers=0,
-        pin_memory=True,
         drop_last=False,
     )
-
     return train_loader, test_loader, info
+
+
+def build_train_val_test_loaders(cfg):
+    """Return leakage-free train/validation/test loaders for early stopping."""
+    train_set, validation_set, test_set, info = build_datasets(
+        cfg, include_validation=True
+    )
+    train_loader = _make_loader(
+        train_set,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        drop_last=True,
+    )
+    validation_loader = _make_loader(
+        validation_set,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+    )
+    test_loader = _make_loader(
+        test_set,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+    )
+    return train_loader, validation_loader, test_loader, info
