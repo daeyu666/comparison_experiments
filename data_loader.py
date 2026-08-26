@@ -201,23 +201,37 @@ def get_validation_rect(
     w: int,
     validation_size: int,
     test_rect: Tuple[int, int, int, int],
+    dataset_name: str = "",
 ) -> Tuple[int, int, int, int]:
-    """选择固定且与中心测试区不重叠的验证区域。
+    """Choose a deterministic validation region disjoint from the center test region.
 
-    优先使用左上角 validation_size×validation_size；若与测试区重叠，
-    依次尝试其余三个角。这样验证区位置确定、可复现，并与最终测试区隔离。
+    PaviaU keeps the established top-left rule so existing PaviaU runs remain
+    comparable. Chikusei uses an interior patch centered in the upper-left
+    quadrant because a single extreme-corner 128x128 crop can be atypically
+    low-energy for this much larger scene.
     """
     if h < validation_size or w < validation_size:
         raise ValueError(
             f"Image size {(h, w)} is smaller than validation_size={validation_size}."
         )
 
-    candidates = [
-        (0, 0, validation_size, validation_size),
-        (0, w - validation_size, validation_size, w),
-        (h - validation_size, 0, h, validation_size),
-        (h - validation_size, w - validation_size, h, w),
-    ]
+    candidates = []
+    if dataset_name == "Chikusei":
+        center_y = h // 4
+        center_x = w // 4
+        top = min(max(center_y - validation_size // 2, 0), h - validation_size)
+        left = min(max(center_x - validation_size // 2, 0), w - validation_size)
+        candidates.append((top, left, top + validation_size, left + validation_size))
+
+    candidates.extend(
+        [
+            (0, 0, validation_size, validation_size),
+            (0, w - validation_size, validation_size, w),
+            (h - validation_size, 0, h, validation_size),
+            (h - validation_size, w - validation_size, h, w),
+        ]
+    )
+
     for rect in candidates:
         if not intersects(rect, test_rect):
             return rect
@@ -320,6 +334,7 @@ class HSIHSRDataset(Dataset):
             w,
             validation_size,
             self.test_rect,
+            dataset_name=self.dataset_name,
         )
         self.coords = build_patch_coords(
             h=h,
@@ -482,11 +497,25 @@ def build_datasets(cfg, include_validation: bool = False):
     test_size = int(cfg.image_size)
     test_rect = get_center_test_rect(img.shape[0], img.shape[1], test_size)
     validation_rect = get_validation_rect(
-        img.shape[0], img.shape[1], validation_size, test_rect
+        img.shape[0],
+        img.shape[1],
+        validation_size,
+        test_rect,
+        dataset_name=cfg.dataset,
     )
     print(
         f"Spatial split: validation_rect={validation_rect}, test_rect={test_rect}; "
         "training patches exclude both regions."
+    )
+
+    vt, vl, vb, vr = validation_rect
+    validation_gt = img[vt:vb, vl:vr, :]
+    print(
+        "Validation GT stats: "
+        f"min={float(validation_gt.min()):.6f}, "
+        f"mean={float(validation_gt.mean()):.6f}, "
+        f"max={float(validation_gt.max()):.6f}, "
+        f"std={float(validation_gt.std()):.6f}"
     )
 
     dataset_kwargs = dict(
@@ -531,6 +560,10 @@ def build_datasets(cfg, include_validation: bool = False):
         "validation_samples": len(validation_set),
         "test_samples": len(test_set),
         "validation_rect": validation_rect,
+        "validation_gt_min": float(validation_gt.min()),
+        "validation_gt_mean": float(validation_gt.mean()),
+        "validation_gt_max": float(validation_gt.max()),
+        "validation_gt_std": float(validation_gt.std()),
         "test_rect": test_rect,
         "degradation_mode": degradation_operator.mode,
         "degradation_sigma": getattr(cfg, "degradation_sigma", 2.0),
