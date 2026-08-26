@@ -171,6 +171,14 @@ python comparison/EMR-Diff/Train.py \
   --degradation_mode physical
 ```
 
+训练启动后，在真正产生第一个 epoch checkpoint 之前，程序就会先创建当前协议目录并写入：
+
+```text
+comparison/EMR-Diff/checkpoints/<degradation_mode>/<Dataset>/run_protocol.txt
+```
+
+该文件记录 `requested_degradation_mode`、`resolved_degradation_mode`、验证间隔和 early stopping 参数。这样执行 `--degradation_mode physical` 后无需等待第 20/10/5 epoch，即可立刻确认当前运行对应的 checkpoint 目录和实际退化模式。
+
 ### 1轮 smoke test
 
 ```bash
