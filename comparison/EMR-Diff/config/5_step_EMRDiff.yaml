@@ -30,7 +30,7 @@ data:
   patch_size: 64
   stride: 32
   test_size: 128
-  msi_bands: 8
+  srf_band_set: auto
   gaussian_kernel_size: 5
   gaussian_sigma: 2.0
 
