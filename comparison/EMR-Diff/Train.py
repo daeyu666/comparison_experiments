@@ -104,9 +104,30 @@ if __name__ == "__main__":
             f"requested={args.degradation_mode}, resolved={trainer.degradation_mode}. "
             "Training is aborted to prevent checkpoints from being written to the wrong protocol directory."
         )
+
+    checkpoint_dir = os.path.join(
+        root,
+        "checkpoints",
+        trainer.degradation_mode,
+        trainer.dataset,
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    protocol_path = os.path.join(checkpoint_dir, "run_protocol.txt")
+    with open(protocol_path, "w", encoding="utf-8") as f:
+        f.write(f"dataset: {trainer.dataset}\n")
+        f.write(f"requested_degradation_mode: {args.degradation_mode}\n")
+        f.write(f"resolved_degradation_mode: {trainer.degradation_mode}\n")
+        f.write(f"validation_interval: {validation_interval}\n")
+        f.write(f"early_stop_metric: {trainer.early_stop_metric}\n")
+        f.write(f"early_stop_min_delta: {trainer.early_stop_min_delta}\n")
+        f.write(f"early_stop_patience: {trainer.early_stop_patience}\n")
+        f.write(f"eval_seed: {trainer.eval_seed}\n")
+
     print(
         f"[resolved] degradation_mode={trainer.degradation_mode}, "
-        f"checkpoint_dir={os.path.join(root, 'checkpoints', trainer.degradation_mode, trainer.dataset)}"
+        f"checkpoint_dir={checkpoint_dir}"
     )
+    print(f"[protocol] {protocol_path}")
 
     trainer.train(configs.train.epochs, validation_interval)
