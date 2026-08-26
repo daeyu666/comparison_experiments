@@ -26,7 +26,7 @@ class TrainConfig:
     log_root: str = "./logs"
     output_root: str = "./outputs"
 
-    # --- 运行阶段（由用户自定义，模板不强制限制取值） ---
+    # --- 运行阶段 ---
     stage: str = "train"
     dataset: str = "PaviaU"
 
@@ -37,15 +37,24 @@ class TrainConfig:
     scale_ratio: int = 4
     n_select_bands: int = 4
 
+    # --- LR-HSI 退化模式 ---
+    # gaussian_bicubic: 5x5 Gaussian(sigma=2) + bicubic x4
+    # physical: MTF@Nyquist -> Gaussian optical PSF -> detector area integration -> sampling
+    degradation_mode: str = "gaussian_bicubic"
+    degradation_sigma: float = 2.0
+    degradation_kernel_size: int = 5
+    mtf_nyquist: float = 0.2
+    psf_truncate: float = 3.0
+
     # --- MSI 生成模式 ---
-    # 默认采用真实 SRF。auto: PaviaU -> IKONOS 4-band；
-    # Houston13 / Chikusei -> WV2 all8。旧 WV2 6-band 仍可显式选择。
-    msi_mode: str = "srf"               # "uniform" 或 "srf"
-    srf_path: str = ""                  # 空字符串时按 srf_band_set 自动解析
+    # 公平对比固定使用真实 SRF：PaviaU -> IKONOS 4-band；
+    # Houston13 / Chikusei -> WV2 all8。
+    msi_mode: str = "srf"
+    srf_path: str = ""
     wavelength_root: str = "./data/wavelengths"
     wavelength_path: str = ""
-    srf_interp: str = "pchip"           # "pchip" 或 "linear"
-    srf_band_set: str = "auto"          # auto / ikonos4 / wv2_visible5 / wv2_visible6 / wv2_all8
+    srf_interp: str = "pchip"
+    srf_band_set: str = "auto"
 
     # --- 训练 ---
     epochs: int = 300
@@ -72,15 +81,10 @@ class TrainConfig:
     resume: str = ""
     save_name: str = ""
 
-    # --- 数据集注册表（用户按需覆盖） ---
     datasets: dict = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# 默认数据集配置（仅作为示例，用户可根据自己的数据自由增删）
-# ---------------------------------------------------------------------------
 def get_dataset_configs():
-    """返回内置的示例数据集配置。用户可按需修改或替换。"""
     return {
         "PaviaU": DatasetConfig(
             name="PaviaU",
@@ -103,28 +107,17 @@ def get_dataset_configs():
     }
 
 
-# ---------------------------------------------------------------------------
-# 命令行参数解析（通用部分；具体模型参数请在自身入口脚本中添加）
-# ---------------------------------------------------------------------------
 def parse_args(argv: Optional[List[str]] = None):
-    """解析命令行参数，返回 TrainConfig。
-
-    用户可以在自己的入口脚本中先调用本函数获得基础 cfg，
-    再用 parser.add_argument 追加模型相关参数。
-    """
     parser = argparse.ArgumentParser(description="HSI Super-Resolution Template")
 
-    # --- 运行控制 ---
     parser.add_argument("--stage", type=str, default="train")
     parser.add_argument("--dataset", type=str, default="PaviaU")
 
-    # --- 路径 ---
     parser.add_argument("--data_root", type=str, default="./data/raw")
     parser.add_argument("--checkpoint_root", type=str, default="./checkpoints")
     parser.add_argument("--log_root", type=str, default="./logs")
     parser.add_argument("--output_root", type=str, default="./outputs")
 
-    # --- 数据 ---
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument("--stride", type=int, default=32)
@@ -136,7 +129,18 @@ def parse_args(argv: Optional[List[str]] = None):
         help="0 表示使用数据集默认通道数；SRF 模式下由实际 SRF 通道数覆盖。",
     )
 
-    # --- MSI 生成 ---
+    parser.add_argument(
+        "--degradation_mode",
+        type=str,
+        default="gaussian_bicubic",
+        choices=["gaussian_bicubic", "physical"],
+        help="所有对比实验统一支持常规退化与物理退化切换。",
+    )
+    parser.add_argument("--degradation_sigma", type=float, default=2.0)
+    parser.add_argument("--degradation_kernel_size", type=int, default=5)
+    parser.add_argument("--mtf_nyquist", type=float, default=0.2)
+    parser.add_argument("--psf_truncate", type=float, default=3.0)
+
     parser.add_argument(
         "--msi_mode",
         type=str,
@@ -165,7 +169,6 @@ def parse_args(argv: Optional[List[str]] = None):
         help="auto: PaviaU 使用 IKONOS4；Houston13/Chikusei 使用 WV2 all8。",
     )
 
-    # --- 训练 ---
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -174,7 +177,6 @@ def parse_args(argv: Optional[List[str]] = None):
     parser.add_argument("--seed", type=int, default=10)
     parser.add_argument("--device", type=str, default="cuda")
 
-    # --- 损失权重 ---
     parser.add_argument("--lambda_l1", type=float, default=1.0)
     parser.add_argument("--lambda_sam", type=float, default=0.1)
     parser.add_argument("--lambda_dc", type=float, default=0.1)
@@ -184,7 +186,6 @@ def parse_args(argv: Optional[List[str]] = None):
     parser.add_argument("--lambda_srf_region", type=float, default=0.3)
     parser.add_argument("--lambda_mse", type=float, default=1.0)
 
-    # --- 保存 / 恢复 ---
     parser.add_argument("--save_interval", type=int, default=20)
     parser.add_argument("--eval_interval", type=int, default=1)
     parser.add_argument("--resume", type=str, default="")
@@ -198,21 +199,15 @@ def parse_args(argv: Optional[List[str]] = None):
     for key, value in vars(args).items():
         setattr(cfg, key, value)
 
-    # 若命令行未显式指定 n_select_bands，则使用数据集默认值。
     dataset_cfg = cfg.datasets.get(cfg.dataset)
     if dataset_cfg is not None:
         cfg.n_select_bands = args.n_select_bands or dataset_cfg.n_select_bands
 
     make_dirs(cfg)
-
     return cfg
 
 
-# ---------------------------------------------------------------------------
-# 目录创建
-# ---------------------------------------------------------------------------
 def make_dirs(cfg: TrainConfig):
-    """根据配置创建必要的输出目录。"""
     dirs = [
         cfg.checkpoint_root,
         cfg.log_root,
@@ -225,11 +220,7 @@ def make_dirs(cfg: TrainConfig):
         os.makedirs(path, exist_ok=True)
 
 
-# ---------------------------------------------------------------------------
-# 辅助函数
-# ---------------------------------------------------------------------------
 def get_checkpoint_path(cfg: TrainConfig, stage: str = None, name: str = None):
-    """生成 checkpoint 路径。"""
     stage = stage or cfg.stage
     if name is None or name == "":
         name = f"{cfg.dataset}_{stage}.pth"
@@ -237,7 +228,6 @@ def get_checkpoint_path(cfg: TrainConfig, stage: str = None, name: str = None):
 
 
 def print_config(cfg: TrainConfig):
-    """打印当前配置（不打印 datasets 字典）。"""
     print("=" * 60)
     print("HSI Super-Resolution Template  Config")
     print("=" * 60)
