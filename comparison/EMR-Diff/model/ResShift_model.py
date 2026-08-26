@@ -24,7 +24,6 @@ EXPECTED_MSI_CHANNELS = {
 
 
 def _sample_or_resize(x, target_hw):
-    """Match the original EMR-Diff point-downsample / bicubic-upsample behavior."""
     target_h, target_w = int(target_hw[0]), int(target_hw[1])
     h, w = x.shape[-2:]
     if (h, w) == (target_h, target_w):
@@ -41,16 +40,28 @@ def _sample_or_resize(x, target_hw):
     )
 
 
-def save_checkpoint(model, optimizer, epoch, dataset, state_channels):
-    checkpoint_dir = os.path.join(EMR_ROOT, "checkpoints", dataset)
+def save_checkpoint(
+    model,
+    optimizer,
+    epoch,
+    dataset,
+    degradation_mode,
+    state_channels,
+):
+    checkpoint_dir = os.path.join(
+        EMR_ROOT, "checkpoints", degradation_mode, dataset
+    )
     os.makedirs(checkpoint_dir, exist_ok=True)
-    model_out_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch}.pth.tar")
+    model_out_path = os.path.join(
+        checkpoint_dir, f"model_epoch_{epoch}.pth.tar"
+    )
     torch.save(
         {
             "epoch": int(epoch),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "dataset": dataset,
+            "degradation_mode": degradation_mode,
             "state_channels": int(state_channels),
         },
         model_out_path,
@@ -58,12 +69,15 @@ def save_checkpoint(model, optimizer, epoch, dataset, state_channels):
     return model_out_path
 
 
-def latest_checkpoint(dataset):
-    checkpoint_dir = os.path.join(EMR_ROOT, "checkpoints", dataset)
+def latest_checkpoint(dataset, degradation_mode):
+    checkpoint_dir = os.path.join(
+        EMR_ROOT, "checkpoints", degradation_mode, dataset
+    )
     paths = glob.glob(os.path.join(checkpoint_dir, "model_epoch_*.pth.tar"))
     if not paths:
         raise FileNotFoundError(
-            f"No EMR-Diff checkpoint found for {dataset} in {checkpoint_dir}"
+            f"No EMR-Diff checkpoint found for {dataset}/{degradation_mode} "
+            f"in {checkpoint_dir}"
         )
 
     def _epoch(path):
@@ -100,6 +114,7 @@ class ResShiftTrainer:
         ) = build_ufg_loaders(self.configs)
 
         self.dataset = str(self.shared_cfg.dataset)
+        self.degradation_mode = str(self.data_info["degradation_mode"])
         self.hsi_channels = int(self.data_info["n_bands"])
         self.msi_channels = int(self.data_info["n_select_bands"])
         self.state_channels = self.hsi_channels + self.msi_channels
@@ -116,8 +131,7 @@ class ResShiftTrainer:
         print(
             f"[EMR-Diff] dataset={self.dataset}, HSI={self.hsi_channels}, "
             f"MSI={self.msi_channels}, state={self.state_channels}, "
-            f"scale=x{self.diffusion_sf}, "
-            f"degradation={self.data_info.get('degradation_mode')}, "
+            f"scale=x{self.diffusion_sf}, degradation={self.degradation_mode}, "
             f"sensor={self.data_info.get('srf_profile')}"
         )
 
@@ -127,8 +141,12 @@ class ResShiftTrainer:
         self.edge_detector = Edge().to(self.device)
         self.setup_optimization()
 
-        self.output_dir = os.path.join(EMR_ROOT, "outputs", self.dataset)
-        self.log_dir = os.path.join(EMR_ROOT, "logs", self.dataset)
+        self.output_dir = os.path.join(
+            EMR_ROOT, "outputs", self.degradation_mode, self.dataset
+        )
+        self.log_dir = os.path.join(
+            EMR_ROOT, "logs", self.degradation_mode, self.dataset
+        )
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -227,7 +245,9 @@ class ResShiftTrainer:
         for step, batch in enumerate(tqdm(self.val_dataloader, desc="EMR-Diff eval")):
             gt, lq, msi = self._prepare_batch(batch)
             prediction = self._reconstruct(lq, msi)
-            metric_values = calc_metrics(prediction, gt, scale_ratio=self.diffusion_sf)
+            metric_values = calc_metrics(
+                prediction, gt, scale_ratio=self.diffusion_sf
+            )
             averager.update(metric_values)
             print(" ".join(f"{name}={value:.6f}" for name, value in metric_values.items()))
 
@@ -242,11 +262,14 @@ class ResShiftTrainer:
 
         average = averager.average()
         print(
-            f"[EMR-Diff:{self.dataset}] "
+            f"[EMR-Diff:{self.dataset}:{self.degradation_mode}] "
             + " ".join(f"{k}={v:.6f}" for k, v in average.items())
         )
         metrics_path = os.path.join(self.output_dir, "metrics.txt")
         with open(metrics_path, "w", encoding="utf-8") as f:
+            f.write(f"dataset: {self.dataset}\n")
+            f.write(f"degradation_mode: {self.degradation_mode}\n")
+            f.write(f"srf_profile: {self.data_info.get('srf_profile')}\n")
             for key, value in average.items():
                 f.write(f"{key}: {value:.8f}\n")
         return average
@@ -263,7 +286,10 @@ class ResShiftTrainer:
             num_batches = 0
             progress = tqdm(
                 self.train_dataloader,
-                desc=f"EMR-Diff {self.dataset} epoch {epoch_index + 1}",
+                desc=(
+                    f"EMR-Diff {self.dataset} {self.degradation_mode} "
+                    f"epoch {epoch_index + 1}"
+                ),
             )
 
             for batch in progress:
@@ -302,8 +328,8 @@ class ResShiftTrainer:
             with open(history_path, "a", encoding="utf-8") as f:
                 f.write(f"{epoch_index + 1},{mean_loss:.8f}\n")
             print(
-                f"[EMR-Diff:{self.dataset}] epoch={epoch_index + 1} "
-                f"train_loss={mean_loss:.6f}"
+                f"[EMR-Diff:{self.dataset}:{self.degradation_mode}] "
+                f"epoch={epoch_index + 1} train_loss={mean_loss:.6f}"
             )
 
             if (epoch_index + 1) % int(verbose) == 0:
@@ -313,17 +339,26 @@ class ResShiftTrainer:
                     self.optimizer,
                     epoch_index + 1,
                     self.dataset,
+                    self.degradation_mode,
                     self.state_channels,
                 )
                 print(f"checkpoint={path}")
 
     def load_checkpoint(self, checkpoint_path=None):
-        checkpoint_path = checkpoint_path or latest_checkpoint(self.dataset)
+        checkpoint_path = checkpoint_path or latest_checkpoint(
+            self.dataset, self.degradation_mode
+        )
         checkpoint = torch.load(
             checkpoint_path,
             map_location=self.device,
             weights_only=False,
         )
+        checkpoint_mode = checkpoint.get("degradation_mode")
+        if checkpoint_mode is not None and checkpoint_mode != self.degradation_mode:
+            raise ValueError(
+                f"Checkpoint degradation_mode={checkpoint_mode} does not match "
+                f"requested mode={self.degradation_mode}."
+            )
         if "model_state_dict" in checkpoint:
             self.Net.load_state_dict(checkpoint["model_state_dict"])
         elif "model" in checkpoint:
