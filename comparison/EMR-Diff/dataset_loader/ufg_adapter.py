@@ -46,30 +46,24 @@ def _resolve_sensor_paths(dataset):
 
 
 def build_ufg_loaders(configs):
-    """Build leakage-free EMR-Diff loaders from the shared protocol.
-
-    Spatial protocol:
-      - train: 64x64 patches, stride 32, excluding validation and test regions;
-      - validation: fixed 128x128 region disjoint from the test region;
-      - test: center 128x128 region, not accessed during training.
-
-    Sensor protocol:
-      - PaviaU HR-MSI: IKONOS Blue/Green/Red/NIR, 4 channels;
-      - Houston13 / Chikusei HR-MSI: WorldView-2 all8, 8 channels.
-
-    Switchable LR-HSI degradation:
-      - gaussian_bicubic: Gaussian 5x5, sigma=2 + bicubic x4;
-      - physical: MTF-derived optical PSF + detector area integration + x4 sampling.
-    """
+    """Build leakage-free EMR-Diff loaders from the shared protocol."""
     cfg = TrainConfig()
     cfg.datasets = get_dataset_configs()
 
-    cfg.dataset = str(configs.data.get("dataset", "PaviaU"))
+    requested_dataset = str(configs.data.get("dataset", "PaviaU"))
+    if requested_dataset not in cfg.datasets:
+        raise ValueError(f"Unsupported comparison dataset: {requested_dataset}")
+    cfg.dataset = requested_dataset
+
     cfg.data_root = str(
         configs.data.get("data_root", os.path.join(REPO_ROOT, "data", "raw"))
     )
     if not os.path.isabs(cfg.data_root):
         cfg.data_root = os.path.abspath(os.path.join(EMR_ROOT, cfg.data_root))
+
+    dataset_cfg = cfg.datasets[cfg.dataset]
+    data_file = os.path.abspath(os.path.join(cfg.data_root, dataset_cfg.file_name))
+    print(f"[adapter] dataset={cfg.dataset}, data_file={data_file}")
 
     cfg.image_size = int(configs.data.get("test_size", 128))
     cfg.validation_size = int(configs.data.get("validation_size", 128))
@@ -102,6 +96,13 @@ def build_ufg_loaders(configs):
     train_loader, validation_loader, test_loader, info = (
         build_train_val_test_loaders(cfg)
     )
+
+    resolved_dataset = str(info.get("dataset"))
+    if resolved_dataset != cfg.dataset:
+        raise RuntimeError(
+            "Dataset protocol mismatch inside adapter: "
+            f"requested={cfg.dataset}, resolved={resolved_dataset}."
+        )
 
     expected_channels = EXPECTED_MSI_CHANNELS[cfg.dataset]
     actual_channels = int(info["n_select_bands"])
