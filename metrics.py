@@ -7,49 +7,51 @@ import torch
 import torch.nn.functional as F
 
 
-def calc_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
+def _prepare_metric_pair(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Use one consistent [0, 1] evaluation domain for every metric."""
     pred = torch.clamp(pred.detach().float(), 0.0, 1.0)
     target = torch.clamp(target.detach().float(), 0.0, 1.0)
+    return pred, target
 
+
+def calc_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
+    pred, target = _prepare_metric_pair(pred, target)
     mse = F.mse_loss(pred, target).item()
-    return math.sqrt(max(mse, 1e-12))
+    return math.sqrt(max(mse, 0.0))
 
 
 def calc_psnr(pred: torch.Tensor, target: torch.Tensor, max_value: float = 1.0) -> float:
     rmse = calc_rmse(pred, target)
-
     if rmse <= 1e-12:
         return 100.0
-
     return 20.0 * math.log10(max_value / rmse)
 
 
-def calc_sam(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
-    """
-    返回角度，单位为 degree。
-    """
-    pred = pred.detach().float()
-    target = target.detach().float()
+def calc_sam(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12) -> float:
+    """Mean spectral angle in degrees over pixels with valid non-zero spectra."""
+    pred, target = _prepare_metric_pair(pred, target)
 
     dot = torch.sum(pred * target, dim=1)
-    pred_norm = torch.sqrt(torch.sum(pred * pred, dim=1) + eps)
-    target_norm = torch.sqrt(torch.sum(target * target, dim=1) + eps)
+    pred_norm = torch.linalg.vector_norm(pred, dim=1)
+    target_norm = torch.linalg.vector_norm(target, dim=1)
 
-    cos = dot / (pred_norm * target_norm + eps)
-    cos = torch.clamp(cos, -1.0 + eps, 1.0 - eps)
+    valid = (pred_norm > eps) & (target_norm > eps)
+    if not torch.any(valid):
+        return 0.0
 
-    angle = torch.acos(cos)
-    angle = angle * 180.0 / math.pi
-
+    denom = (pred_norm[valid] * target_norm[valid]).clamp_min(eps)
+    cos = (dot[valid] / denom).clamp(-1.0, 1.0)
+    angle = torch.acos(cos) * 180.0 / math.pi
     return torch.mean(angle).item()
 
 
 def calc_cc(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
-    pred = pred.detach().float()
-    target = target.detach().float()
+    pred, target = _prepare_metric_pair(pred, target)
 
     b, c, h, w = pred.shape
-
     pred = pred.view(b, c, -1)
     target = target.view(b, c, -1)
 
@@ -63,10 +65,9 @@ def calc_cc(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> floa
     denominator = torch.sqrt(
         torch.sum(pred_centered ** 2, dim=2)
         * torch.sum(target_centered ** 2, dim=2)
-        + eps
-    )
+    ).clamp_min(eps)
 
-    cc = numerator / (denominator + eps)
+    cc = numerator / denominator
     return torch.mean(cc).item()
 
 
@@ -76,32 +77,26 @@ def calc_ergas(
     scale_ratio: int,
     eps: float = 1e-8,
 ) -> float:
-    pred = pred.detach().float()
-    target = target.detach().float()
+    pred, target = _prepare_metric_pair(pred, target)
 
-    rmse_per_band = torch.sqrt(torch.mean((pred - target) ** 2, dim=(0, 2, 3)) + eps)
-    mean_target = torch.mean(target, dim=(0, 2, 3))
+    rmse_per_band = torch.sqrt(torch.mean((pred - target) ** 2, dim=(0, 2, 3)))
+    mean_target = torch.mean(target, dim=(0, 2, 3)).abs().clamp_min(eps)
 
     ergas = 100.0 / scale_ratio * torch.sqrt(
-        torch.mean((rmse_per_band / (mean_target + eps)) ** 2)
+        torch.mean((rmse_per_band / mean_target) ** 2)
     )
-
     return ergas.item()
 
 
 def calc_ssim_simple(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
-    """
-    简化版SSIM，按全局统计计算。
-    """
-    pred = pred.detach().float()
-    target = target.detach().float()
+    """Simplified global-statistics SSIM in the shared [0, 1] domain."""
+    pred, target = _prepare_metric_pair(pred, target)
 
     c1 = 0.01 ** 2
     c2 = 0.03 ** 2
 
     mu_x = pred.mean()
     mu_y = target.mean()
-
     sigma_x = pred.var(unbiased=False)
     sigma_y = target.var(unbiased=False)
     sigma_xy = ((pred - mu_x) * (target - mu_y)).mean()
@@ -109,7 +104,6 @@ def calc_ssim_simple(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8
     ssim = ((2 * mu_x * mu_y + c1) * (2 * sigma_xy + c2)) / (
         (mu_x ** 2 + mu_y ** 2 + c1) * (sigma_x + sigma_y + c2) + eps
     )
-
     return ssim.item()
 
 
