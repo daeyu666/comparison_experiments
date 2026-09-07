@@ -81,7 +81,7 @@ registered
 translation
 rotation
 global
-glocal smooth non-rigid
+local smooth non-rigid
 global + local
 ```
 
