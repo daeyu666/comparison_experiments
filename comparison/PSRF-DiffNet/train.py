@@ -27,6 +27,7 @@ from common import (  # noqa: E402
 from data_loader import build_datasets  # noqa: E402
 from metrics import calc_metrics  # noqa: E402
 from diffusion import PSRFDiffusion  # noqa: E402
+from autograd_safe import make_autograd_safe  # noqa: E402
 
 
 def parse_args():
@@ -173,6 +174,7 @@ def main():
         linear_start=args.linear_start,
         linear_end=args.linear_end,
     ).to(device)
+    make_autograd_safe(model)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
@@ -207,6 +209,7 @@ def main():
         f"PSRF-DiffNet: dataset={args.dataset}, HSI={info['n_bands']}, "
         f"MSI={info['n_select_bands']}, scale={args.scale_ratio}x, params={params:,}"
     )
+    print("autograd-safe ReLU patch: enabled")
     print(
         f"degradation={args.degradation_mode}; train misalignment={args.train_misalignment_mode} "
         f"translation<=±{args.translation_max_px:g}px rotation<=±{args.rotation_max_deg:g}deg "
