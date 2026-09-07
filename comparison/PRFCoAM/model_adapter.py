@@ -29,8 +29,10 @@ try:
 except Exception as exc:  # pragma: no cover - gives a clearer local setup error
     raise RuntimeError(
         "Failed to import the author's PRFCoAM base implementation. "
-        "The model requires its Mamba/selective-scan CUDA dependencies; "
-        "see comparison/PRFCoAM/README.md."
+        "Its bundled Mamba-1.0.1 Python code requires ABI-compatible "
+        "causal_conv1d_cuda and selective_scan_cuda extensions. "
+        "Run `python comparison/PRFCoAM/env_check.py` and see "
+        "comparison/PRFCoAM/README.md for the compatibility build."
     ) from exc
 
 
