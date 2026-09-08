@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Formal UAFL non-registration training under the shared protocol.
+# UAFL non-registration training under the shared radial translation protocol.
 # GT-HSI and LR-HSI stay fixed; only HR-MSI is translated.
-# Translation is sampled independently per training sample as dx,dy ~ U(-6,6) px.
+# IMPORTANT: d=6 means total Euclidean displacement <= 6 px:
+#   r~U(0,6), theta~U(0,2pi), dx=r*cos(theta), dy=r*sin(theta).
 # This run starts from random initialization (no registered checkpoint warm-start).
 # Validation remains every 20 epochs for PaviaU and best.pth.tar is still updated.
 
