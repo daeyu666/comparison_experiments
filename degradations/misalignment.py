@@ -12,9 +12,20 @@ applied to an all-one image to obtain a soft validity mask.
 All spatial transforms use continuous coordinates and bilinear sampling, so
 sub-pixel misregistration is represented explicitly.
 
-This implementation is intentionally kept consistent with S2Diff's
-``degradations/misalignment.py`` so comparison experiments use exactly the
-same synthetic non-registration definition.
+IMPORTANT TRANSLATION-SEVERITY DEFINITION
+----------------------------------------
+``translation_max_px = d`` means the Euclidean magnitude of the global
+translation is bounded by d pixels:
+
+    r ~ U(0, d), theta ~ U(0, 2*pi)
+    dx = r*cos(theta), dy = r*sin(theta)
+    sqrt(dx^2 + dy^2) = r <= d
+
+This replaces the older independent-axis definition dx,dy~U(-d,d), whose
+actual 2-D displacement could reach sqrt(2)*d.  Keeping the random radius and
+direction normalized also makes paired severity sweeps geometrically clean:
+using the same seed at d=0.5/1/2/... reuses the same normalized radius and
+direction and only scales the displacement magnitude.
 """
 
 from __future__ import annotations
@@ -120,7 +131,13 @@ def generate_smooth_local_displacement(
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    """Generate a smooth Bx2xHxW local displacement field in pixel units."""
+    """Generate a smooth Bx2xHxW local displacement field in pixel units.
+
+    Random displacement vectors are sampled on a coarse control grid, then
+    bicubically interpolated. The final Euclidean displacement magnitude is
+    clipped to ``max_displacement_px`` so the requested severity has a precise
+    geometric meaning.
+    """
     if control_grid_size < 2:
         raise ValueError("control_grid_size must be >= 2")
     max_disp = float(max_displacement_px)
@@ -204,7 +221,18 @@ def sample_misalignment_parameters(
     device: torch.device,
     dtype: torch.dtype,
 ) -> MisalignmentParameters:
-    """Sample one batch of global and local perturbation parameters."""
+    """Sample one batch of global and local perturbation parameters.
+
+    ``translation_max_px=d`` is the *maximum Euclidean translation magnitude*,
+    not an independent x/y bound:
+
+      radius ~ U(0, d)
+      theta  ~ U(0, 2*pi)
+      dx = radius*cos(theta), dy = radius*sin(theta)
+
+    Hence sqrt(dx^2+dy^2) <= d for every sample. Rotation remains
+    U(-rotation_max_deg, rotation_max_deg).
+    """
     tmax = float(translation_max_px)
     rmax = float(rotation_max_deg)
     if tmax < 0.0 or rmax < 0.0:
@@ -216,10 +244,12 @@ def sample_misalignment_parameters(
         generator=generator,
         device="cpu",
         dtype=torch.float32,
-    ) * 2.0 - 1.0
-    dx = (unit[:, 0] * tmax).to(device=device, dtype=dtype)
-    dy = (unit[:, 1] * tmax).to(device=device, dtype=dtype)
-    angle = (unit[:, 2] * rmax).to(device=device, dtype=dtype)
+    )
+    radius = unit[:, 0] * tmax
+    theta = unit[:, 1] * (2.0 * torch.pi)
+    dx = (radius * torch.cos(theta)).to(device=device, dtype=dtype)
+    dy = (radius * torch.sin(theta)).to(device=device, dtype=dtype)
+    angle = ((unit[:, 2] * 2.0 - 1.0) * rmax).to(device=device, dtype=dtype)
 
     local = generate_smooth_local_displacement(
         batch_size,
