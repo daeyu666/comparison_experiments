@@ -102,14 +102,19 @@ global + local
 
 其中非配准只作用于 **HR-MSI**，HR-HSI GT 与 LR-HSI 保持不变。平移采用连续坐标与双线性采样，支持亚像素位移；正 `dx` 表示图像内容向右移动，正 `dy` 表示向下移动。局部非刚性形变由低分辨率控制网格生成并经 bicubic 插值得到连续位移场。
 
-平移灵敏度实验默认采用：
+平移严重度 `d` 统一定义为 **二维欧氏总位移上限**，不再作为 x/y 两个轴的独立上限：
 
 ```text
-dx, dy ~ U(-d, d)
+r ~ U(0, d)
+theta ~ U(0, 2pi)
+dx = r cos(theta)
+dy = r sin(theta)
+sqrt(dx^2 + dy^2) = r <= d
+
 d = 0 / 0.5 / 1 / 2 / 3 / 4 / 6 px
 ```
 
-同一 trial 在不同 `d` 下复用相同的归一化随机方向，以形成 paired sensitivity curve。
+旧定义 `dx,dy ~ U(-d,d)` 会使实际二维位移最大达到 `sqrt(2)*d`，现已废弃。同一 trial 在不同 `d` 下复用相同的归一化半径和方向，以形成严格 paired sensitivity curve。
 
 非配准实验的主指标采用 valid-overlap 口径：
 
