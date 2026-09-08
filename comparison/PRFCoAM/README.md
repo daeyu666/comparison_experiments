@@ -10,11 +10,11 @@ This directory keeps the author's released implementation under `base/` and adds
 comparison/PRFCoAM/
 ├── base/                 # author's released source, preserved
 ├── common.py             # shared benchmark helpers
-├── mamba_compat.py       # Torch-2.6 compatible author four-scan Mamba
+├── mamba_compat.py       # self-contained author four-scan Mamba backend
 ├── model_adapter.py      # dynamic channels/device/backend injection
 ├── train.py              # Phase-A registered reproduction
 ├── smoke_test.py         # 103/4, 16x16 -> 64x64 forward/backward test
-├── env_check.py          # Torch / modern selective-scan diagnosis
+├── env_check.py          # Torch / self-contained scan diagnosis
 ├── checkpoints/
 ├── logs/
 └── outputs/
@@ -50,35 +50,39 @@ The author's PaviaC code hard-codes `102` HSI bands, `4` MSI bands, `40x40` LR-H
 - fixed disjoint `128x128` validation region.
 - dataset-aware validation interval and validation-PSNR early stopping.
 - actual runtime CUDA device replaces the author's hard-coded `cuda:1` spatial-transform device.
-- the released Mamba-1.0.1 fused CUDA ABI is replaced by a Torch-2.6 compatibility backend.
+- the released Mamba-1.0.1 fused CUDA ABI is replaced by a self-contained PyTorch execution backend.
 
 `base/` itself is not edited.
 
-## Torch-2.6 Mamba compatibility backend
+## Self-contained Mamba compatibility backend
 
-The released source was written against Mamba-1.0.1-era CUDA extensions. Its copied Python package directly calls old `causal_conv1d_cuda` / `selective_scan_cuda` interfaces, which are ABI-incompatible with the repository's current Torch 2.6 + cu124 environment.
+The released source directly depends on old `causal_conv1d_cuda` and `selective_scan_cuda` interfaces. On the target Torch 2.6.0 + cu124 environment, both old-source builds and modern prebuilt Mamba wheels can fail with C++/libtorch undefined-symbol errors.
 
-The adaptation does **not** downgrade the training environment. Instead `mamba_compat.py` preserves the author's custom scan logic while replacing only the obsolete fused inner function:
+PRFCoAM therefore no longer imports any installed `mamba_ssm` package. `model_adapter.py` injects `mamba_compat.py` under the module name expected by the author's source, while preserving the released v2/v3 scan logic.
+
+The compatibility backend replaces only the execution kernels:
 
 ```text
 released depthwise causal conv CUDA
     -> native PyTorch grouped causal conv1d
 
-released selective-scan CUDA ABI
-    -> installed Torch-compatible mamba_ssm selective_scan_fn
+released selective_scan_cuda
+    -> native PyTorch parallel affine-prefix selective scan
 ```
 
-This is an execution-backend compatibility change, not a new fusion architecture.
+The selective state update is still the same recurrence used by Mamba:
 
-For the restored Torch-2.6.0 + cu124 environment, install a modern compatible Mamba backend:
+```text
+state_t = exp(delta_t * A) * state_(t-1) + delta_t * B_t * u_t
+```
+
+Instead of iterating over every sequence position in Python, the recurrence is evaluated as an associative affine-prefix scan in approximately `log2(L)` tensor rounds. This keeps the implementation independent of binary extensions without reducing the model to a slow Python 4096-step loop.
+
+No `mamba-ssm` or `causal-conv1d` installation is required for this reproduction. Existing broken installations may be removed without touching PyTorch:
 
 ```bash
-python -m pip install --no-build-isolation \
-  causal-conv1d==1.5.0.post8 \
-  mamba-ssm==2.2.4
+python -m pip uninstall -y mamba-ssm causal-conv1d
 ```
-
-The PRFCoAM adapter itself does not call the causal-conv CUDA kernel; native PyTorch convolution is used. `causal-conv1d` is installed because modern Mamba packages may import it as part of their normal package stack.
 
 Then run:
 
@@ -89,12 +93,11 @@ python comparison/PRFCoAM/env_check.py
 The key end of the output should be:
 
 ```text
-selective_scan_fn import: OK
-selective_scan CUDA forward/backward: OK
+self-contained selective scan numerical check: OK
+self-contained selective scan forward/backward: OK
+external Mamba CUDA extensions required: NO
 PRFCoAM backend status: READY
 ```
-
-Do not use the author's copied `base/mamba_ssm` package as the runtime backend. `model_adapter.py` deliberately loads the modern installed backend first, then injects `mamba_compat.py` under the module name expected by `model_ssm_fuse9_2.py`.
 
 ## Step 1: smoke test
 
@@ -154,4 +157,4 @@ comparison/PRFCoAM/logs/physical/PaviaU/history.csv
 
 The published PRFCoAM data protocol deforms **LR-HSI** while keeping HR-MSI and GT-HSI fixed. The repository-wide S2Diff robustness protocol instead keeps LR-HSI/GT fixed and perturbs **HR-MSI**. Therefore the current `train.py` intentionally uses registered inputs only.
 
-After the registered reproduction is validated, Phase B will adapt the MULAR registration direction to align perturbed HR-MSI toward the fixed HSI/GT frame, while keeping the shared misalignment generator and valid-overlap metrics unchanged.
+After the registered reproduction is validated, Phase B will adapt the registration direction to align perturbed HR-MSI toward the fixed HSI/GT frame, while keeping the shared misalignment generator and valid-overlap metrics unchanged.
