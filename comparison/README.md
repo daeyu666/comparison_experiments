@@ -12,7 +12,17 @@ comparison/
 │   ├── checkpoints/
 │   ├── logs/
 │   └── outputs/
+├── UAFL/
+│   ├── ... source code ...
+│   ├── checkpoints/
+│   ├── logs/
+│   └── outputs/
 ├── HSIFN/
+│   ├── ... source code ...
+│   ├── checkpoints/
+│   ├── logs/
+│   └── outputs/
+├── PRFCoAM/
 │   ├── ... source code ...
 │   ├── checkpoints/
 │   ├── logs/
@@ -165,5 +175,7 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 ## 当前方法
 
 - `EMR-Diff/`：已接入公共 SRF、双退化、独立验证区、dataset-aware validation interval、best checkpoint 与 validation-based early stopping。
-- `HSIFN/`：当前非配准正式对比方法。保留 HSIFN 两级 FlowNet、四尺度参考特征配准、置信掩码与 QRNN3D 融合主干；RGB 入口适配为 IKONOS/WV2 MSI，HR-MSI 对齐至固定 HSI/GT 坐标系；已接入公共 SRF、物理/常规退化、S2Diff 同口径非配准、valid-overlap 指标与 validation-based early stopping。
+- `UAFL/`：当前首选非配准正式对比方法。按 CVPR 2026 UAFL 的 SVD 解混、CFDA、SCACA、SCMF 和 abundance residual 重建主线复现；仅将原 3-band RGB reference 入口动态适配为 IKONOS/WV2 MSI 通道，并用当前 torchvision 的等价 modulated deform-conv 后端替代旧 `mmcv_full` CUDA 执行层。GT-HSI 与 LR-HSI 固定，仅 HR-MSI 施加共享非配准形变；支持公共 physical/gaussian-bicubic、valid-overlap 指标与 validation-based early stopping。
+- `HSIFN/`：保留此前复现实验用于追溯。其官方多级 FlowNet / QRNN3D 结构在共享 64x64 train patch 下会逐级压缩到极小空间尺度，registered sanity 长期停留在约 31 dB，不作为当前正式对比结果。
+- `PRFCoAM/`：保留此前复现实验用于追溯。已完成 Torch-2.6/cu124 Mamba 后端兼容，但其官方配准方向为 LR-HSI -> HR-MSI，且共享协议下 registered 基础融合能力明显低于 S2Diff（physical 约 36.9 dB；gaussian-bicubic 最佳约 39.1 dB），不作为当前首选正式对比方法。
 - `PSRF-DiffNet/`：保留此前复现实验代码用于追溯，但其官方参考坐标方向与当前“仅 HR-MSI 形变”的统一协议不匹配，不作为当前正式非配准对比结果。
