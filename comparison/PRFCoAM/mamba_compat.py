@@ -1,15 +1,16 @@
-"""Torch-2.6 compatible implementation of PRFCoAM's custom four-scan Mamba.
+"""Self-contained PRFCoAM four-scan Mamba compatibility backend.
 
-This keeps the released PRFCoAM scan topology and parameterization, but replaces
-its 2023 fused ``mamba_inner_fn_no_out_proj`` / causal-conv CUDA ABI with:
+The released PRFCoAM code was written against Mamba-1.0.1-era fused CUDA
+extensions. Those binary extensions are ABI-incompatible with the repository's
+Torch-2.6 + cu124 environment on the target machine.  This module therefore
+preserves the released PRFCoAM v2/v3 scan topology and Mamba parameterization,
+but implements both operations needed by the custom block with native PyTorch:
 
-* PyTorch grouped causal conv1d for the short depthwise convolution; and
-* the public ``selective_scan_fn`` from an installed, Torch-compatible
-  ``mamba_ssm`` package for the SSM scan.
+* depthwise causal conv1d via ``torch.nn.functional.conv1d``;
+* selective state-space scan via an equivalent parallel affine-prefix scan.
 
-The goal is ABI compatibility only. PRFCoAM's v2 spectral two-direction scan,
-v3 spatial four-direction scan, attention branches, SSM parameters and output
-projections are preserved.
+No installed ``mamba_ssm``, ``causal_conv1d_cuda`` or ``selective_scan_cuda``
+package is required.  ``base/`` remains untouched.
 """
 
 from __future__ import annotations
@@ -20,14 +21,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-
-try:
-    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
-except Exception as exc:  # pragma: no cover - environment-specific import error
-    raise RuntimeError(
-        "PRFCoAM compatibility mode needs a Torch-compatible mamba_ssm install "
-        "that provides mamba_ssm.ops.selective_scan_interface.selective_scan_fn."
-    ) from exc
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -83,6 +76,122 @@ def _causal_depthwise_conv(
     return F.silu(out[..., :seqlen])
 
 
+def _affine_prefix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Parallel inclusive scan for ``x_t = a_t * x_(t-1) + b_t``.
+
+    ``a`` and ``b`` are B x D x L x N.  An affine transition is represented by
+    the pair (a, b).  Composition is associative:
+
+        (a2, b2) o (a1, b1) = (a2*a1, b2 + a2*b1)
+
+    so a Hillis-Steele prefix scan evaluates every recurrent state in
+    O(log L) tensor rounds rather than a Python loop over all L positions.
+    With zero initial state, the prefix transform's ``b`` component is exactly
+    the selective-scan state at each position.
+    """
+    if a.shape != b.shape or a.ndim != 4:
+        raise ValueError(f"affine scan expects equal BxDxLxN tensors, got {a.shape} and {b.shape}")
+
+    length = a.shape[2]
+    offset = 1
+    while offset < length:
+        a_left = a[:, :, :-offset, :]
+        b_left = b[:, :, :-offset, :]
+        a_right = a[:, :, offset:, :]
+        b_right = b[:, :, offset:, :]
+
+        composed_a = a_right * a_left
+        composed_b = b_right + a_right * b_left
+
+        a = torch.cat((a[:, :, :offset, :], composed_a), dim=2)
+        b = torch.cat((b[:, :, :offset, :], composed_b), dim=2)
+        offset <<= 1
+    return b
+
+
+def selective_scan_torch(
+    u: torch.Tensor,
+    delta: torch.Tensor,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    C: torch.Tensor,
+    D: torch.Tensor | None = None,
+    z: torch.Tensor | None = None,
+    delta_bias: torch.Tensor | None = None,
+    delta_softplus: bool = False,
+    return_last_state: bool = False,
+):
+    """Native-PyTorch equivalent of Mamba's real-valued ``selective_scan_ref``.
+
+    PRFCoAM uses real A and input-dependent B/C tensors of shape B x N x L.
+    The constant and grouped B/C layouts supported by the public Mamba
+    reference function are retained as well.
+    """
+    if u.ndim != 3 or delta.shape != u.shape:
+        raise ValueError(f"u/delta must both be BxDxL, got {u.shape} and {delta.shape}")
+    if A.ndim != 2 or A.shape[0] != u.shape[1]:
+        raise ValueError(f"A must be DxN with D={u.shape[1]}, got {A.shape}")
+    if A.is_complex() or B.is_complex() or C.is_complex():
+        raise NotImplementedError("PRFCoAM compatibility backend only needs real-valued selective scan")
+
+    dtype_in = u.dtype
+    u_f = u.float()
+    delta_f = delta.float()
+    A_f = A.float()
+
+    if delta_bias is not None:
+        delta_f = delta_f + delta_bias.float().unsqueeze(-1)
+    if delta_softplus:
+        delta_f = F.softplus(delta_f)
+
+    batch, dim, _ = u_f.shape
+
+    B_f = B.float()
+    C_f = C.float()
+    if B_f.ndim == 4:
+        if dim % B_f.shape[1] != 0:
+            raise ValueError(f"B groups {B_f.shape[1]} do not divide model dim {dim}")
+        B_f = repeat(B_f, "b g n l -> b (g h) n l", h=dim // B_f.shape[1])
+    if C_f.ndim == 4:
+        if dim % C_f.shape[1] != 0:
+            raise ValueError(f"C groups {C_f.shape[1]} do not divide model dim {dim}")
+        C_f = repeat(C_f, "b g n l -> b (g h) n l", h=dim // C_f.shape[1])
+
+    # Discretized transition and input terms used by the official reference:
+    #   state_t = exp(delta_t * A) * state_(t-1) + delta_t * B_t * u_t
+    deltaA = torch.exp(torch.einsum("bdl,dn->bdln", delta_f, A_f))
+    if B_f.ndim == 2:
+        deltaB_u = torch.einsum("bdl,dn,bdl->bdln", delta_f, B_f, u_f)
+    elif B_f.ndim == 3:
+        deltaB_u = torch.einsum("bdl,bnl,bdl->bdln", delta_f, B_f, u_f)
+    elif B_f.ndim == 4:
+        deltaB_u = torch.einsum("bdl,bdnl,bdl->bdln", delta_f, B_f, u_f)
+    else:
+        raise ValueError(f"unsupported B layout {B.shape}")
+
+    states = _affine_prefix_scan(deltaA, deltaB_u)
+
+    if C_f.ndim == 2:
+        y = torch.einsum("bdln,dn->bdl", states, C_f)
+    elif C_f.ndim == 3:
+        y = torch.einsum("bdln,bnl->bdl", states, C_f)
+    elif C_f.ndim == 4:
+        y = torch.einsum("bdln,bdnl->bdl", states, C_f)
+    else:
+        raise ValueError(f"unsupported C layout {C.shape}")
+
+    out = y
+    if D is not None:
+        out = out + u_f * D.float().view(1, -1, 1)
+    if z is not None:
+        out = out * F.silu(z.float())
+    out = out.to(dtype=dtype_in)
+
+    if return_last_state:
+        return out, states[:, :, -1, :]
+    return out
+
+
 def mamba_inner_fn_no_out_proj_compat(
     xz: torch.Tensor,
     conv1d_weight: torch.Tensor,
@@ -97,13 +206,7 @@ def mamba_inner_fn_no_out_proj_compat(
     delta_bias: torch.Tensor | None = None,
     delta_softplus: bool = True,
 ) -> torch.Tensor:
-    """Equivalent unfused path for the author's mamba_inner_fn_no_out_proj.
-
-    ``xz`` is B x (2*d_inner) x L. The first half is convolved and projected
-    into dt/B/C, then scanned; the second half is the SiLU gate consumed by
-    selective_scan_fn. No final output projection is applied here, matching the
-    author's custom function.
-    """
+    """Unfused equivalent of the author's ``mamba_inner_fn_no_out_proj``."""
     if xz.ndim != 3:
         raise ValueError(f"expected BxCxL xz tensor, got {tuple(xz.shape)}")
     if xz.shape[1] % 2 != 0:
@@ -114,7 +217,7 @@ def mamba_inner_fn_no_out_proj_compat(
         raise ValueError(f"expected depthwise conv weight Dx1xW, got {tuple(conv1d_weight.shape)}")
 
     x = _causal_depthwise_conv(x, conv1d_weight, conv1d_bias)
-    batch, d_inner, seqlen = x.shape
+    batch, _, seqlen = x.shape
     delta_rank = delta_proj_weight.shape[1]
     d_state = A.shape[-1]
 
@@ -129,7 +232,7 @@ def mamba_inner_fn_no_out_proj_compat(
     delta = delta_proj_weight @ x_dbl[:, :delta_rank].t()
     delta = rearrange(delta, "d (b l) -> b d l", b=batch, l=seqlen).contiguous()
 
-    return selective_scan_fn(
+    return selective_scan_torch(
         x,
         delta,
         A,
@@ -144,7 +247,7 @@ def mamba_inner_fn_no_out_proj_compat(
 
 
 class Mamba(nn.Module):
-    """Released PRFCoAM custom Mamba with a modern selective-scan backend."""
+    """Released PRFCoAM custom Mamba with a self-contained PyTorch backend."""
 
     def __init__(
         self,
@@ -377,4 +480,5 @@ __all__ = [
     "SpatialAttentionModule",
     "Mamba",
     "mamba_inner_fn_no_out_proj_compat",
+    "selective_scan_torch",
 ]
