@@ -6,18 +6,17 @@ that are tied to the released PaviaC / old-Mamba environment:
 * HSI channels hard-coded to 102 inside the custom Mamba block;
 * MSI channels hard-coded to 4 inside the same block;
 * module-level CUDA device globals used by the spatial transformer; and
-* the released Mamba-1.0.1 fused CUDA ABI, which is incompatible with the
-  repository's Torch-2.6 environment.
+* the released Mamba-1.0.1 fused CUDA ABI.
 
 The PRFCoAM registration/fusion topology is not changed. The custom Mamba class
-is provided by ``mamba_compat.py`` and still uses the author's v2/v3 scan logic,
-with modern ``selective_scan_fn`` as its CUDA backend.
+is provided by ``mamba_compat.py`` and uses only native PyTorch operators.
+No installed ``mamba_ssm`` package or compiled Mamba CUDA extension is needed.
 """
 
 from __future__ import annotations
 
-import importlib
 import sys
+import types
 from pathlib import Path
 from typing import Tuple
 
@@ -29,18 +28,30 @@ _BASE_DIR = _THIS_DIR / "base"
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
-# IMPORTANT: load the compatibility Mamba before adding base/ to sys.path.
-# Otherwise the released base/mamba_ssm (v1.0.1) shadows the Torch-compatible
-# site-packages mamba_ssm and immediately imports its obsolete CUDA extensions.
+# Load the self-contained compatibility block before base/ is added to sys.path.
+# Then create the minimal module hierarchy expected by the author's import:
+#   from mamba_ssm.modules.mamba_simple_4scan_xiugai import Mamba
+# This deliberately avoids importing either an installed mamba_ssm package or
+# the copied base/mamba_ssm package, both of which try to load incompatible .so
+# files in the target Torch-2.6 environment.
 try:
     import mamba_compat as official_mamba  # type: ignore
-    _modern_mamba_modules = importlib.import_module("mamba_ssm.modules")
+
+    mamba_pkg = types.ModuleType("mamba_ssm")
+    mamba_pkg.__path__ = []  # mark as package
+    modules_pkg = types.ModuleType("mamba_ssm.modules")
+    modules_pkg.__path__ = []
+
+    setattr(mamba_pkg, "modules", modules_pkg)
+    setattr(modules_pkg, "mamba_simple_4scan_xiugai", official_mamba)
+
+    sys.modules["mamba_ssm"] = mamba_pkg
+    sys.modules["mamba_ssm.modules"] = modules_pkg
     sys.modules["mamba_ssm.modules.mamba_simple_4scan_xiugai"] = official_mamba
-    setattr(_modern_mamba_modules, "mamba_simple_4scan_xiugai", official_mamba)
-except Exception as exc:  # pragma: no cover - environment-specific import error
+except Exception as exc:  # pragma: no cover - clearer local setup error
     raise RuntimeError(
-        "Failed to initialize the Torch-compatible PRFCoAM Mamba backend. "
-        "Install a Torch-2.6 compatible mamba_ssm package as documented in "
+        "Failed to initialize the self-contained PRFCoAM Mamba backend. "
+        "The backend only requires PyTorch and einops; see "
         "comparison/PRFCoAM/README.md."
     ) from exc
 
@@ -52,7 +63,7 @@ try:
 except Exception as exc:  # pragma: no cover - clearer local setup error
     raise RuntimeError(
         "Failed to import the author's PRFCoAM base implementation after "
-        "installing the compatibility Mamba backend. See "
+        "injecting the self-contained Mamba backend. See "
         "comparison/PRFCoAM/README.md."
     ) from exc
 
