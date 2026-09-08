@@ -1,16 +1,22 @@
 """Minimal adapter around the author's PRFCoAM implementation.
 
-The original `base/` code is kept untouched. This adapter only fixes assumptions
-that are tied to the author's PaviaC setup:
-  * HSI channels hard-coded to 102 inside the custom Mamba block;
-  * MSI channels hard-coded to 4 inside the same block;
-  * module-level CUDA device globals used by the spatial transformer.
+The original ``base/`` code is kept untouched. This adapter fixes assumptions
+that are tied to the released PaviaC / old-Mamba environment:
 
-It does not change the PRFCoAM registration/fusion topology.
+* HSI channels hard-coded to 102 inside the custom Mamba block;
+* MSI channels hard-coded to 4 inside the same block;
+* module-level CUDA device globals used by the spatial transformer; and
+* the released Mamba-1.0.1 fused CUDA ABI, which is incompatible with the
+  repository's Torch-2.6 environment.
+
+The PRFCoAM registration/fusion topology is not changed. The custom Mamba class
+is provided by ``mamba_compat.py`` and still uses the author's v2/v3 scan logic,
+with modern ``selective_scan_fn`` as its CUDA backend.
 """
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 from typing import Tuple
@@ -20,19 +26,34 @@ from torch import nn
 
 _THIS_DIR = Path(__file__).resolve().parent
 _BASE_DIR = _THIS_DIR / "base"
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
+
+# IMPORTANT: load the compatibility Mamba before adding base/ to sys.path.
+# Otherwise the released base/mamba_ssm (v1.0.1) shadows the Torch-compatible
+# site-packages mamba_ssm and immediately imports its obsolete CUDA extensions.
+try:
+    import mamba_compat as official_mamba  # type: ignore
+    _modern_mamba_modules = importlib.import_module("mamba_ssm.modules")
+    sys.modules["mamba_ssm.modules.mamba_simple_4scan_xiugai"] = official_mamba
+    setattr(_modern_mamba_modules, "mamba_simple_4scan_xiugai", official_mamba)
+except Exception as exc:  # pragma: no cover - environment-specific import error
+    raise RuntimeError(
+        "Failed to initialize the Torch-compatible PRFCoAM Mamba backend. "
+        "Install a Torch-2.6 compatible mamba_ssm package as documented in "
+        "comparison/PRFCoAM/README.md."
+    ) from exc
+
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
 try:
     import model_ssm_fuse9_2 as official_model  # type: ignore
-    from mamba_ssm.modules import mamba_simple_4scan_xiugai as official_mamba  # type: ignore
-except Exception as exc:  # pragma: no cover - gives a clearer local setup error
+except Exception as exc:  # pragma: no cover - clearer local setup error
     raise RuntimeError(
-        "Failed to import the author's PRFCoAM base implementation. "
-        "Its bundled Mamba-1.0.1 Python code requires ABI-compatible "
-        "causal_conv1d_cuda and selective_scan_cuda extensions. "
-        "Run `python comparison/PRFCoAM/env_check.py` and see "
-        "comparison/PRFCoAM/README.md for the compatibility build."
+        "Failed to import the author's PRFCoAM base implementation after "
+        "installing the compatibility Mamba backend. See "
+        "comparison/PRFCoAM/README.md."
     ) from exc
 
 
@@ -50,12 +71,9 @@ def _patch_mamba_channels(model: nn.Module, hsi_channels: int, msi_channels: int
             continue
         patched += 1
         if module.bimamba_type == "v2":
-            # v2 scans 2x2 spatial patches along the spectral dimension. The
-            # author's ChannelAttentionModule was constructed for exactly 102 bands.
             module.Cin = int(hsi_channels)
             module.ca = official_mamba.ChannelAttentionModule(int(hsi_channels))
         elif module.bimamba_type == "v3":
-            # v3 is the spatial MSI scan and reshapes its output with Cout.
             module.Cout = int(msi_channels)
             module.sa = official_mamba.SpatialAttentionModule()
     return patched
@@ -70,9 +88,6 @@ def build_prfcoam(
     if int(hsi_channels) < 1 or int(msi_channels) < 1:
         raise ValueError("channel counts must be positive")
 
-    # SpatialTransformation in the author code reads this module-global variable
-    # every forward pass. Point it at the actual benchmark device rather than
-    # the hard-coded cuda:1 used in the released code.
     official_model.device = device
     official_mamba.device = device
 
