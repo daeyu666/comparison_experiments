@@ -35,14 +35,24 @@ def main():
 
     outputs = model(lr_hsi, hr_msi)
     pred, pred_msi, pred_lrms, reg_lrhs, rg1, rg2 = unpack_outputs(outputs)
+
+    # Author Net output geometry for a 16 -> 64 x4 input pair:
+    # HRHS             : B x HSI x 64 x 64
+    # HRHS_HRMS        : B x MSI x 64 x 64
+    # HRHS_LRHS_2      : B x MSI x 32 x 32   (one BP downsampling)
+    # LRHS_LRMS_RG_2   : B x HSI x 32 x 32   (second registration stage)
+    # RG_1 / RG_2      : B x H x W x 2       (author returns channels-last flow)
     assert pred.shape == gt.shape, (pred.shape, gt.shape)
     assert pred_msi.shape == hr_msi.shape, (pred_msi.shape, hr_msi.shape)
-    assert pred_lrms.shape[-2:] == lr_hsi.shape[-2:]
-    assert reg_lrhs.shape == lr_hsi.shape
-    assert rg1.shape[1] == 2 and rg2.shape[1] == 2
+    assert pred_lrms.shape == (1, 4, 32, 32), tuple(pred_lrms.shape)
+    assert reg_lrhs.shape == (1, 103, 32, 32), tuple(reg_lrhs.shape)
+    assert rg1.shape == (1, 16, 16, 2), tuple(rg1.shape)
+    assert rg2.shape == (1, 32, 32, 2), tuple(rg2.shape)
 
     recon = F.l1_loss(pred, gt)
     sensor = F.l1_loss(pred_msi, hr_msi)
+    # Keep the released training loss exactly: the author's smoothing function
+    # is applied directly to RG tensors in their returned BHWC layout.
     smooth = 0.5 * (displacement_smoothness(rg1) + displacement_smoothness(rg2))
     loss = 1.1 * recon + 0.1 * sensor + 0.01 * smooth
     loss.backward()
@@ -56,10 +66,12 @@ def main():
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("PRFCoAM smoke test: PASS")
     print(f"pred={tuple(pred.shape)} pred_msi={tuple(pred_msi.shape)}")
+    print(f"pred_lrms={tuple(pred_lrms.shape)} reg_lrhs={tuple(reg_lrhs.shape)}")
+    print(f"RG1={tuple(rg1.shape)} RG2={tuple(rg2.shape)}")
     print(f"loss={loss.item():.6f} trainable_params={params:,}")
     print(
-        f"RG1_mean={torch.linalg.vector_norm(rg1, dim=1).mean().item():.4f}px "
-        f"RG2_mean={torch.linalg.vector_norm(rg2, dim=1).mean().item():.4f}px"
+        f"RG1_mean={torch.linalg.vector_norm(rg1, dim=-1).mean().item():.4f}px "
+        f"RG2_mean={torch.linalg.vector_norm(rg2, dim=-1).mean().item():.4f}px"
     )
 
 
