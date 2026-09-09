@@ -6,6 +6,8 @@ set -euo pipefail
 #   r~U(0,4), theta~U(0,2pi), dx=r*cos(theta), dy=r*sin(theta), |shift|<=4 px.
 # HR-MSI is warped on a larger parent then center-cropped to the 64x64 target.
 # For d=4 the context launcher uses margin=ceil(d)+2=6 px (76x76 parent).
+# Resume model + AdamW state from d=2, but reset best-PSNR tracking because the
+# validation distribution has changed to a harder d=4 stage.
 
 D2_BEST="comparison/UAFL/checkpoints/physical_translation_d2_context/PaviaU/best.pth.tar"
 
@@ -14,7 +16,7 @@ if [[ ! -f "${D2_BEST}" ]]; then
   exit 1
 fi
 
-python comparison/UAFL/train_context_misalignment.py \
+UAFL_RESET_RESUME_BEST=1 python comparison/UAFL/train_context_misalignment.py \
   --dataset PaviaU \
   --degradation_mode physical \
   --train_misalignment_mode translation \
