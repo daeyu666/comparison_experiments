@@ -1,18 +1,19 @@
 """UAFL non-registration training with warp-before-crop HR-MSI context.
 
 The normal shared benchmark keeps 64x64 train patches and 128x128 validation/test
-regions.  For misalignment training only, this entrypoint gives each train patch
+regions. For misalignment training only, this entrypoint gives each train patch
 a larger HR parent context, generates the MSI on that parent, applies the shared
 misalignment warp there, and center-crops the warped MSI back to 64x64.
 
 This removes artificial zero-padding caused by warping an already-cropped 64x64
-MSI.  GT-HSI and LR-HSI remain the original 64x64 target.  Context coordinates
+MSI. GT-HSI and LR-HSI remain the original 64x64 target. Context coordinates
 that would touch validation/test regions are excluded to preserve the spatial
 split.
 """
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -31,16 +32,18 @@ from srf_utils import hsi_to_msi_numpy
 
 def _cli_float(name: str, default: float) -> float:
     flag = f"--{name}"
-    for i, token in enumerate(sys.argv[1:]):
-        if token == flag and i + 2 <= len(sys.argv[1:]):
-            return float(sys.argv[i + 2])
-        if token.startswith(flag + "="):
-            return float(token.split("=", 1)[1])
-    return float(default)
+    argv = sys.argv[1:]
+    value = float(default)
+    for i, token in enumerate(argv):
+        if token == flag and i + 1 < len(argv):
+            value = float(argv[i + 1])
+        elif token.startswith(flag + "="):
+            value = float(token.split("=", 1)[1])
+    return value
 
 
 def _context_margin() -> int:
-    # Current formal run is translation-only.  Keep enough extra support for
+    # Current formal run is translation-only. Keep enough extra support for
     # bilinear sampling: ceil(d) pixels plus a 2-pixel interpolation guard.
     d = _cli_float("translation_max_px", 0.0)
     return int(math.ceil(max(d, 0.0))) + 2 if d > 0.0 else 0
@@ -122,7 +125,7 @@ class ContextHSIHSRDataset(OriginalDataset):
 
         return {
             "lr_hsi": shared_data.hsi_to_tensor(lr_hsi),
-            # Deliberately return the larger parent under the normal key.  The
+            # Deliberately return the larger parent under the normal key. The
             # patched prepare_reference below warps it then crops to p x p.
             "hr_msi": shared_data.hsi_to_tensor(hr_msi_parent),
             "gt": shared_data.hsi_to_tensor(gt),
@@ -137,6 +140,7 @@ shared_data.HSIHSRDataset = ContextHSIHSRDataset
 import train as uafl_train  # noqa: E402
 
 _original_prepare_reference = uafl_train.prepare_reference
+_original_load_resume = uafl_train.load_resume
 
 
 def _center_crop(x: torch.Tensor, size: int) -> torch.Tensor:
@@ -153,7 +157,7 @@ def _center_crop(x: torch.Tensor, size: int) -> torch.Tensor:
 def prepare_reference_warp_before_crop(hr_msi, args, generator=None):
     ref, valid = _original_prepare_reference(hr_msi, args, generator)
     expected_parent = int(args.patch_size) + 2 * CONTEXT_MARGIN
-    # Validation/test keep their original 128x128 samples.  Crop only the train
+    # Validation/test keep their original 128x128 samples. Crop only the train
     # parent whose size matches the context construction above.
     if CONTEXT_MARGIN > 0 and tuple(hr_msi.shape[-2:]) == (expected_parent, expected_parent):
         ref = _center_crop(ref, int(args.patch_size))
@@ -161,7 +165,19 @@ def prepare_reference_warp_before_crop(hr_msi, args, generator=None):
     return ref, valid
 
 
+def load_resume_for_curriculum(model, optimizer, path, device):
+    start, best = _original_load_resume(model, optimizer, path, device)
+    if path and os.environ.get("UAFL_RESET_RESUME_BEST", "0") == "1":
+        print(
+            "Curriculum stage changed: keeping resumed model/AdamW/epoch but "
+            f"resetting best_PSNR from {best:.4f} to -inf for the new d."
+        )
+        best = float("-inf")
+    return start, best
+
+
 uafl_train.prepare_reference = prepare_reference_warp_before_crop
+uafl_train.load_resume = load_resume_for_curriculum
 
 
 if __name__ == "__main__":
