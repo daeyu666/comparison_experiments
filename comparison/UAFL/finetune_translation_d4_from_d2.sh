@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Curriculum UAFL non-registration fine-tuning: context d=2 -> context d=4.
-# Translation severity uses the shared Euclidean-radius definition:
-#   r~U(0,4), theta~U(0,2pi), dx=r*cos(theta), dy=r*sin(theta), |shift|<=4 px.
-# HR-MSI is warped on a larger parent then center-cropped to the 64x64 target.
-# For d=4 the context launcher uses margin=ceil(d)+2=6 px (76x76 parent).
-# Resume model + AdamW state from d=2, but reset best-PSNR tracking because the
-# validation distribution has changed to a harder d=4 stage.
+# Curriculum UAFL non-registration fine-tuning: radial d=2 -> radial d=4.
+# Train patch remains 64x64; only HR-MSI is warped.
+# d=4 means sqrt(dx^2+dy^2) <= 4 px:
+#   r~U(0,4), theta~U(0,2pi), dx=r*cos(theta), dy=r*sin(theta).
+# Resume model + AdamW + epoch from the d=2 BEST checkpoint, but reset only
+# best_psnr because validation now uses the harder d=4 distribution.
 
-D2_BEST="comparison/UAFL/checkpoints/physical_translation_d2_context/PaviaU/best.pth.tar"
+D2_BEST="comparison/UAFL/checkpoints/physical_translation_d2/PaviaU/best.pth.tar"
+D4_DIR="comparison/UAFL/checkpoints/physical_translation_d4_ft_d2/PaviaU"
+D4_LOG="comparison/UAFL/logs/physical_translation_d4_ft_d2/PaviaU"
+D4_INIT="${D4_DIR}/resume_d2_reset_best.pth.tar"
 
 if [[ ! -f "${D2_BEST}" ]]; then
-  echo "Missing context d=2 best checkpoint: ${D2_BEST}" >&2
+  echo "Missing d=2 best checkpoint: ${D2_BEST}" >&2
   exit 1
 fi
 
-UAFL_RESET_RESUME_BEST=1 python comparison/UAFL/train_context_misalignment.py \
+mkdir -p "${D4_DIR}" "${D4_LOG}"
+python - "${D2_BEST}" "${D4_INIT}" <<'PY'
+import sys
+import torch
+src, dst = sys.argv[1], sys.argv[2]
+ckpt = torch.load(src, map_location="cpu")
+if not isinstance(ckpt, dict):
+    raise TypeError("Expected a UAFL checkpoint dictionary")
+old = ckpt.get("best_psnr", None)
+ckpt["best_psnr"] = float("-inf")
+torch.save(ckpt, dst)
+print(f"Prepared d=4 curriculum resume: {src} -> {dst}; old best_psnr={old}, new=-inf")
+PY
+
+python comparison/UAFL/train.py \
   --dataset PaviaU \
   --degradation_mode physical \
   --train_misalignment_mode translation \
@@ -26,7 +42,7 @@ UAFL_RESET_RESUME_BEST=1 python comparison/UAFL/train_context_misalignment.py \
   --lr 1e-5 \
   --weight_decay 5e-5 \
   --early_stop_patience 999999 \
-  --checkpoint_dir comparison/UAFL/checkpoints/physical_translation_d4_context_ft_d2/PaviaU \
-  --log_dir comparison/UAFL/logs/physical_translation_d4_context_ft_d2/PaviaU \
-  --resume "${D2_BEST}" \
+  --checkpoint_dir "${D4_DIR}" \
+  --log_dir "${D4_LOG}" \
+  --resume "${D4_INIT}" \
   "$@"
