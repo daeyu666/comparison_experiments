@@ -24,7 +24,7 @@ import glob
 import os
 import random
 import re
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -105,7 +105,7 @@ def read_hsi_mat(file_path: str, candidate_keys: Sequence[str]) -> np.ndarray:
     raise RuntimeError(f"No valid 3-D HSI array found in {file_path}")
 
 
-def fix_hsi_shape(img: np.ndarray, expected_bands: int | None = None) -> np.ndarray:
+def fix_hsi_shape(img: np.ndarray, expected_bands: Optional[int] = None) -> np.ndarray:
     img = np.asarray(img).squeeze()
     if img.ndim != 3:
         raise ValueError(f"HSI data must be 3-D, got {img.shape}")
