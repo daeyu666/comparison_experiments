@@ -145,7 +145,7 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 - CAVE官方Columbia数据库：
   https://cave.cs.columbia.edu/repository/Multispectral
 - Botswana Hyperion（UPV/EHU公开MATLAB数据）：
-  https://www.ehu.eus/ccwintco/index.php?title=Hyperspectral_Remote_Sensing_Scenes
+  http://www.ehu.eus/ccwintco/uploads/7/72/Botswana.mat
 - Augsburg MDAS官方数据DOI：
   https://doi.org/10.14459/2022mp1657312
   （landing page: https://mediatum.ub.tum.de/1657312）
