@@ -78,6 +78,9 @@ physical:
 | PaviaU | IKONOS Blue / Green / Red / NIR SRF | 4 |
 | Houston13 | WorldView-2 all8 SRF | 8 |
 | Chikusei | WorldView-2 all8 SRF | 8 |
+| CAVE | Nikon D700 RGB SRF | 3 |
+| Botswana | EO-1 ALI multispectral SRF | 8 |
+| Augsburg | Sentinel-2A B2/B3/B4/B8 SRF V4.0 | 4 |
 
 无论选择 `gaussian_bicubic` 还是 `physical`，上述 MSI 协议都不得改变。
 
@@ -125,16 +128,22 @@ PSNR_valid / SAM_valid
 
 完整图像 PSNR / SAM / RMSE / ERGAS / SSIM / CC 作为辅助结果保留。
 
-### Train / validation / test 空间划分
+### Train / validation / test 数据划分
 
-```text
-train patch       = 64x64
-train stride      = 32
-validation region = fixed 128x128 region disjoint from test
-final test region = center 128x128
-```
+正式方法统一读取仓库根目录 `data/splits/*.json`；不得在方法子目录内重新
+定义另一套split。
 
-训练 patch 必须同时避开验证区和最终测试区。训练过程中只允许访问训练集和验证集；最终测试区不得用于选择 epoch、调参或 early stopping。
+| Dataset | Validation | Final test |
+|---|---|---|
+| PaviaU | top-left 128x128 | center 128x128 |
+| Houston13 | top-left 128x128 | center 128x128 |
+| Chikusei | centered 2304x2048中的rows 128:256，16个128x128 | rows 0:128，16个128x128 |
+| CAVE | 20-scene development pool中的4个固定validation scenes | 12个固定完整512x512 scenes |
+| Botswana | top-left 128x128 | center 128x128 |
+| Augsburg synthetic x4 | MDAS official deep_valid region | MDAS official sub_area_1 |
+
+训练patch默认为64x64、stride32，并与validation/test隔离。训练过程中只允许
+访问train/validation；最终test不得用于选择epoch、调参或early stopping。
 
 ### Early stopping 与验证频率
 
