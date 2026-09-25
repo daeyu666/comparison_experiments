@@ -104,6 +104,24 @@ def get_dataset_configs():
             mat_keys=["chikusei", "Chikusei", "img", "data"],
             n_select_bands=8,
         ),
+        "CAVE": DatasetConfig(
+            name="CAVE",
+            file_name="CAVE",
+            mat_keys=[],
+            n_select_bands=3,
+        ),
+        "Botswana": DatasetConfig(
+            name="Botswana",
+            file_name="Botswana.mat",
+            mat_keys=["Botswana", "botswana", "img", "data"],
+            n_select_bands=8,
+        ),
+        "Augsburg": DatasetConfig(
+            name="Augsburg",
+            file_name="Augsburg",
+            mat_keys=[],
+            n_select_bands=4,
+        ),
     }
 
 
@@ -165,8 +183,8 @@ def parse_args(argv: Optional[List[str]] = None):
         "--srf_band_set",
         type=str,
         default="auto",
-        choices=["auto", "ikonos4", "wv2_visible5", "wv2_visible6", "wv2_all8"],
-        help="auto: PaviaU 使用 IKONOS4；Houston13/Chikusei 使用 WV2 all8。",
+        choices=["auto", "ikonos4", "wv2_visible5", "wv2_visible6", "wv2_all8", "nikon_d700", "eo1_ali8", "s2a_native10_4"],
+        help="auto: 按固定数据集传感器协议解析；新增数据集分别使用 Nikon D700 / EO-1 ALI / Sentinel-2A。",
     )
 
     parser.add_argument("--epochs", type=int, default=300)
