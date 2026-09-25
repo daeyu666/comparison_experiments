@@ -1,5 +1,6 @@
 {
-  "dataset": "PaviaU",
+  "dataset": "Houston13",
+  "sensor_scene": "Houston2013",
   "protocol": "center128",
   "test": {
     "type": "center",
