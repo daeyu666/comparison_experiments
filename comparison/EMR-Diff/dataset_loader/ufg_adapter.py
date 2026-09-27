@@ -15,34 +15,17 @@ EXPECTED_MSI_CHANNELS = {
     "PaviaU": 4,
     "Houston13": 8,
     "Chikusei": 8,
+    "CAVE": 3,
+    "Botswana": 8,
+    "Augsburg": 4,
 }
 
 
 def _resolve_sensor_paths(dataset):
     """Resolve the fixed sensor protocol used by every comparison experiment."""
-    if dataset == "PaviaU":
-        srf_band_set = "ikonos4"
-        srf_path = os.path.join(
-            REPO_ROOT, "data", "srf", "ikonos_relative_spectral_response.csv"
-        )
-        wavelength_path = os.path.join(
-            REPO_ROOT, "data", "wavelengths", "PaviaU_nominal_430_860.txt"
-        )
-    elif dataset in ("Houston13", "Chikusei"):
-        srf_band_set = "wv2_all8"
-        srf_path = os.path.join(
-            REPO_ROOT,
-            "data",
-            "srf",
-            "wv2_relative_spectral_response_data_for_i.atcorr.csv",
-        )
-        wavelength_path = os.path.join(
-            REPO_ROOT, "data", "wavelengths", f"{dataset}.txt"
-        )
-    else:
-        raise ValueError(f"Unsupported comparison dataset: {dataset}")
-
-    return srf_band_set, srf_path, wavelength_path
+    from srf_utils import sensor_protocol
+    p = sensor_protocol(dataset)
+    return "auto", p["srf_path"], p["wavelength_path"] or ""
 
 
 def build_ufg_loaders(configs):
@@ -72,7 +55,7 @@ def build_ufg_loaders(configs):
     cfg.scale_ratio = int(configs.diffusion.params.get("sf", 4))
 
     cfg.degradation_mode = str(
-        configs.data.get("degradation_mode", "gaussian_bicubic")
+        configs.data.get("degradation_mode", "physical")
     )
     cfg.degradation_sigma = float(configs.data.get("degradation_sigma", 2.0))
     cfg.degradation_kernel_size = int(

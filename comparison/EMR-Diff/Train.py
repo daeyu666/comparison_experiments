@@ -11,6 +11,9 @@ DEFAULT_VALIDATION_INTERVALS = {
     "PaviaU": 20,
     "Houston13": 10,
     "Chikusei": 5,
+    "CAVE": 5,
+    "Botswana": 10,
+    "Augsburg": 5,
 }
 
 
@@ -21,11 +24,11 @@ def parse_args():
     parser.add_argument(
         "--dataset",
         default="PaviaU",
-        choices=["PaviaU", "Houston13", "Chikusei"],
+        choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"],
     )
     parser.add_argument(
         "--degradation_mode",
-        default="gaussian_bicubic",
+        default="physical",
         choices=["gaussian_bicubic", "physical"],
         help="Switch LR-HSI observation between ordinary and physical degradation.",
     )

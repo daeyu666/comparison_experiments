@@ -42,7 +42,7 @@ from model_adapter import (  # noqa: E402
 
 def parse_args():
     p = argparse.ArgumentParser(description="PRFCoAM registered reproduction")
-    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei"])
+    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"])
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--image_size", type=int, default=128)
     p.add_argument("--patch_size", type=int, default=64)

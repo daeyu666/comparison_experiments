@@ -39,7 +39,7 @@ from model import HSIFN  # noqa: E402
 
 def parse_args():
     p = argparse.ArgumentParser(description="HSIFN misalignment evaluation")
-    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei"])
+    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"])
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--image_size", type=int, default=128)
     p.add_argument("--patch_size", type=int, default=64)
@@ -152,6 +152,8 @@ def main():
     _, val_set, test_set, info = build_datasets(cfg, include_validation=True)
     dataset = val_set if args.split == "validation" else test_set
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
+    if len(loader) != 1:
+        raise ValueError("This legacy misalignment visualization expects one patch; multi-sample benchmark scoring must evaluate the complete test split")
     batch = next(iter(loader))
     device = resolve_device(args.device)
     model = _load_model(args, info, device)

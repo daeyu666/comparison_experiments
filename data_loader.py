@@ -99,7 +99,12 @@ def read_hsi_mat(file_path: str, candidate_keys: Sequence[str]) -> np.ndarray:
         with h5py.File(file_path, "r") as f:
             for key in list(candidate_keys) + list(f.keys()):
                 if key in f:
-                    arr = np.asarray(f[key]).squeeze()
+                    obj = f[key]
+                    if not isinstance(obj, h5py.Dataset):
+                        continue
+                    arr = np.asarray(obj).squeeze()
+                    if arr.ndim == 3 and "MATLAB_class" in obj.attrs:
+                        arr = arr.transpose(2, 1, 0)
                     if arr.ndim == 3:
                         return fix_hsi_shape(arr)
     raise RuntimeError(f"No valid 3-D HSI array found in {file_path}")
@@ -145,7 +150,7 @@ def tensor_to_hsi(x: torch.Tensor) -> np.ndarray:
 
 
 def build_hsi_degradation(cfg):
-    mode = getattr(cfg, "degradation_mode", "gaussian_bicubic")
+    mode = getattr(cfg, "degradation_mode", "physical")
     if mode == "gaussian_bicubic":
         return build_degradation(
             mode,
@@ -314,6 +319,29 @@ def _find_cave_scene_dirs(root: str) -> Dict[str, str]:
     return mapping
 
 
+def _read_cave_band(path: str) -> np.ndarray:
+    """Read scalar reflectance while preserving PNG bit depth."""
+    from PIL import Image
+    with open(path, "rb") as handle:
+        header = handle.read(29)
+    if header[:8] != b"\x89PNG\r\n\x1a\n" or header[24] not in (8, 16):
+        raise ValueError(f"Unsupported CAVE PNG: {path}")
+    bit_depth = header[24]
+    with Image.open(path) as image:
+        arr = np.asarray(image)
+    if arr.ndim == 3:
+        if bit_depth != 8 or arr.shape[2] not in (3, 4):
+            raise ValueError(f"Unsupported multi-channel CAVE band: {path}")
+        if not (np.array_equal(arr[..., 0], arr[..., 1]) and np.array_equal(arr[..., 1], arr[..., 2])):
+            raise ValueError(f"CAVE spectral band is not replicated grayscale: {path}")
+        if arr.shape[2] == 4 and not np.all(arr[..., 3] == 255):
+            raise ValueError(f"CAVE spectral band has non-opaque alpha: {path}")
+        arr = arr[..., 0]
+    if arr.ndim != 2:
+        raise ValueError(f"Invalid CAVE band shape {arr.shape}: {path}")
+    return arr.astype(np.float32) / float((1 << bit_depth) - 1)
+
+
 @functools.lru_cache(maxsize=4)
 def _load_cave_scene(scene_dir: str) -> np.ndarray:
     try:
@@ -326,10 +354,10 @@ def _load_cave_scene(scene_dir: str) -> np.ndarray:
         m += glob.glob(os.path.join(scene_dir, f"*_ms_{i:02d}.PNG"))
         if not m:
             raise FileNotFoundError(f"Missing CAVE band {i:02d} in {scene_dir}")
-        bands.append(np.asarray(Image.open(sorted(m)[0]), dtype=np.float32))
+        bands.append(_read_cave_band(sorted(m)[0]))
     cube = np.stack(bands, axis=2)
-    if cube.max() > 1:
-        cube /= 65535.0
+    if cube.shape != (512, 512, 31):
+        raise ValueError(f"Unexpected CAVE shape {cube.shape}: {scene_dir}")
     return np.clip(cube, 0, 1).astype(np.float32)
 
 
@@ -397,6 +425,8 @@ def _read_tiff_cube(path: str) -> np.ndarray:
     except ImportError as exc:
         raise ImportError("Augsburg loading requires tifffile") from exc
     arr = fix_hsi_shape(tifffile.imread(path), expected_bands=242)
+    if arr.shape[2] != 242 or not np.isfinite(arr).all():
+        raise ValueError(f"Invalid Augsburg cube: {path}, shape={arr.shape}")
     if np.nanmax(arr) > 2:
         arr = arr / 10000.0
     return np.clip(np.nan_to_num(arr), 0, 1).astype(np.float32)
@@ -480,9 +510,10 @@ def _make_loader(dataset, batch_size, shuffle, num_workers, drop_last):
 
 def _standard_single_scene(cfg, img, degradation_operator):
     img = normalize_hsi(img)
-    img = crop_to_scale(img, cfg.scale_ratio)
     if cfg.dataset == "Chikusei":
         img = _center_crop(img, 2304, 2048)
+    else:
+        img = crop_to_scale(img, cfg.scale_ratio)
     weights, names, wavelengths, wavelength_path, profile, n_select = _make_srf(
         cfg, img.shape[2]
     )

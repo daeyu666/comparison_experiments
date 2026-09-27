@@ -32,7 +32,7 @@ DEFAULT_SHIFTS = [0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0]
 def parse_args():
     p = argparse.ArgumentParser(description="PSRF-DiffNet valid-overlap misalignment sweep")
     p.add_argument("--checkpoint", required=True)
-    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei"])
+    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"])
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--image_size", type=int, default=128)
     p.add_argument("--patch_size", type=int, default=64)

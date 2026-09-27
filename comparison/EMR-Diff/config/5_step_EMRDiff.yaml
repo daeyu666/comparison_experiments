@@ -33,7 +33,7 @@ data:
   test_size: 128
 
   # Shared comparison degradation switch.
-  degradation_mode: gaussian_bicubic
+  degradation_mode: physical
   degradation_sigma: 2.0
   degradation_kernel_size: 5
   mtf_nyquist: 0.2

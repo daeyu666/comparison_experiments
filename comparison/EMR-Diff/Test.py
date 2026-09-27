@@ -14,11 +14,11 @@ def parse_args():
     parser.add_argument(
         "--dataset",
         default="PaviaU",
-        choices=["PaviaU", "Houston13", "Chikusei"],
+        choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"],
     )
     parser.add_argument(
         "--degradation_mode",
-        default="gaussian_bicubic",
+        default="physical",
         choices=["gaussian_bicubic", "physical"],
         help="Must match the degradation mode used to train the checkpoint.",
     )

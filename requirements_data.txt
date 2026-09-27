@@ -6,3 +6,6 @@ h5py
 hdf5storage
 Pillow
 tifffile
+
+# Geographic split audit
+rasterio

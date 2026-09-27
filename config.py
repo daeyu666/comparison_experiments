@@ -40,7 +40,7 @@ class TrainConfig:
     # --- LR-HSI 退化模式 ---
     # gaussian_bicubic: 5x5 Gaussian(sigma=2) + bicubic x4
     # physical: MTF@Nyquist -> Gaussian optical PSF -> detector area integration -> sampling
-    degradation_mode: str = "gaussian_bicubic"
+    degradation_mode: str = "physical"
     degradation_sigma: float = 2.0
     degradation_kernel_size: int = 5
     mtf_nyquist: float = 0.2
@@ -150,7 +150,7 @@ def parse_args(argv: Optional[List[str]] = None):
     parser.add_argument(
         "--degradation_mode",
         type=str,
-        default="gaussian_bicubic",
+        default="physical",
         choices=["gaussian_bicubic", "physical"],
         help="所有对比实验统一支持常规退化与物理退化切换。",
     )
