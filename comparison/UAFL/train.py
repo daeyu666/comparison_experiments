@@ -69,7 +69,7 @@ def parse_args():
     p.add_argument(
         "--srf_band_set",
         default="auto",
-        choices=["auto", "ikonos4", "wv2_visible5", "wv2_visible6", "wv2_all8"],
+        choices=["auto", "ikonos4", "wv2_visible5", "wv2_visible6", "wv2_all8", "nikon_d700", "eo1_ali8", "s2a_native10_4"],
     )
 
     # Paper: AdamW, lr 1e-5, wd 5e-5, batch 1, L1; 150 ICVL / 300 REAL.
@@ -283,7 +283,8 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
 
     validation_interval = args.validation_interval or {
-        "PaviaU": 20, "Houston13": 10, "Chikusei": 5
+        "PaviaU": 20, "Houston13": 10, "Chikusei": 5,
+        "CAVE": 20, "Botswana": 20, "Augsburg": 20,
     }[args.dataset]
 
     with (ckpt_dir / "run_protocol.txt").open("w", encoding="utf-8") as f:
