@@ -5,6 +5,6 @@
   "validation_scenes": ["feathers","flowers","glass_tiles","hairs"],
   "test_scenes": ["jelly_beans","oil_painting","paints","photo_and_face","pompoms","real_and_fake_apples","real_and_fake_peppers","sponges","stuffed_toys","superballs","thread_spools","watercolors"],
   "train": {"patch": [64, 64], "stride": [32, 32]},
-  "validation": {"unit": "full_scene", "size": [512, 512]},
-  "test": {"unit": "full_scene", "size": [512, 512]}
+  "validation": {"unit": "nonoverlap_patch", "source_size": [512, 512], "patch": [128, 128], "stride": [128, 128], "patches_per_scene": 16},
+  "test": {"unit": "nonoverlap_patch", "source_size": [512, 512], "patch": [128, 128], "stride": [128, 128], "patches_per_scene": 16}
 }
