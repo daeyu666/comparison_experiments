@@ -553,15 +553,17 @@ def _build_cave(cfg, degradation_operator):
         srf_weights=weights, degradation_operator=degradation_operator,
     )
     train = CAVEDataset(scene_names=CAVE_TRAIN_SCENES, split="train", patch_size=cfg.patch_size, stride=cfg.stride, augment=True, **common)
-    val = CAVEDataset(scene_names=CAVE_VALIDATION_SCENES, split="validation", patch_size=512, stride=512, augment=False, **common)
-    test = CAVEDataset(scene_names=CAVE_TEST_SCENES, split="test", patch_size=512, stride=512, augment=False, **common)
+    # Match S2Diff-MH exactly: one centered image_size x image_size crop from
+    # every held-out CAVE validation/test scene (default image_size=128).
+    val = CAVEDataset(scene_names=CAVE_VALIDATION_SCENES, split="validation", patch_size=cfg.image_size, stride=cfg.image_size, augment=False, **common)
+    test = CAVEDataset(scene_names=CAVE_TEST_SCENES, split="test", patch_size=cfg.image_size, stride=cfg.image_size, augment=False, **common)
     return train, val, test, {
         "dataset":"CAVE", "n_bands":31, "n_select_bands":n_select,
         "train_samples":len(train), "validation_samples":len(val), "test_samples":len(test),
         "validation_rect":None, "test_rect":None, "srf_profile":profile,
         "srf_path":sensor_protocol("CAVE")["srf_path"], "wavelength_path":wavelength_path,
         "srf_weights":weights, "srf_band_names":names, "hsi_wavelengths":wavelengths,
-        "protocol":"CAVE deterministic 16 train / 4 validation / 12 test scenes",
+        "protocol":f"CAVE deterministic 16 train / 4 validation / 12 test scenes; centered {cfg.image_size}x{cfg.image_size} validation/test crop per held-out scene",
     }
 
 
