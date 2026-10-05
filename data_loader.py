@@ -380,10 +380,13 @@ class CAVEDataset(Dataset):
                     self.samples.append((name, top, left, patch_size))
             else:
                 if int(patch_size) > 512:
-                    raise ValueError(f"CAVE evaluation crop {patch_size} exceeds 512")
-                top = (512 - int(patch_size)) // 2
-                left = (512 - int(patch_size)) // 2
-                self.samples.append((name, top, left, int(patch_size)))
+                    raise ValueError(f"CAVE evaluation patch {patch_size} exceeds 512")
+                if 512 % int(patch_size) != 0:
+                    raise ValueError(
+                        f"CAVE evaluation patch {patch_size} must evenly tile 512x512"
+                    )
+                for top, left in _grid_coords(512, 512, int(patch_size), int(patch_size)):
+                    self.samples.append((name, top, left, int(patch_size)))
 
     def __len__(self):
         return len(self.samples)
@@ -557,8 +560,8 @@ def _build_cave(cfg, degradation_operator):
         srf_weights=weights, degradation_operator=degradation_operator,
     )
     train = CAVEDataset(scene_names=CAVE_TRAIN_SCENES, split="train", patch_size=cfg.patch_size, stride=cfg.stride, augment=True, **common)
-    # Match S2Diff-MH exactly: one centered image_size x image_size crop from
-    # every held-out CAVE validation/test scene (default image_size=128).
+    # Match S2Diff-MH exactly: tile every held-out 512x512 CAVE scene into
+    # non-overlapping image_size x image_size patches (default 128 -> 16 patches/scene).
     val = CAVEDataset(scene_names=CAVE_VALIDATION_SCENES, split="validation", patch_size=cfg.image_size, stride=cfg.image_size, augment=False, **common)
     test = CAVEDataset(scene_names=CAVE_TEST_SCENES, split="test", patch_size=cfg.image_size, stride=cfg.image_size, augment=False, **common)
     return train, val, test, {
@@ -567,7 +570,7 @@ def _build_cave(cfg, degradation_operator):
         "validation_rect":None, "test_rect":None, "srf_profile":profile,
         "srf_path":sensor_protocol("CAVE")["srf_path"], "wavelength_path":wavelength_path,
         "srf_weights":weights, "srf_band_names":names, "hsi_wavelengths":wavelengths,
-        "protocol":f"CAVE deterministic 16 train / 4 validation / 12 test scenes; centered {cfg.image_size}x{cfg.image_size} validation/test crop per held-out scene",
+        "protocol":f"CAVE deterministic 16 train / 4 validation / 12 test scenes; each held-out 512x512 scene tiled into non-overlapping {cfg.image_size}x{cfg.image_size} patches",
     }
 
 
