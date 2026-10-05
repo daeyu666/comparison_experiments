@@ -379,7 +379,11 @@ class CAVEDataset(Dataset):
                 for top, left in _grid_coords(512, 512, patch_size, stride):
                     self.samples.append((name, top, left, patch_size))
             else:
-                self.samples.append((name, 0, 0, 512))
+                if int(patch_size) > 512:
+                    raise ValueError(f"CAVE evaluation crop {patch_size} exceeds 512")
+                top = (512 - int(patch_size)) // 2
+                left = (512 - int(patch_size)) // 2
+                self.samples.append((name, top, left, int(patch_size)))
 
     def __len__(self):
         return len(self.samples)
