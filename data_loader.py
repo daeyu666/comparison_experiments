@@ -9,7 +9,8 @@ Frozen benchmark splits:
 - Houston2013: same center128 protocol.
 - Chikusei: center-crop 2304x2048; top 128-row strip test (16x128 patches),
   next 128-row strip validation (16 patches), rows 256:2304 train.
-- CAVE: deterministic 16 train / 4 validation / 12 test scenes.
+- CAVE: deterministic 16 train / 4 validation / 12 test scenes; each held-out
+  512x512 scene is tiled into 16 non-overlapping 128x128 patches.
 - Botswana: center128 protocol.
 - Augsburg synthetic x4: official MDAS geographic train/validation/test files.
 
