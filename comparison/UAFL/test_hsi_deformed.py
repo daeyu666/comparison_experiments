@@ -39,7 +39,7 @@ METRIC_ORDER = ("PSNR", "SSIM", "ERGAS", "SAM", "CC", "RMSE")
 
 def parse_args():
     p = argparse.ArgumentParser(description="Final UAFL deformed-HSI full-metric test")
-    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU"])
+    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"])
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=10)
@@ -63,9 +63,9 @@ def parse_args():
     p.add_argument("--max_local_px", type=float, default=4.0)
     p.add_argument("--control_grid", type=int, default=5)
     p.add_argument("--min_jacobian", type=float, default=0.5)
-    p.add_argument("--checkpoint", default="comparison/UAFL/checkpoints/hsi_warp_final/PaviaU/best.pth.tar")
+    p.add_argument("--checkpoint", default="", help="default: comparison/UAFL/checkpoints/hsi_warp_final/<dataset>/best.pth.tar")
     p.add_argument("--print_cases", action="store_true")
-    p.add_argument("--output_json", default="comparison/UAFL/outputs/uafl_hsi_warp_final_PaviaU_seed10_cases10.json")
+    p.add_argument("--output_json", default="", help="default: dataset/seed/cases-specific JSON under comparison/UAFL/outputs")
     return p.parse_args()
 
 
@@ -173,31 +173,100 @@ def main():
     cfg = build_shared_cfg(args)
     _train_set, _val_set, test_set, info = build_datasets(cfg, include_validation=True)
     require_srf_weights(info)
-    if len(test_set) != 1:
-        raise ValueError(f"expected the standard single 128x128 test patch, got {len(test_set)}")
-    batch = test_set[0]
-    gt = batch["gt"].unsqueeze(0).to(device)
-    hr_msi = batch["hr_msi"].unsqueeze(0).to(device)
-    h, w = gt.shape[-2:]
-    if (h, w) != (args.image_size, args.image_size):
-        raise ValueError(f"test patch is {(h, w)}, expected {(args.image_size, args.image_size)}")
+    if len(test_set) < 1:
+        raise ValueError("empty UAFL test split")
 
     p0 = test_set.degradation_operator.to(device)
     model = build_uafl(int(info["n_select_bands"])).to(device)
-    ckpt_path = Path(args.checkpoint)
+    ckpt_path = Path(
+        args.checkpoint
+        or f"comparison/UAFL/checkpoints/hsi_warp_final/{args.dataset}/best.pth.tar"
+    )
     if not ckpt_path.exists():
         raise FileNotFoundError(f"UAFL deformed-HSI checkpoint not found: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt)
     model.eval()
 
+    registered_rows = []
+    warp_rows = []
+    per_case = []
+    test_patch_shape = None
+
+    with torch.no_grad():
+        for sample_idx in range(len(test_set)):
+            batch = test_set[sample_idx]
+            gt = batch["gt"].unsqueeze(0).to(device)
+            hr_msi = batch["hr_msi"].unsqueeze(0).to(device)
+            h, w = gt.shape[-2:]
+            if (h, w) != (args.image_size, args.image_size):
+                raise ValueError(
+                    f"test sample {sample_idx} is {(h, w)}, expected "
+                    f"{(args.image_size, args.image_size)}"
+                )
+            test_patch_shape = (h, w)
+
+            registered_lr = p0.degrade(gt)
+            registered_pred = model(upsample_lr_hsi(registered_lr, (h, w)), hr_msi)
+            registered_rows.append(calc_metrics(registered_pred, gt, args.scale_ratio))
+
+            # Match S2Diff-MH evaluate_all_samples(): each held-out patch receives
+            # the same deterministic test deformation-case schedule.
+            generator = make_generator(device, args.seed + 70000)
+            for case_idx in range(args.cases):
+                geometry = sample_synthetic_geometry(
+                    h,
+                    w,
+                    device=device,
+                    dtype=gt.dtype,
+                    generator=generator,
+                    max_translation=args.max_translation,
+                    max_rotation_deg=args.max_rotation_deg,
+                    max_local_px=args.max_local_px,
+                    control_grid=args.control_grid,
+                    min_jacobian=args.min_jacobian,
+                )
+                warped_lr = make_deformed_lr_hsi(gt, geometry, p0)
+                pred = model(upsample_lr_hsi(warped_lr, (h, w)), hr_msi)
+                metrics = calc_metrics(pred, gt, args.scale_ratio)
+                warp_rows.append(metrics)
+                record = {
+                    "sample": sample_idx + 1,
+                    "case": case_idx + 1,
+                    "dx_hr_px": float(geometry.dx.item()),
+                    "dy_hr_px": float(geometry.dy.item()),
+                    "rotation_deg": float(geometry.theta_deg.item()),
+                    "local_max_hr_px": float(
+                        torch.linalg.vector_norm(geometry.local_field, dim=1).amax().item()
+                    ),
+                    "min_jacobian": float(
+                        jacobian_determinant(geometry.local_field).amin().item()
+                    ),
+                    "metrics": metrics,
+                }
+                per_case.append(record)
+                if args.print_cases:
+                    print(
+                        f"SAMPLE={sample_idx+1:04d} CASE={case_idx+1:02d} "
+                        f"dx={record['dx_hr_px']:+.3f} dy={record['dy_hr_px']:+.3f} "
+                        f"rot={record['rotation_deg']:+.3f} "
+                        f"local={record['local_max_hr_px']:.3f} | "
+                        f"{format_metrics(metrics)}"
+                    )
+
+    registered_metrics = average_metrics(registered_rows)
+    warp_metrics = average_metrics(warp_rows)
+    h, w = test_patch_shape
+
     test_conditions = {
         "dataset": args.dataset,
         "test_patch": f"{h}x{w}",
-        "metric_region": "full-frame",
-        "cases": args.cases,
+        "test_samples": len(test_set),
+        "metric_region": "full-frame per patch; macro-average over all held-out patches",
+        "cases_per_patch": args.cases,
         "seed": args.seed,
         "synthetic_case_generator_seed": args.seed + 70000,
+        "case_schedule": "same deterministic geometry cases repeated for every held-out patch",
         "scale_ratio": args.scale_ratio,
         "physical_degradation": "warp HR-HSI first, then calibrated PSF/MTF + detector integration + x4 sampling",
         "mtf_nyquist": args.mtf_nyquist,
@@ -214,49 +283,8 @@ def main():
         "checkpoint": str(ckpt_path),
         "checkpoint_epoch": ckpt.get("epoch") if isinstance(ckpt, dict) else None,
         "checkpoint_best_warp_val_psnr": ckpt.get("best_psnr") if isinstance(ckpt, dict) else None,
+        "split_protocol": info.get("protocol"),
     }
-
-    with torch.no_grad():
-        registered_lr = p0.degrade(gt)
-        registered_pred = model(upsample_lr_hsi(registered_lr, (h, w)), hr_msi)
-        registered_metrics = calc_metrics(registered_pred, gt, args.scale_ratio)
-
-    generator = make_generator(device, args.seed + 70000)
-    warp_rows = []
-    per_case = []
-    with torch.no_grad():
-        for case_idx in range(args.cases):
-            geometry = sample_synthetic_geometry(
-                h,
-                w,
-                device=device,
-                dtype=gt.dtype,
-                generator=generator,
-                max_translation=args.max_translation,
-                max_rotation_deg=args.max_rotation_deg,
-                max_local_px=args.max_local_px,
-                control_grid=args.control_grid,
-                min_jacobian=args.min_jacobian,
-            )
-            warped_lr = make_deformed_lr_hsi(gt, geometry, p0)
-            pred = model(upsample_lr_hsi(warped_lr, (h, w)), hr_msi)
-            metrics = calc_metrics(pred, gt, args.scale_ratio)
-            warp_rows.append(metrics)
-            record = {
-                "case": case_idx + 1,
-                "dx_hr_px": float(geometry.dx.item()),
-                "dy_hr_px": float(geometry.dy.item()),
-                "rotation_deg": float(geometry.theta_deg.item()),
-                "local_max_hr_px": float(torch.linalg.vector_norm(geometry.local_field, dim=1).amax().item()),
-                "min_jacobian": float(jacobian_determinant(geometry.local_field).amin().item()),
-                "metrics": metrics,
-            }
-            per_case.append(record)
-            if args.print_cases:
-                print(f"CASE={case_idx+1:02d} dx={record['dx_hr_px']:+.3f} dy={record['dy_hr_px']:+.3f} "
-                      f"rot={record['rotation_deg']:+.3f} local={record['local_max_hr_px']:.3f} | {format_metrics(metrics)}")
-
-    warp_metrics = average_metrics(warp_rows)
 
     print("=" * 118)
     print("UAFL_FINAL_HSI_DEFORMED_TEST")
@@ -282,14 +310,16 @@ def main():
             "Registered": registered_metrics,
             "Warp": warp_metrics,
         },
-        "per_case": per_case,
+        "per_sample_case": per_case,
     }
-    if args.output_json:
-        out = Path(args.output_json)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"FINAL_TEST_JSON={out}")
-
+    output_json = (
+        args.output_json
+        or f"comparison/UAFL/outputs/uafl_hsi_warp_final_{args.dataset}_seed{args.seed}_cases{args.cases}.json"
+    )
+    out = Path(output_json)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"FINAL_TEST_JSON={out}")
 
 if __name__ == "__main__":
     main()
