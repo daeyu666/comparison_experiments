@@ -145,9 +145,10 @@ def evaluate_registered_and_warped(model, loader, device, p0, args):
     registered_meter = MetricAverager()
     warp_meter = MetricAverager()
 
-    # Recreate the same validation deformation cases every evaluation.
-    val_gen = make_generator(device, args.seed + 60000)
+    # Match S2Diff-MH multi-sample evaluation: every held-out patch sees
+    # the same deterministic validation deformation-case schedule.
     for batch in loader:
+        val_gen = make_generator(device, args.seed + 60000)
         gt = batch["gt"].to(device, non_blocking=True)
         hr_msi = batch["hr_msi"].to(device, non_blocking=True)
 
