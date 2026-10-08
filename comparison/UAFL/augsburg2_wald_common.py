@@ -67,6 +67,26 @@ def upsample(lr, size):
     return F.interpolate(lr, size=size, mode="bicubic", align_corners=False)
 
 
+def predict_uafl(model, lr_hsi, hr_msi):
+    """Retain observed Wald spatial crop, pad only the network's window input.
+
+    UAFL has window size 8 at HR and half-resolution. Thus the internal
+    network input H/W must be multiples of 16. S2Diff-MH Wald trains on
+    72x72 HR crops (half-resolution 36, invalid for UAFL window partition).
+    Reflect the border to 80x80 inside the network only, then crop back to
+    72x72 before masked loss/metrics. No new observations are synthesized.
+    """
+    h, w = hr_msi.shape[-2:]
+    x = upsample(lr_hsi, (h, w))
+    ph, pw = (-h) % 16, (-w) % 16
+    if ph or pw:
+        x = F.pad(x, (0, pw, 0, ph), mode="replicate")
+        ref = F.pad(hr_msi, (0, pw, 0, ph), mode="replicate")
+    else:
+        ref = hr_msi
+    return model(x, ref)[..., :h, :w]
+
+
 def grid_coords(h, w, patch, stride):
     return [(i, j, patch, patch)
             for i in range(0, h - patch + 1, stride)
