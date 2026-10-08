@@ -17,7 +17,7 @@ import torch
 THIS=Path(__file__).resolve().parent
 sys.path.insert(0,str(THIS))
 from augsburg2_wald_common import (
-    correct_msi, load_state, read_json, read_radiometry, require_wald, upsample
+    correct_msi, load_state, read_json, read_radiometry, require_wald, predict_uafl
 )
 from model import build_uafl
 
@@ -90,7 +90,7 @@ def main():
             x_h=torch.from_numpy(np.ascontiguousarray(lp.transpose(2,0,1))).float().unsqueeze(0).to(device)
             x_m=torch.from_numpy(np.ascontiguousarray(mp.transpose(2,0,1))).float().unsqueeze(0).to(device)
             x_m=correct_msi(x_m,calibration)
-            pred=model(upsample(x_h,(ts,ts)),x_m)
+            pred=predict_uafl(model,x_h,x_m)
             arr=pred[0].permute(1,2,0).float().cpu().numpy()
             sum_cube[top:top+ts,left:left+ts]+=arr
             count[top:top+ts,left:left+ts]+=1.0
