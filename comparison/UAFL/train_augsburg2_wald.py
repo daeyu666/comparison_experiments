@@ -22,7 +22,7 @@ sys.path.insert(0, str(THIS))
 from augsburg2_wald_common import (
     WaldDataset, PROVENANCE, correct_msi, load_state, make_loaders,
     masked_l1, metrics_from_sums, metrics_sums, read_json,
-    read_radiometry, require_wald, upsample,
+    read_radiometry, require_wald, predict_uafl,
 )
 from model import build_uafl, parameter_count
 
@@ -118,7 +118,7 @@ def evaluate(model, loader, device, calibration):
         lr = batch["lr_hsi"].to(device)
         msi = correct_msi(batch["hr_msi"].to(device),calibration)
         mask = batch["valid_mask"].to(device)
-        pred = model(upsample(lr,gt.shape[-2:]),msi)
+        pred = predict_uafl(model, lr, msi)
         sums=metrics_sums(pred,gt,mask)
         total=[a+b for a,b in zip(total,sums)]
     return metrics_from_sums(total)
@@ -192,7 +192,7 @@ def main():
             msi=correct_msi(batch["hr_msi"].to(device),calibration)
             mask=batch["valid_mask"].to(device)
             optimizer.zero_grad(set_to_none=True)
-            pred=model(upsample(lr,gt.shape[-2:]),msi)
+            pred=predict_uafl(model,lr,msi)
             loss=masked_l1(pred,gt,mask)
             if not bool(torch.isfinite(loss)):
                 raise FloatingPointError(f"UAFL Wald non-finite L1 at epoch {epoch+1}")
