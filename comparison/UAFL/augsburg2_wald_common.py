@@ -136,13 +136,18 @@ class WaldDataset(Dataset):
 
 
 def make_loaders(root, *, batch_size=1, train_patch=72, train_stride=6,
-                 eval_patch=48, min_valid_fraction=0.8, workers=0):
+                 eval_patch=48, min_valid_fraction=0.8, workers=0,
+                 include_test=False):
+    # Training must never open the held-out test split.
+    splits = ("train", "validation", "test") if include_test else ("train", "validation")
     sets = [WaldDataset(root, split, train_patch, train_stride, eval_patch, min_valid_fraction)
-            for split in ("train", "validation", "test")]
+            for split in splits]
     loaders = [DataLoader(ds, batch_size=batch_size if i==0 else 1,
                           shuffle=i==0, num_workers=workers, drop_last=False)
                for i, ds in enumerate(sets)]
-    return (*loaders, [len(ds) for ds in sets])
+    if include_test:
+        return (*loaders, [len(ds) for ds in sets])
+    return (loaders[0], loaders[1], None, [len(ds) for ds in sets])
 
 
 def masked_l1(pred, gt, mask):
