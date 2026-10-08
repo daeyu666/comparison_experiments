@@ -20,6 +20,7 @@ from augsburg2_wald_common import (
     correct_msi, load_state, read_json, read_radiometry, require_wald, predict_uafl
 )
 from model import build_uafl
+from augsburg2_wald_qnr import evaluate_cache
 
 
 def parse_args():
@@ -32,6 +33,9 @@ def parse_args():
     p.add_argument("--tile_stride",type=int,default=48)
     p.add_argument("--device",default="cuda")
     p.add_argument("--write_tif",action="store_true")
+    p.add_argument("--skip_qnr", action="store_true", help="Skip original-scale no-reference QNR evaluation")
+    p.add_argument("--qnr_window_hr", type=int, default=48, help="UIQI high-res window in 10m pixels")
+    p.add_argument("--qnr_min_valid_fraction", type=float, default=0.8)
     return p.parse_args()
 
 
@@ -120,8 +124,26 @@ def main():
                 dst.write(fused[:,:,k],k+1)
         print(f"UAFL_WALD_GEOTIFF={geotiff}")
 
+    no_reference_quality = None
+    if not args.skip_qnr:
+        no_reference_quality = evaluate_cache(
+            args.wald_root, str(output), args.radiometry_json,
+            window_hr=args.qnr_window_hr,
+            min_valid_fraction=args.qnr_min_valid_fraction,
+        )
+        (dest/"UAFL_Wald_full_QNR.json").write_text(
+            json.dumps(no_reference_quality, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(
+            f"UAFL_WALD_ORIGINAL_MSI_QNR "
+            f"QNR={no_reference_quality['QNR']:.6f} "
+            f"Dlambda={no_reference_quality['Dlambda']:.6f} "
+            f"Ds={no_reference_quality['Ds']:.6f}"
+        )
+
     report={
         "protocol":"Augsburg-2-Wald-UAFL",
+        "no_reference_quality":no_reference_quality,
         "inputs":"observed 30m HSI and original real Sentinel-2 10m MSI",
         "region":"sub_area_2",
         "full_reference_HSI_10m":False,
