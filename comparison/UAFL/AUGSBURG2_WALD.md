@@ -110,55 +110,74 @@ S2Diff-MH Wald `sub_area_2` original-scale inference grid.
 No 10m HR-HSI label is available here. Do not report original-scale
 PSNR, SAM or EPE from an invented reference.
 
-### Original-scale no-reference QNR, Dlambda, Ds
+### Full-resolution QNR / Dlambda / Ds — classical equations
 
-`infer_augsburg2_wald.py` now **automatically** evaluates and writes
-`comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json`
-after the full HSI output is saved.
+`infer_augsburg2_wald.py` automatically evaluates and saves
+`comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json`.
+This **replaces** the old 16-cross-band modified-QNR implementation.
+Old JSON scores are NOT comparable to the new scores; recompute them.
 
-This is explicitly labelled **MSI-projected modified QNR**, rather than
-classical PAN-QNR or full-spectrum 242-band mQNR:
+The implementation uses the **classical QNR equations (Alparone 2008)**:
 
-- `F`: fused 10m HSI (242 bands)
-- `H`: observed 30m HSI (242 bands)
-- `M`: observed 10m real S2 MSI (B2/B3/B4/B8), with the same *train-only*
-  radiometry as the model input, **no geometric warp**.
-- `R`: the frozen measured S2B SRF (4x242) saved in the Wald cache.
-- `A=R(F)` (four 10m bands), `B=R(H)` (four 30m bands)
-- `M_low`: block-mean downsample M by factor 3 to 30m (no PSF is
-  retroactively applied to these already observed real MSI measurements).
-- `Q`: masked UIQI averaged over non-overlapping 48x48 10m spatial
-  windows; corresponding 30m windows are 16x16; windows require >=80%
-  valid pixels, and window statistics are weighted by valid pixel counts.
-- `Dlambda=mean_{i<j}|Q(A_i,A_j)-Q(B_i,B_j)|` across six distinct
-  pairs of projected S2 bands.
-- `Ds=mean_{i,j}|Q(A_i,M_j)-Q(B_i,M_low_j)|` across 16 pairs.
-- `QNR=max(0,1-Dlambda) * max(0,1-Ds)` (exponents both 1).
+- `F4=R(F)`: four 10m bands from the fused 242-band HSI, projected through
+  the fixed four-band Sentinel-2 SRF `R`.
+- `H4=R(H)`: four 30m bands from observed 30m HSI, using the same SRF.
+- `P`: one shared 10m PAN image.
+- `P_L`: a correspondingly low-pass/downsampled 30m PAN.
+- `Dlambda`: mean over **6 unordered band pairs** of
+  `|Q(F4_i,F4_j)-Q(H4_i,H4_j)|`.
+- `Ds`: mean over **4 matched band-to-PAN comparisons** of
+  `|Q(F4_i,P)-Q(H4_i,P_L)|`, not 16 cross-band comparisons.
+- `QNR=max(0,1-Dlambda)*max(0,1-Ds)`; exponents `p=q=alpha=beta=1`.
+- UIQI uses masked non-overlapping 48x48 high-res / 16x16 low-res windows,
+  minimum valid fraction 80%, weighted by valid pixels, and the same
+  observed-input masks as S2Diff-MH.
 
-The masks come solely from the observed LR-HSI and MSI validity, not a
-10m HSI label; the low mask requires every pixel of its 3x3 high-resolution
-footprint to be valid. **This QNR evaluates the S2-observed spectral
-subspace only, not all 242 hyperspectral bands.** Natural subpixel
-misregistration and cross-sensor calibration influence these scores.
-Report the metric definition alongside any numbers.
+**Augsburg Region 2 has no true PAN sensor observation.** The default `P`
+is an *explicit synthetic PAN proxy*: the unweighted arithmetic mean of
+four **train-calibrated, unwarped real Sentinel-2 B2/B3/B4/B8** bands.
+`P_L` is its 3x3 area average. This is **standard-form QNR using a
+pseudo-PAN**, *not classical real-PAN QNR*. The output JSON has
+`is_genuine_pan=false` and an explicit `pan_origin`. No original-scale
+10m HSI reference is used; 242-band fidelity is not established.
 
-Re-evaluate an already saved 10m output without re-running the UAFL
-network:
+For genuinely PAN-based standard QNR, provide a separate real PAN image and
+the sensor-MTF-matched 30m degraded PAN via `--pan_hr` and `--pan_lr`.
+Neither is present in the official four-band Augsburg observation dataset.
+Single-PAN and pseudo-PAN results must never be pooled in a table without
+their source labels.
+
+Score an existing full-resolution UAFL output without rerunning the network:
 
 ```bash
 python comparison/UAFL/augsburg2_wald_qnr.py \
-  --wald_root "$WALD_ROOT" \
-  --radiometry_json "$WALD_RAD" \
+  --wald_root ./data/augsburg2_wald \
   --fused comparison/UAFL/outputs/augsburg2_wald/Augsburg2_Wald_UAFL_full_HSI.npy \
+  --radiometry_json ./data/calibration/Augsburg2_Wald_radiometry.json \
   --output_json comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json
 ```
 
-For a **direct S2Diff-MH comparison**, use this exact same script, SRF,
-mask, measured observations, radiometry and UIQI windows on
-`S2Diff-MH/outputs/augsburg2_wald/Augsburg2_Wald_full_HSI.npy` (if that
-file is the held-out strict-Wald Region-2 prediction on exactly the same
-pixel grid), passing its path with `--fused`. Do **not** compare this
-modified-QNR result to a differently defined QNR from another paper.
+Optional true PAN:
+
+```bash
+# Only when both actual PAN inputs exist on the same geographical grid
+python comparison/UAFL/augsburg2_wald_qnr.py \
+  --wald_root ./data/augsburg2_wald \
+  --fused comparison/UAFL/outputs/augsburg2_wald/Augsburg2_Wald_UAFL_full_HSI.npy \
+  --pan_hr /path/to/real_pan_10m.npy \
+  --pan_lr /path/to/mtf_degraded_pan_30m.npy
+```
+
+Run regression tests:
+
+```bash
+python -m unittest discover -s comparison/UAFL -p "test_augsburg2_wald_qnr.py"
+```
+
+For method comparisons, both repositories use the byte-identical QNR
+kernel, the same frozen SRF, mask, radiometry and window policy. The
+`S2Diff-MH/compare_augsburg2_wald_qnr.py` script now rejects older
+modified-QNR JSON and mismatched PAN provenance.
 
 ## Important differentiation
 
