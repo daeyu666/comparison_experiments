@@ -16,7 +16,7 @@ import torch.nn.functional as F
 
 from wald_emr_common import (
     build_model, build_diffusion, correct_msi, read_json,
-    read_radiometry, require_wald, verify_checkpoint,
+    read_radiometry, require_wald, verify_checkpoint, predict,
 )
 from EMRDiff import Edge
 from augsburg2_wald_qnr import evaluate_cache
@@ -110,20 +110,8 @@ def main():
             lq_hr = F.interpolate(
                 lq, size=(sz,sz), mode="bicubic", align_corners=False
             )
-            condition = torch.cat((lq_hr,ref), dim=1)
-            emap = edge(ref)
-            state = diffusion.prior_sample(
-                condition, torch.randn_like(condition), edge_map=emap
-            )
-            for step in range(diffusion.num_diffusion_timesteps - 1, -1, -1):
-                t = torch.full((1,), step, device=device, dtype=torch.long)
-                residual,_ = model(state, ref, lq_hr, t)
-                start = residual + condition
-                state = diffusion.inverse_denoise(
-                    x_start=start, x_t=state, t=t,
-                    noise=torch.randn_like(start), edge_map=emap,
-                )
-            pred = state[:,:242].squeeze(0).permute(1,2,0).float().cpu().numpy()
+            pred = predict(model, diffusion, edge, lq_hr, ref)
+            pred = pred.squeeze(0).permute(1,2,0).float().cpu().numpy()
             sum_cube[top:top+sz,left:left+sz] += pred
             count[top:top+sz,left:left+sz] += 1.
             print(f"EMR_WALD_FULL_TILE {i+1}/{len(ys)} {j+1}/{len(xs)} at={top},{left}")
