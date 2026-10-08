@@ -244,3 +244,19 @@ LR-HSI 不由 EMR-Diff 自己重新实现，而是统一调用仓库根目录 `d
 ## Dependencies
 
 EMR-Diff 依赖 PyTorch、OmegaConf、SciPy、tqdm、timm。公共退化模块由 PyTorch 实现，不再依赖 OpenCV 才能得到正式退化结果。
+
+
+## Real-world Augsburg-2 strict Wald x3
+
+A separate real-data experiment now matches UAFL's Augsburg-2 Wald setup
+(exact cached train/validation/test splits, Sentinel-2 measured MSI, train-only
+radiometric calibration, x3 factor, mask/patch settings, 100-epoch schedule,
+best masked SAM, pooled reference test metrics, full 10m HSI–MSI QNR).
+
+**Do not use the synthetic `--dataset Augsburg` Train.py command for this
+experiment.** Run the dedicated:
+- `comparison/EMR-Diff/train_augsburg2_wald.py` (train and reference test);
+- `comparison/EMR-Diff/infer_augsburg2_wald.py` (10m inference and QNR).
+
+Exact one-line commands, data paths, model-width adaptation and limitations
+are documented in [AUGSBURG2_WALD.md](AUGSBURG2_WALD.md).
