@@ -133,7 +133,7 @@ def training_step(model, diffusion, edge, gt, lr_hr, msi, mask):
             continue
         f = intermediate[idx]
         hw = f.shape[-2:]
-        sub_mask = F.interpolate(mask, size=hw, mode="nearest")
+        sub_mask = (F.interpolate(mask, size=hw, mode="area") > 0.999).to(mask.dtype)
         loss = loss + masked_l1(
             f + down_to(condition, hw),
             down_to(x_start, hw),
