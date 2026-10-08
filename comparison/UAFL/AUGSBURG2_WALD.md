@@ -107,9 +107,58 @@ Output: `comparison/UAFL/outputs/augsburg2_wald/Augsburg2_Wald_UAFL_full_HSI.npy
 (and GeoTIFF when requested). Its frame/georeferencing matches the
 S2Diff-MH Wald `sub_area_2` original-scale inference grid.
 
-No 10m HR-HSI label is available here. Do not report original-scale PSNR,
-SAM or EPE from an invented reference; qualitative images and properly
-defined original-scale observation consistency are possible separately.
+No 10m HR-HSI label is available here. Do not report original-scale
+PSNR, SAM or EPE from an invented reference.
+
+### Original-scale no-reference QNR, Dlambda, Ds
+
+`infer_augsburg2_wald.py` now **automatically** evaluates and writes
+`comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json`
+after the full HSI output is saved.
+
+This is explicitly labelled **MSI-projected modified QNR**, rather than
+classical PAN-QNR or full-spectrum 242-band mQNR:
+
+- `F`: fused 10m HSI (242 bands)
+- `H`: observed 30m HSI (242 bands)
+- `M`: observed 10m real S2 MSI (B2/B3/B4/B8), with the same *train-only*
+  radiometry as the model input, **no geometric warp**.
+- `R`: the frozen measured S2B SRF (4x242) saved in the Wald cache.
+- `A=R(F)` (four 10m bands), `B=R(H)` (four 30m bands)
+- `M_low`: block-mean downsample M by factor 3 to 30m (no PSF is
+  retroactively applied to these already observed real MSI measurements).
+- `Q`: masked UIQI averaged over non-overlapping 48x48 10m spatial
+  windows; corresponding 30m windows are 16x16; windows require >=80%
+  valid pixels, and window statistics are weighted by valid pixel counts.
+- `Dlambda=mean_{i<j}|Q(A_i,A_j)-Q(B_i,B_j)|` across six distinct
+  pairs of projected S2 bands.
+- `Ds=mean_{i,j}|Q(A_i,M_j)-Q(B_i,M_low_j)|` across 16 pairs.
+- `QNR=max(0,1-Dlambda) * max(0,1-Ds)` (exponents both 1).
+
+The masks come solely from the observed LR-HSI and MSI validity, not a
+10m HSI label; the low mask requires every pixel of its 3x3 high-resolution
+footprint to be valid. **This QNR evaluates the S2-observed spectral
+subspace only, not all 242 hyperspectral bands.** Natural subpixel
+misregistration and cross-sensor calibration influence these scores.
+Report the metric definition alongside any numbers.
+
+Re-evaluate an already saved 10m output without re-running the UAFL
+network:
+
+```bash
+python comparison/UAFL/augsburg2_wald_qnr.py \
+  --wald_root "$WALD_ROOT" \
+  --radiometry_json "$WALD_RAD" \
+  --fused comparison/UAFL/outputs/augsburg2_wald/Augsburg2_Wald_UAFL_full_HSI.npy \
+  --output_json comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json
+```
+
+For a **direct S2Diff-MH comparison**, use this exact same script, SRF,
+mask, measured observations, radiometry and UIQI windows on
+`S2Diff-MH/outputs/augsburg2_wald/Augsburg2_Wald_full_HSI.npy` (if that
+file is the held-out strict-Wald Region-2 prediction on exactly the same
+pixel grid), passing its path with `--fused`. Do **not** compare this
+modified-QNR result to a differently defined QNR from another paper.
 
 ## Important differentiation
 
