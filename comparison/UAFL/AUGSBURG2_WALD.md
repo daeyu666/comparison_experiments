@@ -110,74 +110,72 @@ S2Diff-MH Wald `sub_area_2` original-scale inference grid.
 No 10m HR-HSI label is available here. Do not report original-scale
 PSNR, SAM or EPE from an invented reference.
 
-### Full-resolution QNR / Dlambda / Ds — classical equations
+### Full-resolution QNR / Dλ / Ds: original HSI–MSI observations
 
-`infer_augsburg2_wald.py` automatically evaluates and saves
-`comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json`.
-This **replaces** the old 16-cross-band modified-QNR implementation.
-Old JSON scores are NOT comparable to the new scores; recompute them.
+This is **HSI–MSI QNR**, with **LR-HSI as spectral reference** and
+**observed HR-MSI as spatial reference**. No PAN image (real or synthetic) is
+created. It is the standard QNR spectral/spatial distortion principle adapted
+to hypersharpening; do not conflate its cross-sensor spatial component with
+classical single-PAN pansharpening QNR.
 
-The implementation uses the **classical QNR equations (Alparone 2008)**:
+Inputs, all from the same Augsburg-2 Region-2 10m/30m Wald cache:
 
-- `F4=R(F)`: four 10m bands from the fused 242-band HSI, projected through
-  the fixed four-band Sentinel-2 SRF `R`.
-- `H4=R(H)`: four 30m bands from observed 30m HSI, using the same SRF.
-- `P`: one shared 10m PAN image.
-- `P_L`: a correspondingly low-pass/downsampled 30m PAN.
-- `Dlambda`: mean over **6 unordered band pairs** of
-  `|Q(F4_i,F4_j)-Q(H4_i,H4_j)|`.
-- `Ds`: mean over **4 matched band-to-PAN comparisons** of
-  `|Q(F4_i,P)-Q(H4_i,P_L)|`, not 16 cross-band comparisons.
-- `QNR=max(0,1-Dlambda)*max(0,1-Ds)`; exponents `p=q=alpha=beta=1`.
-- UIQI uses masked non-overlapping 48x48 high-res / 16x16 low-res windows,
-  minimum valid fraction 80%, weighted by valid pixels, and the same
-  observed-input masks as S2Diff-MH.
+- \`F\`: fused 10m HSI, **242 bands**.
+- \`H\`: originally **observed** 30m HSI, **242 bands**.
+- \`M\`: originally **observed** 10m four-channel Sentinel-2 MSI, after the
+  **pre-existing train-only** gain/bias calibration; **no geometric warp**.
+- \`M_L\`: area-averaged original 10m MSI on the 30m grid (factor 3).
+- \`R\`: frozen SRF, **only for selecting HSI bands spectrally covered by
+  each MSI channel**, not for projecting HSI into four bands.
 
-**Augsburg Region 2 has no true PAN sensor observation.** The default `P`
-is an *explicit synthetic PAN proxy*: the unweighted arithmetic mean of
-four **train-calibrated, unwarped real Sentinel-2 B2/B3/B4/B8** bands.
-`P_L` is its 3x3 area average. This is **standard-form QNR using a
-pseudo-PAN**, *not classical real-PAN QNR*. The output JSON has
-`is_genuine_pan=false` and an explicit `pan_origin`. No original-scale
-10m HSI reference is used; 242-band fidelity is not established.
+With valid-masked local \`Q=UIQI\`:
 
-For genuinely PAN-based standard QNR, provide a separate real PAN image and
-the sensor-MTF-matched 30m degraded PAN via `--pan_hr` and `--pan_lr`.
-Neither is present in the official four-band Augsburg observation dataset.
-Single-PAN and pseudo-PAN results must never be pooled in a table without
-their source labels.
+\`\`\`text
+Dlambda = mean over all 242 choose 2 = 29161 HSI-band pairs (i<j)
+          |Q(F_i,F_j) - Q(H_i,H_j)|
 
-Score an existing full-resolution UAFL output without rerunning the network:
+For MSI band k:
+  S_k = {HSI band i: SRF[k,i] >= 0.01 * max(SRF[k,:])}
+  d_k = mean over i in S_k
+        |Q(F_i,M_k) - Q(H_i,M_L,k)|
 
-```bash
+Ds = mean(d_1,d_2,d_3,d_4)
+QNR = max(0, 1-Dlambda) * max(0, 1-Ds)
+\`\`\`
+
+The 1%-of-peak SRF coverage rule is an explicit, fixed setting. It follows
+the HSI–MSI hypersharpening principle that spatial distortion is evaluated
+against MSI only for HSI wavelengths sensed by that MSI band. All 242 HSI
+bands, including SWIR, contribute to **Dλ**. UIQI is averaged over masked,
+non-overlapping 48x48 10m windows and 16x16 30m windows, with a minimum
+80% valid-pixel fraction and valid-pixel weighting. The lower mask requires
+all 3x3 contributing HR pixels valid.
+
+The calculation requires no 10m HSI ground truth. It does **not** establish
+full-resolution ground-truth spectral accuracy. Residual cross-sensor
+misregistration can affect the spatial term. It must not be compared with
+the old, superseded four-band projected QNR or synthetic-PAN QNR outputs.
+Recompute both methods' JSONs after updating.
+
+Standalone computation (already existing fused .npy; **no retraining**):
+
+\`\`\`bash
 python comparison/UAFL/augsburg2_wald_qnr.py \
   --wald_root ./data/augsburg2_wald \
-  --fused comparison/UAFL/outputs/augsburg2_wald/Augsburg2_Wald_UAFL_full_HSI.npy \
   --radiometry_json ./data/calibration/Augsburg2_Wald_radiometry.json \
-  --output_json comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json
-```
-
-Optional true PAN:
-
-```bash
-# Only when both actual PAN inputs exist on the same geographical grid
-python comparison/UAFL/augsburg2_wald_qnr.py \
-  --wald_root ./data/augsburg2_wald \
   --fused comparison/UAFL/outputs/augsburg2_wald/Augsburg2_Wald_UAFL_full_HSI.npy \
-  --pan_hr /path/to/real_pan_10m.npy \
-  --pan_lr /path/to/mtf_degraded_pan_30m.npy
-```
+  --output_json comparison/UAFL/outputs/augsburg2_wald/UAFL_Wald_full_QNR.json
+\`\`\`
 
-Run regression tests:
+Full inference automatically computes QNR unless \`--skip_qnr\` is set.
+\`--qnr_support_fraction 0.01\` controls the spectral-coverage rule.
+\`--qnr_window_hr 48\` and \`--qnr_min_valid_fraction 0.8\` fix the
+same window policy in both repositories.
 
+Regression check:
 ```bash
 python -m unittest discover -s comparison/UAFL -p "test_augsburg2_wald_qnr.py"
 ```
-
-For method comparisons, both repositories use the byte-identical QNR
-kernel, the same frozen SRF, mask, radiometry and window policy. The
-`S2Diff-MH/compare_augsburg2_wald_qnr.py` script now rejects older
-modified-QNR JSON and mismatched PAN provenance.
 
 ## Important differentiation
 
