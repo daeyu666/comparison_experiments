@@ -260,3 +260,22 @@ comparison/UAFL/
 ├── logs/                       # ignored
 └── outputs/                    # ignored
 ```
+
+## Augsburg-2 Wald real-Sentinel x3 branch (strict)
+
+The **real-observation Wald** benchmark is separate from the above
+synthetic x4 / HSI-warp protocols. It takes observed 30m EnMAP-like HSI,
+real Sentinel-2 10m B2/B3/B4/B8 (aggregated to 30m for Wald), and an
+observed-30m-HSI target. Full native-scale inference uses 30m HSI and
+real 10m MSI with no 10m HR-HSI supervision.
+
+Read [AUGSBURG2_WALD.md](AUGSBURG2_WALD.md) for the frozen protocol, cache
+provenance requirements, training, held-out Wald test, and sub_area_2 inference
+commands. Dedicated entry points:
+
+- `augsburg2_wald_common.py`
+- `train_augsburg2_wald.py`
+- `infer_augsburg2_wald.py`
+
+Do not run `train_hsi_deformed.py` for this real Wald task: it synthesizes
+HSI deformations under a different x4 observation protocol.
