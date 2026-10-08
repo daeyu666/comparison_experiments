@@ -36,6 +36,8 @@ def parse_args():
     p.add_argument("--skip_qnr", action="store_true", help="Skip original-scale no-reference QNR evaluation")
     p.add_argument("--qnr_window_hr", type=int, default=48, help="UIQI high-res window in 10m pixels")
     p.add_argument("--qnr_min_valid_fraction", type=float, default=0.8)
+    p.add_argument("--pan_hr", default="", help="Optional real 10m PAN npy; requires --pan_lr")
+    p.add_argument("--pan_lr", default="", help="Optional MTF-matched 30m PAN npy; requires --pan_hr")
     return p.parse_args()
 
 
@@ -130,15 +132,19 @@ def main():
             args.wald_root, str(output), args.radiometry_json,
             window_hr=args.qnr_window_hr,
             min_valid_fraction=args.qnr_min_valid_fraction,
+            pan_hr=args.pan_hr or None,
+            pan_lr=args.pan_lr or None,
         )
         (dest/"UAFL_Wald_full_QNR.json").write_text(
             json.dumps(no_reference_quality, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(
-            f"UAFL_WALD_ORIGINAL_MSI_QNR "
+            f"UAFL_WALD_STANDARD_FORM_QNR "
             f"QNR={no_reference_quality['QNR']:.6f} "
             f"Dlambda={no_reference_quality['Dlambda']:.6f} "
-            f"Ds={no_reference_quality['Ds']:.6f}"
+            f"Ds={no_reference_quality['Ds']:.6f} "
+            f"PAN_ORIGIN={no_reference_quality['pan_origin']} "
+            f"GENUINE_PAN={no_reference_quality['is_genuine_pan']}"
         )
 
     report={
