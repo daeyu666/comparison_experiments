@@ -106,7 +106,7 @@ def load_state(path, model, *, sha, sigma, device, optimizer=None, monitor=None)
 def evaluate(model, diffusion, edge, loader, device, calibration, eval_seed):
     model.eval()
     sums = [0., 0, 0., 0]
-    gpu = [torch.cuda.current_device()] if device.type == "cuda" else []
+    gpu = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
     with torch.random.fork_rng(devices=gpu):
         torch.manual_seed(eval_seed)
         if gpu:
