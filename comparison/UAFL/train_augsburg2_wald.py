@@ -151,7 +151,7 @@ def main():
             if entry.get("protocol_id") != args.split_protocol_id:
                 raise ValueError("Wald UAFL split protocol ID mismatch: "+split)
     sha=file_sha256(args.radiometry_json)
-    calibration=read_radiometry(args.radiometry_json)
+    calibration=read_radiometry(args.radiometry_json, args.wald_root)
     seed_everything(args.seed)
     device=get_device(args.device)
     model=build_uafl(4).to(device)
