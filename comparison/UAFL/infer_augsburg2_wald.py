@@ -21,6 +21,7 @@ from augsburg2_wald_common import (
 )
 from model import build_uafl
 from augsburg2_wald_qnr import evaluate_cache
+from augsburg2_wald_center_roi import crop_heldout, geotiff_transform
 
 
 def parse_args():
@@ -83,6 +84,17 @@ def main():
         mask.shape!=(h,w) or h%6 or w%6):
         raise ValueError(f"Bad full Wald array shapes HSI={lr.shape}, MSI={msi.shape}, mask={mask.shape}")
 
+    lr, msi, mask, roi_y0, roi_x0, output_suffix, split_protocol_id = crop_heldout(
+        args.wald_root, lr, msi, mask,
+        ckpt_protocol_id=ckpt.get("split_protocol_id"),
+        ckpt_bbox_30m=ckpt.get("test_bbox_30m"),
+    )
+    h,w=msi.shape[:2]
+    print(
+        f"UAFL_WALD_INFERENCE spatial_protocol={split_protocol_id} "
+        f"area={output_suffix} HR_shape={h}x{w} "
+        f"origin_10m_rowcol=({roi_y0},{roi_x0})"
+    )
     ys=positions(h,args.tile_size,args.tile_stride)
     xs=positions(w,args.tile_size,args.tile_stride)
     sum_cube=np.zeros((h,w,242),dtype=np.float32)
@@ -107,7 +119,7 @@ def main():
     fused[np.asarray(mask)==0]=0.
     dest=Path(args.save_root)
     dest.mkdir(parents=True,exist_ok=True)
-    output=dest/"Augsburg2_Wald_UAFL_full_HSI.npy"
+    output=dest/f"Augsburg2_Wald_UAFL_{output_suffix}_HSI.npy"
     np.save(output,fused.astype(np.float32))
 
     if args.write_tif:
@@ -116,11 +128,11 @@ def main():
             from affine import Affine
         except ImportError as exc:
             raise ImportError("GeoTIFF output requires rasterio and affine") from exc
-        geotiff=dest/"Augsburg2_Wald_UAFL_full_HSI.tif"
+        geotiff=dest/f"Augsburg2_Wald_UAFL_{output_suffix}_HSI.tif"
         with rasterio.open(
             geotiff,"w",driver="GTiff",height=h,width=w,count=242,
             dtype="float32",crs=meta["crs"],
-            transform=Affine(*meta["transform_6"]),compress="deflate",tiled=True,
+            transform=geotiff_transform(meta["transform_6"], roi_y0, roi_x0),compress="deflate",tiled=True,
         ) as dst:
             for k in range(242):
                 dst.write(fused[:,:,k],k+1)
@@ -134,7 +146,7 @@ def main():
             min_valid_fraction=args.qnr_min_valid_fraction,
             support_fraction=args.qnr_support_fraction,
         )
-        (dest/"UAFL_Wald_full_QNR.json").write_text(
+        (dest/f"UAFL_Wald_{output_suffix}_QNR.json").write_text(
             json.dumps(no_reference_quality, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(
@@ -151,6 +163,9 @@ def main():
         "no_reference_quality":no_reference_quality,
         "inputs":"observed 30m HSI and original real Sentinel-2 10m MSI",
         "region":"sub_area_2",
+        "split_protocol_id":split_protocol_id,
+        "evaluation_area":output_suffix,
+        "test_bbox_30m":ckpt.get("test_bbox_30m"),
         "full_reference_HSI_10m":False,
         "quantitative_full_psnr":None,
         "output_shape":list(fused.shape),
@@ -161,7 +176,7 @@ def main():
         "srf_source":"fixed Wald cache",
         "radiometry_sha256":sha,
     }
-    (dest/"UAFL_Wald_full_protocol.json").write_text(
+    (dest/f"UAFL_Wald_{output_suffix}_protocol.json").write_text(
         json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8"
     )
     print(f"UAFL_WALD_FULL_OUTPUT={output} shape={fused.shape} HR_HSI_REFERENCE=unavailable")
