@@ -274,6 +274,13 @@ Train / RR test / native inference:
 python comparison/EMR-Diff/train_augsburg2_wald.py --stage train --epochs 100 --monitor ref_sam --device cuda
 python comparison/EMR-Diff/train_augsburg2_wald.py --stage test --device cuda
 python comparison/EMR-Diff/infer_augsburg2_wald.py --center_holdout --write_tif
+python comparison/EMR-Diff/visualize_augsburg2_wald_center_holdout.py
+```
+
+Three-method saved-result visualization:
+
+```bash
+python comparison/EMR-Diff/visualize_augsburg2_wald_center_holdout.py --compare_all --savefig comparison/EMR-Diff/outputs/augsburg2_wald_center_holdout/Augsburg_holdout_S2Diff_UAFL_EMRDiff_RGB.png
 ```
 
 Detailed protocol:
