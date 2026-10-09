@@ -9,6 +9,7 @@ import numpy as np
 from augsburg2_wald_center_roi import (
     PROTOCOL, crop_heldout, geotiff_transform, read_roi
 )
+from augsburg2_wald_common import WaldDataset
 
 
 class AugsburgCenterHoldoutROITests(unittest.TestCase):
@@ -72,6 +73,32 @@ class AugsburgCenterHoldoutROITests(unittest.TestCase):
             p.write_text(json.dumps(payload))
             with self.assertRaisesRegex(ValueError,"exactly 3x"):
                 read_roi(d)
+
+
+    def test_uafl_loader_filters_every_intersecting_training_tile(self):
+        forbidden=(18,30,78,90)
+        with TemporaryDirectory() as d:
+            train=Path(d)/"train"
+            train.mkdir()
+            for name,arr in (
+                ("gt",np.zeros((99,120,242),np.float32)),
+                ("lr_hsi",np.zeros((33,40,242),np.float32)),
+                ("hr_msi",np.zeros((99,120,4),np.float32)),
+                ("valid_mask",np.ones((99,120),np.uint8)),
+            ):
+                np.save(train/(name+".npy"),arr)
+            (train/"meta.json").write_text(json.dumps({
+                "forbidden_bbox_30m":list(forbidden),
+                "msi_source":"real_Sentinel_2_Wald_30m",
+            }))
+            ds=WaldDataset(d,"train",train_patch=24,train_stride=6,
+                           eval_patch=48,min_valid_fraction=.8)
+            self.assertGreater(len(ds),10)
+            for y,x,ph,pw in ds.tiles:
+                self.assertFalse(
+                    y < forbidden[2] and y+ph > forbidden[0]
+                    and x < forbidden[3] and x+pw > forbidden[1]
+                )
 
 
 if __name__=="__main__":
