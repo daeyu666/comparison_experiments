@@ -72,44 +72,69 @@ python comparison/UAFL/train_augsburg2_wald.py \
   --train_patch_size 24 --train_stride 6 --eval_patch_size 48
 ```
 
-## 4. Native real-S2 10m prediction ONLY on the heldout 144x144 ROI
+## 4. UAFL native 10m held-out inference AND QNR
+
+**Do this only after saving a center-holdout-trained UAFL checkpoint.**
+This is separate from reduced-resolution Wald `--stage test`: test reports
+PSNR/SAM on the 30m observed HSI GT and does not write a 10m `.npy`.
+
+From the `comparison_experiments` repository root:
 
 ```bash
-python comparison/UAFL/infer_augsburg2_wald.py \
-  --wald_root ../S2Diff-MH/data/augsburg2_wald_center_holdout \
-  --checkpoint comparison/UAFL/checkpoints/augsburg2_wald_center_holdout/best.pth.tar \
-  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json \
-  --save_root comparison/UAFL/outputs/augsburg2_wald_center_holdout \
-  --tile_size 96 --tile_stride 48 --write_tif
+git pull
+python comparison/UAFL/infer_augsburg2_wald.py --center_holdout --write_tif
 ```
 
-Output:
-- `Augsburg2_Wald_UAFL_heldout_HSI.npy`, shape 144x144x242.
-- `Augsburg2_Wald_UAFL_heldout_HSI.tif`, georeferenced ROI origin.
-- `UAFL_Wald_heldout_QNR.json`, using real MSI10 and measured HSI30
-  spectral reference, assessed only on held-out ROI.
-- `UAFL_Wald_heldout_protocol.json` recording checkpoint and split.
+`--center_holdout` automatically uses the shared held-out Wald cache
+and center-only radiometry from sibling S2Diff-MH, UAFL's center-trained
+best checkpoint, and **UAFL's own result directory**. The inference
+script validates the checkpoint spatial split and calibration.
 
-## 5. Fig.13 redbox diagram alongside S2Diff-MH
+It generates these files under
+`comparison/UAFL/outputs/augsburg2_wald_center_holdout/`:
 
-From the S2Diff-MH root after both models have been independently trained
-on this same center holdout:
+- `Augsburg2_Wald_UAFL_heldout_HSI.npy` (144x144x242 fused 10m HSI)
+- `Augsburg2_Wald_UAFL_heldout_HSI.tif` (correct geospatial offset)
+- `UAFL_Wald_heldout_QNR.json` (QNR, Dlambda, Ds on the held-out ROI)
+- `UAFL_Wald_heldout_protocol.json` (checkpoint/calibration/split metadata)
+
+The QNR spectral reference is original 242-band observed 30m HSI;
+the spatial reference is observed real S2 MSI at 10m. No PAN/10m
+HSI GT is used. Scores are printed by inference and saved to UAFL's
+directory, not S2Diff-MH's outputs.
+
+## 5. Visualization is a separate read-only step
+
+Run S2Diff-MH's own
+`python infer_augsburg2_wald.py --center_holdout --write_tif`
+in the S2Diff-MH repository as well. Each inference completes and
+saves QNR independently.
+
+Only after **both** `.npy` outputs exist, from S2Diff-MH root:
 
 ```bash
 python visualize_augsburg2_wald_center_holdout.py \
-  --wald_root ./data/augsburg2_wald_center_holdout \
-  --method UAFL ../comparison_experiments/comparison/UAFL/outputs/augsburg2_wald_center_holdout/Augsburg2_Wald_UAFL_heldout_HSI.npy \
-  --method S2Diff ./outputs/augsburg2_wald_center_holdout/Augsburg2_Wald_heldout_HSI.npy
+  --savefig ./figures/Augsburg_holdout_S2Diff_vs_UAFL_RGB.png
 ```
 
-Same original 10m Sentinel-2 overview red box, same ROI coordinates.
-The author's precise Fig.13 rectangle is *not* claimed here.
+The visualizer **does not start a model or inference**, and fails
+early with clear missing-file paths and inference commands.
 
-Regression checks:
+Each single-method RGB preview is saved **next to that method's
+own reconstruction**:
+
+- UAFL: `comparison/UAFL/outputs/augsburg2_wald_center_holdout/Augsburg2_Wald_UAFL_heldout_RGB.png`
+- S2Diff-MH: `S2Diff-MH/outputs/augsburg2_wald_center_holdout/Augsburg2_Wald_heldout_RGB.png`
+
+The original Sentinel-2 MSI red-box overview and the combined
+comparison figure are saved under S2Diff-MH's `figures/` directory.
+Every panel uses the same test ROI.
+
+Regression check:
 
 ```bash
 python -m unittest discover -s comparison/UAFL -p "test_augsburg2_wald_center_holdout.py"
 ```
 
-Old full-region scores and outputs cannot be presented as independent
-center-heldout results. The original cache is preserved without modification.
+Old full-scene-trained checkpoints and QNR must never be mixed into
+the new center-heldout comparison.
