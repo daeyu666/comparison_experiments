@@ -26,6 +26,8 @@ from augsburg2_wald_center_roi import crop_heldout, geotiff_transform
 
 def parse_args():
     p=argparse.ArgumentParser(description="Strict Augsburg-2 Wald UAFL 10m inference")
+    p.add_argument("--center_holdout",action="store_true",
+                   help="Use center-test Wald cache, center-trained checkpoint and UAFL-owned results folder")
     p.add_argument("--wald_root",default="./data/augsburg2_wald")
     p.add_argument("--checkpoint",default="./comparison/UAFL/checkpoints/augsburg2_wald/best.pth.tar")
     p.add_argument("--radiometry_json",default="./data/calibration/Augsburg2_Wald_radiometry.json")
@@ -39,7 +41,19 @@ def parse_args():
     p.add_argument("--qnr_min_valid_fraction", type=float, default=0.8)
     p.add_argument("--qnr_support_fraction", type=float, default=0.01,
                    help="SRF relative-to-peak threshold for MSI-covered HSI bands")
-    return p.parse_args()
+    args=p.parse_args()
+    if args.center_holdout:
+        if args.wald_root=="./data/augsburg2_wald":
+            args.wald_root="../S2Diff-MH/data/augsburg2_wald_center_holdout"
+        if args.checkpoint=="./comparison/UAFL/checkpoints/augsburg2_wald/best.pth.tar":
+            args.checkpoint="./comparison/UAFL/checkpoints/augsburg2_wald_center_holdout/best.pth.tar"
+        if args.radiometry_json=="./data/calibration/Augsburg2_Wald_radiometry.json":
+            args.radiometry_json="../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json"
+        if args.save_root=="./comparison/UAFL/outputs/augsburg2_wald":
+            args.save_root="./comparison/UAFL/outputs/augsburg2_wald_center_holdout"
+        if args.skip_qnr:
+            p.error("--center_holdout requires QNR output; omit --skip_qnr")
+    return args
 
 
 def positions(length, tile, stride):
