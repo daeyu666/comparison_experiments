@@ -97,6 +97,8 @@ def checkpoint(model, optimizer, epoch, best, args, sha, sigma):
         "target":"observed_30m_HSI_only",
         "scale_ratio":3,
         "train_area":read_json(Path(args.wald_root)/"train"/"meta.json")["training_area"],
+        "split_protocol_id":getattr(args, "split_protocol_id", "legacy_full_region_wald"),
+        "test_bbox_30m":getattr(args, "test_bbox_30m", None),
         "wald_sigma":float(sigma),
         "radiometry_sha256":sha,
         "model":model.state_dict(),
@@ -138,6 +140,16 @@ def main():
         raise ValueError("Do not combine resume and test checkpoint")
 
     sigma=require_wald(args.wald_root)
+    split_meta=read_json(Path(args.wald_root)/"train"/"meta.json")
+    args.split_protocol_id=split_meta.get("protocol_id", "legacy_full_region_wald")
+    args.test_bbox_30m=split_meta.get("test_bbox_30m")
+    if args.split_protocol_id == "Augsburg2-Wald-center-holdout-v1":
+        if args.train_patch_size != 24 or args.train_stride != 6 or args.eval_patch_size != 48:
+            raise ValueError("Center-holdout UAFL requires train_patch=24, stride=6, eval_patch=48")
+        for split in ("validation","test"):
+            entry=read_json(Path(args.wald_root)/split/"meta.json")
+            if entry.get("protocol_id") != args.split_protocol_id:
+                raise ValueError("Wald UAFL split protocol ID mismatch: "+split)
     sha=file_sha256(args.radiometry_json)
     calibration=read_radiometry(args.radiometry_json)
     seed_everything(args.seed)
@@ -148,8 +160,10 @@ def main():
     if args.stage=="test":
         ckpt_path=Path(args.checkpoint or out/"best.pth.tar")
         state=load_state(ckpt_path,model,device=device)
-        if state["radiometry_sha256"]!=sha or abs(state["wald_sigma"]-sigma)>1e-8:
-            raise ValueError("Wald checkpoint/calibration/sigma provenance mismatch")
+        if (state["radiometry_sha256"]!=sha or abs(state["wald_sigma"]-sigma)>1e-8
+            or state.get("split_protocol_id", "legacy_full_region_wald") != args.split_protocol_id
+            or state.get("test_bbox_30m") != args.test_bbox_30m):
+            raise ValueError("Wald checkpoint/calibration/sigma/heldout split provenance mismatch")
         test_set=WaldDataset(args.wald_root,"test", args.train_patch_size,
                              args.train_stride,args.eval_patch_size,args.min_valid_fraction)
         test_loader=torch.utils.data.DataLoader(test_set,batch_size=1,shuffle=False)
@@ -169,8 +183,10 @@ def main():
     if args.resume:
         state=load_state(args.resume,model,optimizer,device=device)
         if (state["radiometry_sha256"]!=sha or abs(state["wald_sigma"]-sigma)>1e-8
-            or state["monitor"]!=args.monitor):
-            raise ValueError("Resume checkpoint belongs to a different Wald protocol")
+            or state["monitor"]!=args.monitor
+            or state.get("split_protocol_id", "legacy_full_region_wald") != args.split_protocol_id
+            or state.get("test_bbox_30m") != args.test_bbox_30m):
+            raise ValueError("Resume checkpoint belongs to a different Wald protocol/split")
         start=int(state["epoch"])+1
         best=float(state["best_metric"])
         restore_rng(state.get("rng"))
