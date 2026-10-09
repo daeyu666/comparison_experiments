@@ -36,6 +36,11 @@ python prepare_augsburg2_wald_center_holdout.py \
  --output_root ./data/augsburg2_wald_center_holdout \
  --test_size_30m 48 --guard_30m 6 --train_patch_30m 24 \
  --train_stride_30m 6
+python calibrate_augsburg2_wald_radiometry.py \
+  --wald_root ./data/augsburg2_wald_center_holdout \
+  --real_cache_root ./data/augsburg_real_cache \
+  --output ./data/calibration/Augsburg2_Wald_center_holdout_radiometry.json
+
 cd ../comparison_experiments
 git pull
 ```
@@ -46,7 +51,7 @@ git pull
 python comparison/UAFL/train_augsburg2_wald.py \
   --stage train \
   --wald_root ../S2Diff-MH/data/augsburg2_wald_center_holdout \
-  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_radiometry.json \
+  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json \
   --checkpoint_dir comparison/UAFL/checkpoints/augsburg2_wald_center_holdout \
   --log_dir comparison/UAFL/logs/augsburg2_wald_center_holdout \
   --train_patch_size 24 --train_stride 6 --eval_patch_size 48 \
@@ -62,7 +67,7 @@ saw the central test image and **must not** be reused.
 python comparison/UAFL/train_augsburg2_wald.py \
   --stage test \
   --wald_root ../S2Diff-MH/data/augsburg2_wald_center_holdout \
-  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_radiometry.json \
+  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json \
   --checkpoint_dir comparison/UAFL/checkpoints/augsburg2_wald_center_holdout \
   --train_patch_size 24 --train_stride 6 --eval_patch_size 48
 ```
@@ -73,7 +78,7 @@ python comparison/UAFL/train_augsburg2_wald.py \
 python comparison/UAFL/infer_augsburg2_wald.py \
   --wald_root ../S2Diff-MH/data/augsburg2_wald_center_holdout \
   --checkpoint comparison/UAFL/checkpoints/augsburg2_wald_center_holdout/best.pth.tar \
-  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_radiometry.json \
+  --radiometry_json ../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json \
   --save_root comparison/UAFL/outputs/augsburg2_wald_center_holdout \
   --tile_size 96 --tile_stride 48 --write_tif
 ```
