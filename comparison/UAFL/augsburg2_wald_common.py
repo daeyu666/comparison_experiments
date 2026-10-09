@@ -106,6 +106,10 @@ class WaldDataset(Dataset):
                  eval_patch=48, min_valid_fraction=0.80):
         self.split = split
         root = Path(wald_root) / split
+        metadata = read_json(root / "meta.json")
+        self.forbidden_bbox = (
+            metadata.get("forbidden_bbox_30m") if split == "train" else None
+        )
         self.gt = np.load(root / "gt.npy", mmap_mode="r")
         self.lr = np.load(root / "lr_hsi.npy", mmap_mode="r")
         self.msi = np.load(root / "hr_msi.npy", mmap_mode="r")
@@ -123,6 +127,10 @@ class WaldDataset(Dataset):
                       else partition_tiles(h, w, p))
         self.tiles = []
         for top, left, ph, pw in candidates:
+            if self.forbidden_bbox is not None:
+                fy0, fx0, fy1, fx1 = map(int, self.forbidden_bbox)
+                if top < fy1 and top + ph > fy0 and left < fx1 and left + pw > fx0:
+                    continue
             if float(np.asarray(self.mask[top:top+ph, left:left+pw]).mean()) >= min_valid_fraction:
                 self.tiles.append((top, left, ph, pw))
         if not self.tiles:
