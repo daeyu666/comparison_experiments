@@ -246,17 +246,38 @@ LR-HSI 不由 EMR-Diff 自己重新实现，而是统一调用仓库根目录 `d
 EMR-Diff 依赖 PyTorch、OmegaConf、SciPy、tqdm、timm。公共退化模块由 PyTorch 实现，不再依赖 OpenCV 才能得到正式退化结果。
 
 
-## Real-world Augsburg-2 strict Wald x3
+## Real-world Augsburg-2 center-heldout Wald x3
 
-A separate real-data experiment now matches UAFL's Augsburg-2 Wald setup
-(exact cached train/validation/test splits, Sentinel-2 measured MSI, train-only
-radiometric calibration, x3 factor, mask/patch settings, 100-epoch schedule,
-best masked SAM, pooled reference test metrics, full 10m HSI–MSI QNR).
+The formal Augsburg-2 real-world comparison now follows the same
+`Augsburg2-Wald-center-holdout-v1` protocol used by S2Diff-MH and UAFL:
 
-**Do not use the synthetic `--dataset Augsburg` Train.py command for this
-experiment.** Run the dedicated:
-- `comparison/EMR-Diff/train_augsburg2_wald.py` (train and reference test);
-- `comparison/EMR-Diff/infer_augsburg2_wald.py` (10m inference and QNR).
+- observed 30m HSI: 100x120x242; real Sentinel-2 10m MSI: 300x360x4;
+- heldout 30m center: `[24:72,36:84]` (48x48);
+- native 10m heldout center: `[72:216,108:252]` (144x144);
+- training forbidden region including the 6-pixel PSF guard:
+  `[18:78,30:90]`;
+- train patch 24x24, stride 6; every intersecting tile is hard rejected;
+- validation remains geographically disjoint `deep_valid`, eval patch 48;
+- center-only radiometry is fitted without the test ROI/guard;
+- 100 epochs, AdamW 1e-5, weight decay 5e-5, validation every 5 epochs;
+- best checkpoint is selected by minimum pooled masked validation SAM;
+- native inference reconstructs **only** the untrained 144x144 center ROI;
+- QNR/Dlambda/Ds use the same UAFL implementation and only that heldout ROI.
 
-Exact one-line commands, data paths, model-width adaptation and limitations
-are documented in [AUGSBURG2_WALD.md](AUGSBURG2_WALD.md).
+Old `checkpoints/augsburg2_wald/` weights and the old full-region calibration
+must not be reused. Checkpoints now encode `split_protocol_id` and
+`test_bbox_30m`, and legacy weights are rejected.
+
+Train / RR test / native inference:
+
+```bash
+python comparison/EMR-Diff/train_augsburg2_wald.py --stage train --epochs 100 --monitor ref_sam --device cuda
+python comparison/EMR-Diff/train_augsburg2_wald.py --stage test --device cuda
+python comparison/EMR-Diff/infer_augsburg2_wald.py --center_holdout --write_tif
+```
+
+Detailed protocol:
+[AUGSBURG2_WALD_CENTER_HOLDOUT.md](AUGSBURG2_WALD_CENTER_HOLDOUT.md).
+
+The old [AUGSBURG2_WALD.md](AUGSBURG2_WALD.md) is retained only as a
+superseded historical note.
