@@ -157,7 +157,52 @@ QNR uses the **same UAFL implementation**:
 - minimum valid fraction 0.8;
 - no PAN, no synthetic HSI10 reference, no HSI->4-band projection for QNR.
 
-## 5. Regression checks
+## 5. Visualization after native inference
+
+Visualization is strictly read-only: it loads the saved `.npy` reconstruction
+and never launches training or inference.
+
+EMR-Diff only:
+
+```bash
+python comparison/EMR-Diff/visualize_augsburg2_wald_center_holdout.py
+```
+
+This writes the model RGB preview beside the EMR-Diff reconstruction:
+
+```text
+comparison/EMR-Diff/outputs/augsburg2_wald_center_holdout/
+  Augsburg2_Wald_EMRDiff_heldout_RGB.png
+  Augsburg_holdout_EMRDiff_RGB.png
+```
+
+After S2Diff-MH and UAFL have also completed their own native heldout
+inference, render all three methods with identical HSI RGB bands and one shared
+1%-99% reconstruction stretch:
+
+```bash
+python comparison/EMR-Diff/visualize_augsburg2_wald_center_holdout.py \
+  --compare_all \
+  --savefig comparison/EMR-Diff/outputs/augsburg2_wald_center_holdout/Augsburg_holdout_S2Diff_UAFL_EMRDiff_RGB.png
+```
+
+The default HSI display bands are zero-based `43,28,10`, matching the shared
+S2Diff-MH center-holdout visualizer. The left panel uses the original real S2
+MSI with the red heldout ROI box; the next panel is the observed 10m MSI ROI;
+reconstruction panels all show the exact same 144x144 center area.
+
+You can also compare arbitrary existing reconstructions:
+
+```bash
+python comparison/EMR-Diff/visualize_augsburg2_wald_center_holdout.py \
+  --method "Model-A" /path/to/model_a_heldout_HSI.npy \
+  --method "Model-B" /path/to/model_b_heldout_HSI.npy
+```
+
+Every input must be exactly `144x144x242`. Old full-region predictions are
+rejected.
+
+## 6. Regression checks
 
 From comparison_experiments root:
 
