@@ -218,7 +218,7 @@ def predict_batch(model, diffusion, edge, batch, device, calibration):
 
 def verify_checkpoint(
     state, *, radiometry_sha, sigma, split_protocol_id, test_bbox_30m,
-    monitor=None, width=None,
+    forbidden_bbox_30m, monitor=None, width=None,
 ):
     if (
         state.get("protocol") != PROTOCOL
@@ -227,6 +227,7 @@ def verify_checkpoint(
         or state.get("scale_ratio") != SCALE
         or state.get("split_protocol_id") != split_protocol_id
         or state.get("test_bbox_30m") != list(map(int, test_bbox_30m))
+        or state.get("forbidden_bbox_30m") != list(map(int, forbidden_bbox_30m))
         or state.get("radiometry_sha256") != radiometry_sha
         or abs(float(state.get("wald_sigma", -999)) - sigma) > 1e-8
     ):
