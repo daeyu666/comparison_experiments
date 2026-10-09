@@ -1,4 +1,5 @@
 """CPU structural/provenance checks for EMR Augsburg center-heldout Wald v1."""
+import importlib.util
 import os
 import sys
 import unittest
@@ -18,7 +19,12 @@ from wald_emr_common import (
     HSI_BANDS, MSI_BANDS, STATE_BANDS, PROTOCOL,
     build_diffusion, build_model, masked_l1, pack_batch, verify_checkpoint,
 )
-from infer_augsburg2_wald import parse_args as parse_infer_args
+_infer_spec = importlib.util.spec_from_file_location(
+    "emr_infer_augsburg2_wald", HERE / "infer_augsburg2_wald.py"
+)
+_infer_module = importlib.util.module_from_spec(_infer_spec)
+_infer_spec.loader.exec_module(_infer_module)
+parse_infer_args = _infer_module.parse_args
 
 
 class WaldEMRCenterHoldoutChecks(unittest.TestCase):
