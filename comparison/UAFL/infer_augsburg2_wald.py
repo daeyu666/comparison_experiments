@@ -62,7 +62,7 @@ def main():
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA not available")
     sigma=require_wald(args.wald_root)
-    calibration=read_radiometry(args.radiometry_json)
+    calibration=read_radiometry(args.radiometry_json, args.wald_root)
     sha=hashlib.sha256(Path(args.radiometry_json).read_bytes()).hexdigest()
     device=torch.device(args.device)
 
