@@ -90,6 +90,7 @@ class WaldEMRCenterHoldoutChecks(unittest.TestCase):
                 state, radiometry_sha="abc", sigma=1.2,
                 split_protocol_id=CENTER_PROTOCOL,
                 test_bbox_30m=[24, 36, 72, 84],
+                forbidden_bbox_30m=[18, 30, 78, 90],
                 monitor="ref_sam", width=64,
             )
 
@@ -110,6 +111,7 @@ class WaldEMRCenterHoldoutChecks(unittest.TestCase):
             state, radiometry_sha="abc", sigma=1.2,
             split_protocol_id=CENTER_PROTOCOL,
             test_bbox_30m=[24, 36, 72, 84],
+            forbidden_bbox_30m=[18, 30, 78, 90],
             monitor="ref_sam", width=64,
         )
 
