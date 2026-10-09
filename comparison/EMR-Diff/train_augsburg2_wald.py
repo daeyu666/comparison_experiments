@@ -120,7 +120,7 @@ def save_state(
 
 def load_state(
     path, model, *, sha, sigma, device, split_protocol_id, test_bbox_30m,
-    optimizer=None, monitor=None,
+    forbidden_bbox_30m, optimizer=None, monitor=None,
 ):
     state = torch.load(path, map_location=device, weights_only=False)
     verify_checkpoint(
@@ -129,6 +129,7 @@ def load_state(
         sigma=sigma,
         split_protocol_id=split_protocol_id,
         test_bbox_30m=test_bbox_30m,
+        forbidden_bbox_30m=forbidden_bbox_30m,
         monitor=monitor,
         width=model.width,
     )
@@ -210,6 +211,7 @@ def main():
         load_state(
             ckpt, model, sha=sha, sigma=sigma, device=device,
             split_protocol_id=split_protocol_id, test_bbox_30m=test_bbox_30m,
+            forbidden_bbox_30m=forbidden_bbox_30m, monitor=args.monitor,
         )
         dataset = WaldDataset(
             args.wald_root, "test", args.train_patch_size, args.train_stride,
@@ -254,6 +256,7 @@ def main():
         state = load_state(
             args.resume, model, sha=sha, sigma=sigma, device=device,
             split_protocol_id=split_protocol_id, test_bbox_30m=test_bbox_30m,
+            forbidden_bbox_30m=forbidden_bbox_30m,
             optimizer=optimizer, monitor=args.monitor,
         )
         start = int(state["epoch"]) + 1
