@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -10,6 +11,7 @@ from augsburg2_wald_center_roi import (
     PROTOCOL, crop_heldout, geotiff_transform, read_roi
 )
 from augsburg2_wald_common import WaldDataset
+from infer_augsburg2_wald import parse_args as parse_uafl_inference_args
 
 
 class AugsburgCenterHoldoutROITests(unittest.TestCase):
@@ -22,6 +24,24 @@ class AugsburgCenterHoldoutROITests(unittest.TestCase):
             "test_bbox_10m":[72,108,216,252],
             "guard_pixels_30m":6,
         }), encoding="utf-8")
+
+    def test_center_inference_cli_routes_to_uafl_own_files(self):
+        with patch("sys.argv", ["infer_augsburg2_wald.py", "--center_holdout", "--write_tif"]):
+            args = parse_uafl_inference_args()
+        self.assertEqual(
+            args.wald_root, "../S2Diff-MH/data/augsburg2_wald_center_holdout"
+        )
+        self.assertEqual(
+            args.save_root,
+            "./comparison/UAFL/outputs/augsburg2_wald_center_holdout",
+        )
+        self.assertIn(
+            "comparison/UAFL/checkpoints/augsburg2_wald_center_holdout",
+            args.checkpoint,
+        )
+        self.assertIn("center_holdout_radiometry", args.radiometry_json)
+        self.assertFalse(args.skip_qnr)
+        self.assertTrue(args.write_tif)
 
     def test_heldout_crops_exact_same_region_at_both_resolutions(self):
         with TemporaryDirectory() as d:
