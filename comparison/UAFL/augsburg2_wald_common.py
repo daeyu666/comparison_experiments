@@ -46,8 +46,18 @@ def require_wald(wald_root):
     return float(psf["terminal_sigma_hr_pixels"])
 
 
-def read_radiometry(path):
+def read_radiometry(path, wald_root=None):
     data = read_json(path)
+    if wald_root is not None:
+        split_meta = read_json(Path(wald_root) / "train" / "meta.json")
+        expected = split_meta.get("protocol_id", "legacy_full_region_wald")
+        actual = data.get("spatial_protocol_id", "legacy_full_region_wald")
+        if expected != actual:
+            raise ValueError(
+                "Wald radiometry fit includes or excludes a different ROI: "
+                f"cache={expected} calibration={actual}. "
+                "Center holdout needs its own calibration outside the test ROI."
+            )
     if data.get("dataset") != "Augsburg-2-Wald" or data.get("uses_EnMAP10_reference") is not False:
         raise ValueError("Require train-only Augsburg2_Wald_radiometry.json (no EnMAP10)")
     gain, bias = np.asarray(data["gain"], dtype=np.float32), np.asarray(data["bias"], dtype=np.float32)
