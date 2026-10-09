@@ -103,8 +103,8 @@ def main():
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
 
-    sigma, split_protocol_id, test_bbox_30m, _ = require_center_holdout(
-        args.wald_root
+    sigma, split_protocol_id, test_bbox_30m, forbidden_bbox_30m = (
+        require_center_holdout(args.wald_root)
     )
     radiometry_path = Path(args.radiometry_json)
     calibration = read_radiometry(radiometry_path, args.wald_root)
@@ -120,6 +120,8 @@ def main():
         sigma=sigma,
         split_protocol_id=split_protocol_id,
         test_bbox_30m=test_bbox_30m,
+        forbidden_bbox_30m=forbidden_bbox_30m,
+        monitor="ref_sam",
     )
     model = build_model(int(checkpoint["model_width"]), device=device)
     model.load_state_dict(checkpoint["model_state_dict"])
