@@ -69,7 +69,7 @@ def parse_args():
     p.add_argument(
         "--registered_probability",
         type=float,
-        default=0.5,
+        default=0.10,
         help=(
             "Probability that a stage-2 training sample uses exactly registered "
             "P0(X). Remaining samples use P0(W_phi(X)). Set 0 to reproduce the "
