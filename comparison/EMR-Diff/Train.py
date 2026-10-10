@@ -176,6 +176,9 @@ if __name__ == "__main__":
         f.write(f"early_stop_min_delta: {trainer.early_stop_min_delta}\n")
         f.write(f"early_stop_patience: {trainer.early_stop_patience}\n")
         f.write(f"eval_seed: {trainer.eval_seed}\n")
+        f.write(f"architecture_id: {trainer.architecture_id}\n")
+        f.write(f"backbone_width: {trainer.backbone_width}\n")
+        f.write(f"state_channels: {trainer.state_channels}\n")
 
     print(
         f"[resolved] dataset={trainer.dataset}, "
