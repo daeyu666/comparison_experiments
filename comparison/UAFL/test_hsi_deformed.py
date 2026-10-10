@@ -243,6 +243,19 @@ def main():
                 f"trained={train_args[key]!r}, test={getattr(args,key)!r}"
             )
     if expected_train == "hsi_deformed_mixed":
+        identity_probability = train_args.get("registered_probability")
+        if identity_probability is None:
+            print(
+                "WARNING: legacy UAFL mixed checkpoint predates the unified "
+                "10% identity / 90% deformed protocol. It is retained as a "
+                "time-constrained historical exception and is NOT relabeled "
+                "as a 10/90-trained checkpoint."
+            )
+        elif abs(float(identity_probability) - 0.10) > 1e-12:
+            print(
+                "WARNING: UAFL mixed checkpoint registered_probability="
+                f"{identity_probability}, formal unified value is 0.10."
+            )
         for key in (
             "max_translation", "max_rotation_deg", "max_local_px",
             "control_grid", "min_jacobian",
@@ -296,6 +309,8 @@ def main():
                         max_local_px=args.max_local_px,
                         control_grid=args.control_grid,
                         min_jacobian=args.min_jacobian,
+                        local_strength_min_fraction=0.0,
+                        local_strength_max_fraction=1.0,
                     )
                     warped_lr = make_deformed_lr_hsi(gt, geometry, p0)
                     pred = model(upsample_lr_hsi(warped_lr, (h, w)), hr_msi)
@@ -357,6 +372,13 @@ def main():
         "checkpoint": str(ckpt_path),
         "checkpoint_epoch": ckpt.get("epoch") if isinstance(ckpt, dict) else None,
         "checkpoint_best_validation_psnr": ckpt.get("best_psnr"),
+        "checkpoint_registered_probability": (
+            train_args.get("registered_probability")
+            if expected_train == "hsi_deformed_mixed" else 1.0
+        ),
+        "formal_mixed_identity_probability": 0.10,
+        "formal_mixed_deformed_probability": 0.90,
+        "formal_deformed_local_amplitude": "U(0,4) proposal subject to min Jacobian 0.5",
         "split_protocol": info.get("protocol"),
     }
 
