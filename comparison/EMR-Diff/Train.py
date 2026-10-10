@@ -11,9 +11,9 @@ DEFAULT_VALIDATION_INTERVALS = {
     "PaviaU": 20,
     "Houston13": 10,
     "Chikusei": 5,
-    "CAVE": 5,
-    "Botswana": 10,
-    "Augsburg": 5,
+    "CAVE": 20,
+    "Botswana": 20,
+    "Augsburg": 20,
 }
 
 
@@ -34,6 +34,25 @@ def parse_args():
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--patch_size", type=int, default=64)
+    parser.add_argument("--stride", type=int, default=32)
+    parser.add_argument("--scale_ratio", type=int, default=4)
+    parser.add_argument("--mtf_nyquist", type=float, default=0.2)
+    parser.add_argument("--psf_truncate", type=float, default=3.0)
+    parser.add_argument(
+        "--train_misalignment_mode",
+        default="registered",
+        choices=["registered"],
+        help="Stage-1 EMR-Diff is registered-only; deformation is stage 2.",
+    )
+    parser.add_argument("--optimizer", choices=["Adam", "AdamW"], default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--weight_decay", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=10)
+    parser.add_argument("--checkpoint_dir", default="")
+    parser.add_argument("--log_dir", default="")
+    parser.add_argument("--output_dir", default="")
     parser.add_argument(
         "--validation_interval",
         type=int,
@@ -60,7 +79,27 @@ if __name__ == "__main__":
     configs = OmegaConf.load(config_path)
     configs.data.dataset = args.dataset
     configs.data.degradation_mode = args.degradation_mode
+    configs.data.patch_size = args.patch_size
+    configs.data.stride = args.stride
+    configs.data.validation_size = args.image_size
+    configs.data.test_size = args.image_size
+    configs.data.mtf_nyquist = args.mtf_nyquist
+    configs.data.psf_truncate = args.psf_truncate
+    configs.diffusion.params.sf = args.scale_ratio
     configs.train.device = args.device
+    configs.train.seed = args.seed
+    if args.optimizer is not None:
+        configs.train.optimizer = args.optimizer
+    if args.lr is not None:
+        configs.train.lr = args.lr
+    if args.weight_decay is not None:
+        configs.train.weight_decay = args.weight_decay
+    if args.checkpoint_dir:
+        configs.train.checkpoint_dir = args.checkpoint_dir
+    if args.log_dir:
+        configs.train.log_dir = args.log_dir
+    if args.output_dir:
+        configs.train.output_dir = args.output_dir
 
     if args.epochs is not None:
         configs.train.epochs = args.epochs
@@ -105,12 +144,7 @@ if __name__ == "__main__":
             f"requested={args.degradation_mode}, resolved={trainer.degradation_mode}."
         )
 
-    checkpoint_dir = os.path.join(
-        root,
-        "checkpoints",
-        trainer.degradation_mode,
-        trainer.dataset,
-    )
+    checkpoint_dir = trainer.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     protocol_path = os.path.join(checkpoint_dir, "run_protocol.txt")
@@ -119,6 +153,18 @@ if __name__ == "__main__":
         f.write(f"resolved_dataset: {trainer.dataset}\n")
         f.write(f"requested_degradation_mode: {args.degradation_mode}\n")
         f.write(f"resolved_degradation_mode: {trainer.degradation_mode}\n")
+        f.write("training_stage: stage1_registered\n")
+        f.write(f"train_misalignment_mode: {args.train_misalignment_mode}\n")
+        f.write(f"image_size: {args.image_size}\n")
+        f.write(f"patch_size: {args.patch_size}\n")
+        f.write(f"stride: {args.stride}\n")
+        f.write(f"scale_ratio: {args.scale_ratio}\n")
+        f.write(f"mtf_nyquist: {args.mtf_nyquist}\n")
+        f.write(f"psf_truncate: {args.psf_truncate}\n")
+        f.write(f"optimizer: {trainer.optimizer_name}\n")
+        f.write(f"lr: {trainer.optimizer.param_groups[0]['lr']}\n")
+        f.write(f"weight_decay: {trainer.weight_decay}\n")
+        f.write(f"seed: {args.seed}\n")
         f.write(f"validation_interval: {validation_interval}\n")
         f.write(f"early_stop_metric: {trainer.early_stop_metric}\n")
         f.write(f"early_stop_min_delta: {trainer.early_stop_min_delta}\n")
