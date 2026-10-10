@@ -33,6 +33,24 @@ PaviaU / Houston13 / Chikusei / CAVE / Botswana / Augsburg
 `experiment_protocol.py`。新对比方法接入时只需要增加一次模型适配注册，
 之后训练和测试仍使用上述根命令。
 
+### EMR-Diff synthetic基线的固定容量适配
+
+EMR-Diff在六个synthetic x4数据集上固定使用原始模型容量：
+
+```text
+BAFUNet hidden width = 34
+dynamic state = HSI bands + MSI bands
+state output = shared 1x1 projection from 34 channels
+```
+
+也就是说，Chikusei、Botswana、Augsburg不会再因为光谱波段更多而把整个
+BAFUNet主干扩成136、153、246通道。这样保持不同数据集之间的baseline
+模型容量一致，也更接近原始EMR-Diff的31+3=34通道配置。
+
+旧的 `model_channels=state_channels` synthetic EMR checkpoint与新结构
+不兼容，正式结果必须从头训练。真实世界Augsburg center-heldout Wald x3
+是独立适配，仍使用其单独记录的64通道latent trunk，不与synthetic权重混用。
+
 ### 两阶段冻结训练协议
 
 #### Stage 1：registered
