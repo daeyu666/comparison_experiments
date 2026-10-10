@@ -71,9 +71,8 @@ def parse_args():
         type=float,
         default=0.10,
         help=(
-            "Probability that a stage-2 training sample uses exactly registered "
-            "P0(X). Remaining samples use P0(W_phi(X)). Set 0 to reproduce the "
-            "current UAFL train_hsi_deformed.py loop literally."
+            "Probability that a stage-2 sample uses exact identity P0(X). "
+            "Formal unified protocol is 0.10; remaining samples use P0(W_phi(X))."
         ),
     )
 
