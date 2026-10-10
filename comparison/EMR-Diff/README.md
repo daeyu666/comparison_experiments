@@ -68,6 +68,67 @@ Chikusei:  128 HSI + 8 MSI = 136 channels
 
 Houston13 按实际 HSI 波段数加 8 个 WV2 MSI 通道自动确定。
 
+### Synthetic EMR-Diff backbone capacity is fixed at the original width
+
+For the six synthetic x4 datasets, the diffusion state dimension still follows
+the sensor/data channels, but the BAFUNet hidden trunk no longer scales with
+the number of HSI bands.
+
+Formal architecture:
+
+```text
+dynamic state:
+  C_state = HSI bands + MSI bands
+
+BAFUNet hidden width:
+  fixed 34 channels
+
+output:
+  shared 1x1 state head
+  34 -> C_state
+```
+
+Examples:
+
+```text
+CAVE:
+  state 34 -> backbone 34 -> state 34
+
+PaviaU:
+  state 107 -> backbone 34 -> state 107
+
+Chikusei:
+  state 136 -> backbone 34 -> state 136
+
+Augsburg synthetic:
+  state 246 -> backbone 34 -> state 246
+```
+
+This matches the original EMR-Diff capacity convention: the released 31-HSI +
+3-MSI setting uses a 34-channel state and a 34-channel BAFUNet trunk. Changing
+the dataset spectral dimensionality must not silently enlarge the entire
+baseline network.
+
+The main output and multiscale outputs are all projected with the same 1x1
+state head, so the original five-step diffusion state and multiscale residual
+loss are unchanged.
+
+Synthetic checkpoints now store:
+
+```text
+architecture_id = fixed34_state_projection_v1
+backbone_width = 34
+state_channels = dataset dependent
+```
+
+Old synthetic checkpoints trained with `model_channels=state_channels` are
+rejected and must be retrained.
+
+This change applies to the **six synthetic x4 experiments only**. The separate
+real-world Augsburg center-heldout Wald x3 adapter has its own documented
+64-channel latent trunk and its checkpoints must never be mixed with synthetic
+EMR-Diff checkpoints.
+
 ### Metric consistency
 
 公共 `metrics.py` 对预测值与 GT 统一在 `[0,1]` 数值域计算 PSNR、RMSE、SAM、ERGAS、SSIM 和 CC，不再出现 PSNR/RMSE 使用 clamp 而 SAM/ERGAS/SSIM/CC 使用未裁剪预测值的情况。
