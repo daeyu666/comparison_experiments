@@ -1,5 +1,30 @@
 # UAFL — CVPR 2026 reproduction
 
+
+> **Unified synthetic-x4 entry point (current formal protocol):**
+>
+> New/re-run registered and mixed experiments must be launched from the
+> repository root:
+>
+> ```bash
+> python train.py --model UAFL --dataset <Dataset> --mode registered
+> python train.py --model UAFL --dataset <Dataset> --mode mixed
+> python test.py  --model UAFL --dataset <Dataset> --mode registered
+> python test.py  --model UAFL --dataset <Dataset> --mode mixed
+> ```
+>
+> The root protocol freezes stage 2 to **10% exact identity + 90% deformed**;
+> the deformed component uses `dx,dy~U(-4,4)`,
+> `rotation~U(-2,2)`, and local-amplitude proposal `U(0,4)` with
+> `min Jacobian>=0.5`. Model-local shell launchers below are retained for
+> historical reproducibility and should not be copied into new experiments.
+>
+> Existing UAFL mixed checkpoints trained before this change are an explicit
+> legacy exception: their stage-2 loader was deformed-only. They are not
+> relabeled as 10/90 checkpoints and do not need to be retrained for the
+> current time-constrained result set.
+
+
 Paper: **Enhancing Unregistered Hyperspectral Image Super-Resolution via Unmixing-based Abundance Fusion Learning**, CVPR 2026.
 
 Official implementation: `yingkai-zhang/UAFL`.
