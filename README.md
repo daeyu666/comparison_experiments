@@ -1,5 +1,184 @@
 # HSI Super-Resolution Comparison Experiments
 
+
+## 统一训练 / 测试入口（正式两阶段对比实验）
+
+从本协议起，新增和重跑的对比模型不再要求用户记忆每个
+`comparison/<Method>/` 子目录下的训练命令。仓库根目录提供统一入口：
+
+```bash
+python train.py --model <Method> --dataset <Dataset> --mode registered
+python train.py --model <Method> --dataset <Dataset> --mode mixed
+
+python test.py --model <Method> --dataset <Dataset> --mode registered
+python test.py --model <Method> --dataset <Dataset> --mode mixed
+```
+
+当前已经接入：
+
+```text
+UAFL
+EMR-Diff
+```
+
+模型名大小写不敏感，并支持 `EMR` / `EMRDiff` 等常用别名。
+数据集统一支持：
+
+```text
+PaviaU / Houston13 / Chikusei / CAVE / Botswana / Augsburg
+```
+
+除 `--device` 这一运行环境选项外，正式实验超参数不再从根入口暴露，
+避免不同方法因手工命令不同而产生协议漂移。冻结设置集中定义在
+`experiment_protocol.py`。新对比方法接入时只需要增加一次模型适配注册，
+之后训练和测试仍使用上述根命令。
+
+### 两阶段冻结训练协议
+
+#### Stage 1：registered
+
+```text
+epochs = 800
+LR-HSI = P0(X)
+HR-MSI = R0(X)
+GT-HSI = X
+
+image_size = 128
+train patch = 64
+stride = 32
+scale = x4
+
+degradation = physical
+MTF@Nyquist = 0.2
+PSF truncate = 3.0
+
+optimizer = AdamW
+lr = 1e-5
+weight decay = 5e-5
+batch size = 1
+```
+
+Stage 1固定训练满800 epoch。正式根入口通过极大的early-stop patience避免
+原方法自己的默认早停提前终止。best checkpoint仍由独立validation选择。
+
+#### Stage 2：mixed
+
+Stage 2从同一模型、同一数据集Stage 1的 `best.pth.tar` 初始化。
+只加载**模型权重**，AdamW重新初始化，训练600 epoch。
+
+每个训练样本按以下固定概率生成LR-HSI观测：
+
+```text
+10%:
+  identity
+  dx = 0
+  dy = 0
+  rotation = 0
+  local = 0
+  LR-HSI = P0(X)
+
+90%:
+  deformed
+  dx, dy ~ U(-4, 4) HR pixels, independently
+  rotation ~ U(-2, 2) degrees
+  local amplitude proposal ~ U(0, 4) HR pixels
+  5x5 control grid
+  cubic B-spline dense local field
+  min Jacobian >= 0.5
+  LR-HSI = P0(W_phi(X))
+```
+
+在两种分支中：
+
+```text
+GT-HSI = X
+HR-MSI = R0(X)
+```
+
+即只改变HSI观测几何，HR-MSI始终保持可靠坐标系。local amplitude的
+`U(0,4)` 是采样proposal；为满足 `min Jacobian >= 0.5`，
+最终接受样本是该proposal在非折叠约束下的条件分布。
+
+Stage 2其余固定设置：
+
+```text
+epochs = 600
+optimizer = AdamW
+lr = 1e-5
+weight decay = 5e-5
+batch size = 1
+
+validation:
+  Registered + Warp
+  warped validation cases = 5
+  best checkpoint monitor = Warp PSNR
+
+final test:
+  registered checkpoint -> Registered
+  mixed checkpoint -> Registered + Warp
+  warped test cases = 10
+```
+
+Warp validation/test使用相同的几何范围：
+`dx,dy~U(-4,4)`、`rotation~U(-2,2)`、
+`local amplitude proposal~U(0,4)`、`min Jacobian>=0.5`。
+
+### 最简运行方式
+
+以Chikusei为例：
+
+```bash
+# UAFL
+python train.py --model UAFL --dataset Chikusei --mode registered
+python train.py --model UAFL --dataset Chikusei --mode mixed
+python test.py  --model UAFL --dataset Chikusei --mode registered
+python test.py  --model UAFL --dataset Chikusei --mode mixed
+
+# EMR-Diff
+python train.py --model EMR-Diff --dataset Chikusei --mode registered
+python train.py --model EMR-Diff --dataset Chikusei --mode mixed
+python test.py  --model EMR-Diff --dataset Chikusei --mode registered
+python test.py  --model EMR-Diff --dataset Chikusei --mode mixed
+```
+
+换数据集时只修改 `--dataset`；换模型只修改 `--model`；
+切换配准/混合训练只修改 `--mode`。
+
+统一入口仍将checkpoint保存在各自方法目录：
+
+```text
+Stage 1:
+comparison/<Method>/checkpoints/physical/<Dataset>/best.pth.tar
+
+Stage 2:
+comparison/<Method>/checkpoints/hsi_warp_final/<Dataset>/best.pth.tar
+```
+
+日志与输出也继续保留在各模型自己的 `logs/` 和 `outputs/` 下，
+不会把不同模型产物混到仓库根目录。
+
+### UAFL历史结果例外
+
+**现有UAFL mixed checkpoint是在本次10%/90%统一协议确定之前训练完成的。**
+旧版 `comparison/UAFL/train_hsi_deformed.py` 实际为deformed-only
+stage 2，没有显式的10% identity Bernoulli分支。由于实验时间限制，
+这些已经训练完成的UAFL权重本轮不要求重新训练。
+
+必须保持以下标注：
+
+```text
+legacy UAFL mixed checkpoint:
+  historical exception
+  stage-2 training != formal 10% identity / 90% deformed protocol
+```
+
+测试脚本会在检测到旧checkpoint缺少 `registered_probability` 字段时
+打印警告，且不会把该权重重新标记成10/90训练结果。
+
+**从本次提交之后新训练或重跑的UAFL以及所有后续对比模型，一律使用
+根目录统一入口和10% identity / 90% deformed协议。**
+
+
 高光谱图像超分辨率（HSI-MSI Fusion）公共数据协议与对比实验仓库。所有正式对比方法统一放在 `comparison/` 下，并共享同一套数据、SRF、退化算子、空间划分和评价指标。
 
 ## 对比实验目录
