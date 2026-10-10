@@ -20,6 +20,9 @@ EXPECTED_MSI_CHANNELS = {
     "PaviaU": 4,
     "Houston13": 8,
     "Chikusei": 8,
+    "CAVE": 3,
+    "Botswana": 8,
+    "Augsburg": 4,
 }
 
 
@@ -51,8 +54,9 @@ def save_checkpoint(
     validation_metrics=None,
     best_metric=None,
     best_score=None,
+    checkpoint_dir=None,
 ):
-    checkpoint_dir = os.path.join(
+    checkpoint_dir = checkpoint_dir or os.path.join(
         EMR_ROOT, "checkpoints", degradation_mode, dataset
     )
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -205,12 +209,31 @@ class ResShiftTrainer:
         self.edge_detector = Edge().to(self.device)
         self.setup_optimization()
 
-        self.output_dir = os.path.join(
-            EMR_ROOT, "outputs", self.degradation_mode, self.dataset
+        self.checkpoint_dir = str(
+            self.configs.train.get(
+                "checkpoint_dir",
+                os.path.join(
+                    EMR_ROOT, "checkpoints", self.degradation_mode, self.dataset
+                ),
+            )
         )
-        self.log_dir = os.path.join(
-            EMR_ROOT, "logs", self.degradation_mode, self.dataset
+        self.output_dir = str(
+            self.configs.train.get(
+                "output_dir",
+                os.path.join(
+                    EMR_ROOT, "outputs", self.degradation_mode, self.dataset
+                ),
+            )
         )
+        self.log_dir = str(
+            self.configs.train.get(
+                "log_dir",
+                os.path.join(
+                    EMR_ROOT, "logs", self.degradation_mode, self.dataset
+                ),
+            )
+        )
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -224,9 +247,26 @@ class ResShiftTrainer:
         self.configs.diffusion.params.band_dim = self.hsi_channels
 
     def setup_optimization(self):
-        self.optimizer = torch.optim.Adam(
-            self.Net.parameters(), lr=float(self.configs.train.get("lr"))
-        )
+        optimizer_name = str(
+            self.configs.train.get("optimizer", "Adam")
+        ).lower()
+        lr = float(self.configs.train.get("lr"))
+        weight_decay = float(self.configs.train.get("weight_decay", 0.0))
+        if optimizer_name == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                self.Net.parameters(), lr=lr, weight_decay=weight_decay
+            )
+        elif optimizer_name == "adam":
+            self.optimizer = torch.optim.Adam(
+                self.Net.parameters(), lr=lr, weight_decay=weight_decay
+            )
+        else:
+            raise ValueError(
+                f"Unsupported EMR-Diff optimizer={optimizer_name!r}; "
+                "use Adam or AdamW."
+            )
+        self.optimizer_name = optimizer_name
+        self.weight_decay = weight_decay
 
     def build_model(self):
         params = dict(self.configs.model.params)
@@ -472,6 +512,7 @@ class ResShiftTrainer:
                     validation_metrics=validation_metrics,
                     best_metric=self.early_stop_metric,
                     best_score=best_score,
+                    checkpoint_dir=self.checkpoint_dir,
                 )
                 print(
                     f"[best] epoch={best_epoch} {self.early_stop_metric}="
@@ -496,6 +537,7 @@ class ResShiftTrainer:
                 validation_metrics=validation_metrics,
                 best_metric=self.early_stop_metric,
                 best_score=best_score,
+                checkpoint_dir=self.checkpoint_dir,
             )
             print(f"checkpoint={epoch_path}")
 
