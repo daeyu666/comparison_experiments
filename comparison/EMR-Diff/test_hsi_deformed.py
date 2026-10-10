@@ -226,6 +226,9 @@ def main():
     checkpoint = torch.load(
         ckpt_path, map_location=trainer.device, weights_only=False
     )
+    trainer.verify_checkpoint_architecture(
+        checkpoint, context=f"final test {ckpt_path}"
+    )
     if checkpoint.get("dataset") != args.dataset:
         raise ValueError("checkpoint/test dataset mismatch")
     if int(checkpoint.get("state_channels", -1)) != trainer.state_channels:
