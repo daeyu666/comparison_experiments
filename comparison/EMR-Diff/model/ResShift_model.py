@@ -25,6 +25,42 @@ EXPECTED_MSI_CHANNELS = {
     "Augsburg": 4,
 }
 
+EMR_BACKBONE_WIDTH = 34
+EMR_ARCHITECTURE_ID = "fixed34_state_projection_v1"
+
+
+class EMRStateAdapter(nn.Module):
+    """Keep original EMR-Diff BAFUNet capacity fixed while state bands vary.
+
+    Original EMR-Diff uses a 34-channel state (31 HSI + 3 MSI) and a
+    34-channel BAFUNet trunk. Cross-dataset adaptation must change the
+    observation/state dimensionality, not silently widen the whole backbone.
+    The backbone therefore consumes the dynamic state directly at its input
+    convolutions, keeps every hidden stage at width 34, and projects its
+    34-channel outputs back to the dynamic state with one shared 1x1 head.
+    """
+
+    def __init__(self, params, state_channels):
+        super().__init__()
+        params = dict(params)
+        params["model_channels"] = EMR_BACKBONE_WIDTH
+        params["out_channels"] = EMR_BACKBONE_WIDTH
+        self.backbone = BAFUNet(**params)
+        self.state_channels = int(state_channels)
+        if self.state_channels == EMR_BACKBONE_WIDTH:
+            self.state_head = nn.Identity()
+        else:
+            self.state_head = nn.Conv2d(
+                EMR_BACKBONE_WIDTH, self.state_channels, kernel_size=1
+            )
+
+    def forward(self, x_t, rgb, lq, timesteps):
+        latent, up_out = self.backbone(x_t, rgb, lq, timesteps)
+        return self.state_head(latent), [
+            self.state_head(feature) for feature in up_out
+        ]
+
+
 
 def _sample_or_resize(x, target_hw):
     target_h, target_w = int(target_hw[0]), int(target_hw[1])
@@ -51,6 +87,8 @@ def save_checkpoint(
     degradation_mode,
     state_channels,
     filename=None,
+    architecture_id=EMR_ARCHITECTURE_ID,
+    backbone_width=EMR_BACKBONE_WIDTH,
     validation_metrics=None,
     best_metric=None,
     best_score=None,
@@ -71,6 +109,8 @@ def save_checkpoint(
         "dataset": dataset,
         "degradation_mode": degradation_mode,
         "state_channels": int(state_channels),
+        "architecture_id": str(architecture_id),
+        "backbone_width": int(backbone_width),
     }
     if validation_metrics is not None:
         payload["validation_metrics"] = {
@@ -206,6 +246,12 @@ class ResShiftTrainer:
         self._apply_dynamic_channel_config()
         self.build_model()
         self.build_diffusion_model()
+        print(
+            f"[EMR-Diff architecture] dataset={self.dataset} "
+            f"state_channels={self.state_channels} "
+            f"backbone_width={self.backbone_width} "
+            f"architecture_id={self.architecture_id}"
+        )
         self.edge_detector = Edge().to(self.device)
         self.setup_optimization()
 
@@ -240,8 +286,8 @@ class ResShiftTrainer:
     def _apply_dynamic_channel_config(self):
         params = self.configs.model.params
         params.in_channels = self.state_channels
-        params.model_channels = self.state_channels
-        params.out_channels = self.state_channels
+        params.model_channels = EMR_BACKBONE_WIDTH
+        params.out_channels = EMR_BACKBONE_WIDTH
         params.lqrgb_channels = self.state_channels
         params.rgb_channels = self.msi_channels
         self.configs.diffusion.params.band_dim = self.hsi_channels
@@ -270,11 +316,32 @@ class ResShiftTrainer:
 
     def build_model(self):
         params = dict(self.configs.model.params)
-        self.Net = BAFUNet(**params).to(self.device)
+        self.Net = EMRStateAdapter(
+            params, state_channels=self.state_channels
+        ).to(self.device)
+        self.backbone_width = EMR_BACKBONE_WIDTH
+        self.architecture_id = EMR_ARCHITECTURE_ID
 
     def build_diffusion_model(self):
         diffusion_opt = self.configs.get("diffusion", dict)
         self.EMRDIFF = EMRDIFF(diffusion_opt).to(self.device)
+
+    def verify_checkpoint_architecture(self, checkpoint, *, context="checkpoint"):
+        architecture_id = checkpoint.get("architecture_id")
+        backbone_width = checkpoint.get("backbone_width")
+        if architecture_id != self.architecture_id or int(backbone_width or -1) != self.backbone_width:
+            raise ValueError(
+                f"{context} uses incompatible EMR-Diff architecture: "
+                f"architecture_id={architecture_id!r}, backbone_width={backbone_width}. "
+                f"Current formal baseline requires {self.architecture_id!r} "
+                f"with fixed backbone_width={self.backbone_width}. "
+                "Old hidden=state_channels checkpoints must be retrained."
+            )
+        if int(checkpoint.get("state_channels", -1)) != self.state_channels:
+            raise ValueError(
+                f"{context} state_channels={checkpoint.get('state_channels')} "
+                f"but current dataset requires {self.state_channels}."
+            )
 
     def _prepare_batch(self, batch):
         gt = batch["gt"].to(self.device, dtype=torch.float32, non_blocking=True)
