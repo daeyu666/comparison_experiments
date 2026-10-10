@@ -636,6 +636,9 @@ class ResShiftTrainer:
             map_location=self.device,
             weights_only=False,
         )
+        self.verify_checkpoint_architecture(
+            checkpoint, context=str(checkpoint_path)
+        )
         checkpoint_mode = checkpoint.get("degradation_mode")
         if checkpoint_mode is not None and checkpoint_mode != self.degradation_mode:
             raise ValueError(
