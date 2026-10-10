@@ -88,6 +88,9 @@ def upsample_lr_hsi(lr_hsi: torch.Tensor, hr_size) -> torch.Tensor:
 
 
 # Exact metric formulas used by S2Diff-MH final reporting.
+# Source: daeyu666/S2Diff-MH/metrics.py, blob e7f346e739a96b241a8dfe970409d851b8537bbf.
+# Do not switch to comparison_experiments/metrics.py: its ERGAS/CC differ.
+# Keep S2Diff-MH's clipping and zero-vector SAM mask exactly for fair scoring.
 def calc_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
     pred = torch.clamp(pred.detach().float(), 0.0, 1.0)
     target = torch.clamp(target.detach().float(), 0.0, 1.0)
@@ -95,20 +98,28 @@ def calc_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
     return math.sqrt(max(mse, 1e-12))
 
 
-def calc_psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
+def calc_psnr(pred: torch.Tensor, target: torch.Tensor, max_value: float = 1.0) -> float:
     rmse = calc_rmse(pred, target)
-    return 100.0 if rmse <= 1e-12 else 20.0 * math.log10(1.0 / rmse)
+    return 100.0 if rmse <= 1e-12 else 20.0 * math.log10(max_value / rmse)
 
 
-def calc_sam(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
-    pred = pred.detach().float()
-    target = target.detach().float()
+def calc_sam(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12) -> float:
+    """Mean spectral angle in degrees over pixels with valid non-zero spectra."""
+    pred = torch.clamp(pred.detach().float(), 0.0, 1.0)
+    target = torch.clamp(target.detach().float(), 0.0, 1.0)
+
     dot = torch.sum(pred * target, dim=1)
-    pred_norm = torch.sqrt(torch.sum(pred * pred, dim=1) + eps)
-    target_norm = torch.sqrt(torch.sum(target * target, dim=1) + eps)
-    cos = dot / (pred_norm * target_norm + eps)
-    cos = torch.clamp(cos, -1.0 + eps, 1.0 - eps)
-    return torch.mean(torch.acos(cos) * 180.0 / math.pi).item()
+    pred_norm = torch.linalg.vector_norm(pred, dim=1)
+    target_norm = torch.linalg.vector_norm(target, dim=1)
+
+    valid = (pred_norm > eps) & (target_norm > eps)
+    if not torch.any(valid):
+        return 0.0
+
+    denom = (pred_norm[valid] * target_norm[valid]).clamp_min(eps)
+    cos = (dot[valid] / denom).clamp(-1.0, 1.0)
+    angle = torch.acos(cos) * 180.0 / math.pi
+    return torch.mean(angle).item()
 
 
 def calc_cc(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
@@ -117,7 +128,9 @@ def calc_cc(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> floa
     pred_centered = pred - pred.mean(dim=2, keepdim=True)
     target_centered = target - target.mean(dim=2, keepdim=True)
     numerator = torch.sum(pred_centered * target_centered, dim=2)
-    denominator = torch.sqrt(torch.sum(pred_centered ** 2, dim=2) * torch.sum(target_centered ** 2, dim=2) + eps)
+    denominator = torch.sqrt(
+        torch.sum(pred_centered ** 2, dim=2) * torch.sum(target_centered ** 2, dim=2) + eps
+    )
     return torch.mean(numerator / (denominator + eps)).item()
 
 
@@ -126,10 +139,13 @@ def calc_ergas(pred: torch.Tensor, target: torch.Tensor, scale_ratio: int, eps: 
     target = target.detach().float()
     rmse_per_band = torch.sqrt(torch.mean((pred - target) ** 2, dim=(0, 2, 3)) + eps)
     mean_target = torch.mean(target, dim=(0, 2, 3))
-    return (100.0 / scale_ratio * torch.sqrt(torch.mean((rmse_per_band / (mean_target + eps)) ** 2))).item()
+    ergas = 100.0 / scale_ratio * torch.sqrt(
+        torch.mean((rmse_per_band / (mean_target + eps)) ** 2)
+    )
+    return ergas.item()
 
 
-def calc_ssim(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
+def calc_ssim_simple(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
     pred = pred.detach().float()
     target = target.detach().float()
     c1, c2 = 0.01 ** 2, 0.03 ** 2
@@ -142,16 +158,15 @@ def calc_ssim(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> fl
     return ssim.item()
 
 
-def calc_metrics(pred: torch.Tensor, target: torch.Tensor, scale_ratio: int):
-    rmse = calc_rmse(pred, target)
+def calc_metrics(pred: torch.Tensor, target: torch.Tensor, scale_ratio: int) -> Dict[str, float]:
     return {
         "PSNR": calc_psnr(pred, target),
-        "SSIM": calc_ssim(pred, target),
-        "ERGAS": calc_ergas(pred, target, scale_ratio),
+        "RMSE": calc_rmse(pred, target),
         "SAM": calc_sam(pred, target),
+        "ERGAS": calc_ergas(pred, target, scale_ratio),
+        "SSIM": calc_ssim_simple(pred, target),
         "CC": calc_cc(pred, target),
-        "RMSE": rmse,
-        "RMSE_x255": rmse * 255.0,
+        "RMSE_x255": calc_rmse(pred, target) * 255.0,
     }
 
 
