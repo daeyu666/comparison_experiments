@@ -33,7 +33,8 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 if str(UAFL_DIR) not in sys.path:
-    sys.path.insert(0, str(UAFL_DIR))
+    # Keep EMR-Diff's own model package ahead of UAFL/model.py.
+    sys.path.append(str(UAFL_DIR))
 
 from hsi_deformation import (  # noqa: E402
     make_deformed_lr_hsi,
