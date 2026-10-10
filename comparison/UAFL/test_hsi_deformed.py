@@ -64,6 +64,11 @@ def parse_args():
     p.add_argument("--control_grid", type=int, default=5)
     p.add_argument("--min_jacobian", type=float, default=0.5)
     p.add_argument("--checkpoint", default="", help="default: comparison/UAFL/checkpoints/hsi_warp_final/<dataset>/best.pth.tar")
+    p.add_argument(
+        "--test_mode", choices=["registered_only", "registered_and_warp"],
+        default="registered_and_warp",
+        help="Registered-only checkpoint: registered_only; trained HSI-warp checkpoint: registered_and_warp",
+    )
     p.add_argument("--print_cases", action="store_true")
     p.add_argument("--output_json", default="", help="default: dataset/seed/cases-specific JSON under comparison/UAFL/outputs")
     return p.parse_args()
@@ -165,8 +170,8 @@ def format_metrics(m):
 
 def main():
     args = parse_args()
-    if args.cases < 1:
-        raise ValueError("--cases must be >=1")
+    if args.test_mode == "registered_and_warp" and args.cases < 1:
+        raise ValueError("--cases must be >=1 for registered_and_warp")
     set_seed(args.seed)
     device = resolve_device(args.device)
 
@@ -187,6 +192,56 @@ def main():
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt)
     model.eval()
+
+    # Do not accidentally attribute a registered checkpoint's results to
+    # HSI-deformed training, or the opposite. Reject legacy MSI-warp weights.
+    if not isinstance(ckpt, dict) or not isinstance(ckpt.get("args"), dict):
+        raise ValueError("Checkpoint must contain the original UAFL training args for protocol verification")
+    train_args = ckpt["args"]
+    expected_train = (
+        "registered" if args.test_mode == "registered_only"
+        else "hsi_deformed_mixed"
+    )
+    if expected_train == "registered":
+        if train_args.get("train_misalignment_mode") != "registered":
+            raise ValueError(
+                "Registered-only test requires best.pth.tar from train.py "
+                "with train_misalignment_mode=registered"
+            )
+    else:
+        if (train_args.get("train_misalignment_mode") is not None
+            or "validation_cases" not in train_args
+            or "max_local_px" not in train_args):
+            raise ValueError(
+                "Registered+Warp test requires the HSI-deformed/mixed checkpoint "
+                "from train_hsi_deformed.py, NOT a legacy MSI-warp checkpoint"
+            )
+
+    for key in (
+        "dataset", "image_size", "patch_size", "stride", "scale_ratio",
+        "degradation_mode", "mtf_nyquist", "psf_truncate", "msi_mode",
+        "srf_interp", "srf_path", "wavelength_path",
+    ):
+        if key in train_args and train_args[key] != getattr(args, key):
+            raise ValueError(
+                f"Checkpoint/test protocol mismatch for {key}: "
+                f"trained={train_args[key]!r}, test={getattr(args,key)!r}"
+            )
+    if expected_train == "hsi_deformed_mixed":
+        for key in (
+            "max_translation", "max_rotation_deg", "max_local_px",
+            "control_grid", "min_jacobian",
+        ):
+            if key in train_args and train_args[key] != getattr(args, key):
+                raise ValueError(
+                    f"Checkpoint/test geometry mismatch for {key}: "
+                    f"trained={train_args[key]!r}, test={getattr(args,key)!r}"
+                )
+    print(
+        f"UAFL_TEST_CHECKPOINT dataset={args.dataset} "
+        f"train_condition={expected_train} test_mode={args.test_mode} "
+        f"epoch={ckpt.get('epoch')} path={ckpt_path}"
+    )
 
     registered_rows = []
     warp_rows = []
@@ -212,63 +267,67 @@ def main():
 
             # Match S2Diff-MH evaluate_all_samples(): each held-out patch receives
             # the same deterministic test deformation-case schedule.
-            generator = make_generator(device, args.seed + 70000)
-            for case_idx in range(args.cases):
-                geometry = sample_synthetic_geometry(
-                    h,
-                    w,
-                    device=device,
-                    dtype=gt.dtype,
-                    generator=generator,
-                    max_translation=args.max_translation,
-                    max_rotation_deg=args.max_rotation_deg,
-                    max_local_px=args.max_local_px,
-                    control_grid=args.control_grid,
-                    min_jacobian=args.min_jacobian,
-                )
-                warped_lr = make_deformed_lr_hsi(gt, geometry, p0)
-                pred = model(upsample_lr_hsi(warped_lr, (h, w)), hr_msi)
-                metrics = calc_metrics(pred, gt, args.scale_ratio)
-                warp_rows.append(metrics)
-                record = {
-                    "sample": sample_idx + 1,
-                    "case": case_idx + 1,
-                    "dx_hr_px": float(geometry.dx.item()),
-                    "dy_hr_px": float(geometry.dy.item()),
-                    "rotation_deg": float(geometry.theta_deg.item()),
-                    "local_max_hr_px": float(
-                        torch.linalg.vector_norm(geometry.local_field, dim=1).amax().item()
-                    ),
-                    "min_jacobian": float(
-                        jacobian_determinant(geometry.local_field).amin().item()
-                    ),
-                    "metrics": metrics,
-                }
-                per_case.append(record)
-                if args.print_cases:
-                    print(
-                        f"SAMPLE={sample_idx+1:04d} CASE={case_idx+1:02d} "
-                        f"dx={record['dx_hr_px']:+.3f} dy={record['dy_hr_px']:+.3f} "
-                        f"rot={record['rotation_deg']:+.3f} "
-                        f"local={record['local_max_hr_px']:.3f} | "
-                        f"{format_metrics(metrics)}"
+            if args.test_mode == "registered_and_warp":
+                generator = make_generator(device, args.seed + 70000)
+                for case_idx in range(args.cases):
+                    geometry = sample_synthetic_geometry(
+                        h,
+                        w,
+                        device=device,
+                        dtype=gt.dtype,
+                        generator=generator,
+                        max_translation=args.max_translation,
+                        max_rotation_deg=args.max_rotation_deg,
+                        max_local_px=args.max_local_px,
+                        control_grid=args.control_grid,
+                        min_jacobian=args.min_jacobian,
                     )
+                    warped_lr = make_deformed_lr_hsi(gt, geometry, p0)
+                    pred = model(upsample_lr_hsi(warped_lr, (h, w)), hr_msi)
+                    metrics = calc_metrics(pred, gt, args.scale_ratio)
+                    warp_rows.append(metrics)
+                    record = {
+                        "sample": sample_idx + 1,
+                        "case": case_idx + 1,
+                        "dx_hr_px": float(geometry.dx.item()),
+                        "dy_hr_px": float(geometry.dy.item()),
+                        "rotation_deg": float(geometry.theta_deg.item()),
+                        "local_max_hr_px": float(
+                            torch.linalg.vector_norm(geometry.local_field, dim=1).amax().item()
+                        ),
+                        "min_jacobian": float(
+                            jacobian_determinant(geometry.local_field).amin().item()
+                        ),
+                        "metrics": metrics,
+                    }
+                    per_case.append(record)
+                    if args.print_cases:
+                        print(
+                            f"SAMPLE={sample_idx+1:04d} CASE={case_idx+1:02d} "
+                            f"dx={record['dx_hr_px']:+.3f} dy={record['dy_hr_px']:+.3f} "
+                            f"rot={record['rotation_deg']:+.3f} "
+                            f"local={record['local_max_hr_px']:.3f} | "
+                            f"{format_metrics(metrics)}"
+                        )
 
     registered_metrics = average_metrics(registered_rows)
-    warp_metrics = average_metrics(warp_rows)
+    warp_metrics = average_metrics(warp_rows) if warp_rows else None
     h, w = test_patch_shape
 
     test_conditions = {
         "dataset": args.dataset,
+        "checkpoint_train_condition": expected_train,
+        "test_mode": args.test_mode,
         "test_patch": f"{h}x{w}",
         "test_samples": len(test_set),
         "metric_region": "full-frame per patch; macro-average over all held-out patches",
-        "cases_per_patch": args.cases,
+        "cases_per_patch": args.cases if warp_metrics is not None else 0,
         "seed": args.seed,
-        "synthetic_case_generator_seed": args.seed + 70000,
-        "case_schedule": "same deterministic geometry cases repeated for every held-out patch",
+        "synthetic_case_generator_seed": (args.seed + 70000 if warp_metrics is not None else None),
+        "case_schedule": ("same deterministic geometry cases repeated for every held-out patch"
+                          if warp_metrics is not None else "not_applicable"),
         "scale_ratio": args.scale_ratio,
-        "physical_degradation": "warp HR-HSI first, then calibrated PSF/MTF + detector integration + x4 sampling",
+        "physical_degradation": f"calibrated PSF/MTF + detector integration + x{args.scale_ratio} sampling; warp HR-HSI first only in Warp group",
         "mtf_nyquist": args.mtf_nyquist,
         "psf_truncate": args.psf_truncate,
         "max_translation_hr_px_per_axis": args.max_translation,
@@ -282,7 +341,7 @@ def main():
         "metric_implementation": "S2Diff-MH-matched formulas; RMSE table value is raw RMSE*255",
         "checkpoint": str(ckpt_path),
         "checkpoint_epoch": ckpt.get("epoch") if isinstance(ckpt, dict) else None,
-        "checkpoint_best_warp_val_psnr": ckpt.get("best_psnr") if isinstance(ckpt, dict) else None,
+        "checkpoint_best_validation_psnr": ckpt.get("best_psnr"),
         "split_protocol": info.get("protocol"),
     }
 
@@ -292,29 +351,31 @@ def main():
         print(f"  {k}={v}")
     print("-" * 118)
     print(f"REGISTERED {format_metrics(registered_metrics)}")
-    print(f"WARP       {format_metrics(warp_metrics)}")
+    if warp_metrics is not None:
+        print(f"WARP       {format_metrics(warp_metrics)}")
     print("-" * 118)
     print("TABLE")
     print("Group       PSNR       SSIM      ERGAS        SAM         CC    RMSE(x255)")
     print(f"Registered  {registered_metrics['PSNR']:8.4f}  {registered_metrics['SSIM']:9.6f}  "
           f"{registered_metrics['ERGAS']:9.4f}  {registered_metrics['SAM']:9.4f}  "
           f"{registered_metrics['CC']:9.6f}  {registered_metrics['RMSE_x255']:10.4f}")
-    print(f"Warp        {warp_metrics['PSNR']:8.4f}  {warp_metrics['SSIM']:9.6f}  "
-          f"{warp_metrics['ERGAS']:9.4f}  {warp_metrics['SAM']:9.4f}  "
-          f"{warp_metrics['CC']:9.6f}  {warp_metrics['RMSE_x255']:10.4f}")
+    if warp_metrics is not None:
+        print(f"Warp        {warp_metrics['PSNR']:8.4f}  {warp_metrics['SSIM']:9.6f}  "
+              f"{warp_metrics['ERGAS']:9.4f}  {warp_metrics['SAM']:9.4f}  "
+              f"{warp_metrics['CC']:9.6f}  {warp_metrics['RMSE_x255']:10.4f}")
     print("=" * 118)
 
     output = {
         "test_conditions": test_conditions,
-        "average_metrics": {
-            "Registered": registered_metrics,
-            "Warp": warp_metrics,
-        },
+        "average_metrics": (
+            {"Registered": registered_metrics, "Warp": warp_metrics}
+            if warp_metrics is not None else {"Registered": registered_metrics}
+        ),
         "per_sample_case": per_case,
     }
     output_json = (
         args.output_json
-        or f"comparison/UAFL/outputs/uafl_hsi_warp_final_{args.dataset}_seed{args.seed}_cases{args.cases}.json"
+        or f"comparison/UAFL/outputs/uafl_{expected_train}_{args.dataset}_seed{args.seed}_cases{args.cases if warp_metrics is not None else 0}.json"
     )
     out = Path(output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
