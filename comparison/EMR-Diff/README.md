@@ -248,112 +248,33 @@ EMR-Diff 依赖 PyTorch、OmegaConf、SciPy、tqdm、timm。公共退化模块�
 
 ## Two-stage registered -> HSI-deformed training
 
-EMR-Diff now supports the same two-stage synthetic training layout used for the
-UAFL/S2Diff comparison.
-
-### Stage 1: registered physical training
-
-Registered-only observations use the shared physical degradation, SRF sensor
-protocol, 128 validation/test size, 64 training patch, stride 32 and x4 scale.
-For the UAFL-matched optimizer settings, use AdamW with lr=1e-5 and
-weight_decay=5e-5.
-
-CAVE example:
+The formal synthetic x4 two-stage protocol is now controlled exclusively by
+the repository-root launchers:
 
 ```bash
-python comparison/EMR-Diff/Train.py \
-  --dataset CAVE \
-  --image_size 128 \
-  --patch_size 64 \
-  --stride 32 \
-  --scale_ratio 4 \
-  --degradation_mode physical \
-  --mtf_nyquist 0.2 \
-  --psf_truncate 3.0 \
-  --train_misalignment_mode registered \
-  --epochs 800 \
-  --batch_size 1 \
-  --optimizer AdamW \
-  --lr 1e-5 \
-  --weight_decay 5e-5 \
-  --early_stop_patience 999999 \
-  --log_dir comparison/EMR-Diff/logs/physical/CAVE
+python train.py --model EMR-Diff --dataset <Dataset> --mode registered
+python train.py --model EMR-Diff --dataset <Dataset> --mode mixed
+python test.py  --model EMR-Diff --dataset <Dataset> --mode registered
+python test.py  --model EMR-Diff --dataset <Dataset> --mode mixed
 ```
 
-Chikusei is identical except `--dataset Chikusei` and the corresponding
-log directory. The registered best checkpoint remains:
+Do not copy stale model-local stage-2 commands into new experiments. The frozen
+formal settings live in `experiment_protocol.py` and the repository root
+`README.md`. In particular, mixed training is now **10% exact identity +
+90% deformed**, with `dx,dy~U(-4,4)`, `rotation~U(-2,2)`, and proposed
+local amplitude `U(0,4)` under the non-folding Jacobian constraint.
+
+Model-local files `Train.py`, `train_hsi_deformed.py`, and
+`test_hsi_deformed.py` remain implementation adapters invoked by the root
+launchers. Checkpoints still belong to this method directory:
 
 ```text
 comparison/EMR-Diff/checkpoints/physical/<Dataset>/best.pth.tar
+comparison/EMR-Diff/checkpoints/hsi_warp_final/<Dataset>/best.pth.tar
 ```
 
-A stage-2 run must use the **same dataset** as stage 1. CAVE and Chikusei
-checkpoints have different HSI/MSI/state channel counts and are rejected if mixed.
-
-### Stage 2: registered + deformed LR-HSI mixture
-
-`train_hsi_deformed.py` loads only the stage-1 model weights and reinitializes
-AdamW. HR-MSI and GT-HSI stay registered. Deformed observations follow
-
-```text
-X -> W_phi(X) -> physical P0 -> LR-HSI
-```
-
-with dx/dy U(-4,+4) HR pixels, rotation U(-2,+2) degrees, local B-spline
-displacement up to 4 HR pixels, 5x5 control grid and min Jacobian 0.5.
-
-Literal 50/50 registered/deformed mixture:
-
-```bash
-python comparison/EMR-Diff/train_hsi_deformed.py \
-  --dataset Chikusei \
-  --image_size 128 \
-  --patch_size 64 \
-  --stride 32 \
-  --scale_ratio 4 \
-  --degradation_mode physical \
-  --mtf_nyquist 0.2 \
-  --psf_truncate 3.0 \
-  --max_translation 4.0 \
-  --max_rotation_deg 2.0 \
-  --max_local_px 4.0 \
-  --control_grid 5 \
-  --min_jacobian 0.5 \
-  --registered_probability 0.5 \
-  --epochs 600 \
-  --batch_size 1 \
-  --lr 1e-5 \
-  --weight_decay 5e-5 \
-  --log_dir comparison/EMR-Diff/logs/hsi_warp_final/Chikusei
-```
-
-The default stage-1 initialization is resolved dynamically as:
-
-```text
-comparison/EMR-Diff/checkpoints/physical/<Dataset>/best.pth.tar
-```
-
-Stage-2 outputs are isolated under:
-
-```text
-comparison/EMR-Diff/checkpoints/hsi_warp_final/<Dataset>/
-comparison/EMR-Diff/logs/hsi_warp_final/<Dataset>/
-comparison/EMR-Diff/outputs/hsi_warp_final/<Dataset>/
-```
-
-Validation reports both registered and warped metrics. Warp validation uses
-five deterministic geometry cases and the best checkpoint is selected by
-warped PSNR. The stage-2 default early-stop patience is effectively disabled
-(999999), so `--epochs 600` is the fixed training budget unless explicitly
-overridden.
-
-**Protocol note:** the current checked-in UAFL `train_hsi_deformed.py` always
-samples a deformed `P0(W_phi(X))` observation in stage 2; it does not currently
-draw exact registered samples with a separate Bernoulli mixture. To reproduce
-that current UAFL code literally in EMR-Diff, run the same command with
-`--registered_probability 0.0`. Use `0.5` only when the intended comparison
-protocol is explicitly the 50/50 registered/deformed mixture, and then UAFL
-must use that same mixture rule for strict fairness.
+A stage-2 checkpoint must initialize from the same dataset's registered
+stage-1 checkpoint; dataset/state-channel mismatches are rejected.
 
 ## Real-world Augsburg-2 center-heldout Wald x3
 
