@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -264,11 +265,12 @@ def emr_training_loss(trainer, gt, lr_hsi, hr_msi):
         noise=noise,
         rgb_hr=hr_msi,
     )
-    lr_hr = trainer._condition(
+    lr_hr = F.interpolate(
         lr_hsi,
-        torch.zeros_like(hr_msi),
-        gt.shape[-2:],
-    )[:, :trainer.hsi_channels]
+        size=gt.shape[-2:],
+        mode="bicubic",
+        align_corners=False,
+    )
     network_output, up_out = trainer.Net(
         x_t, hr_msi, lr_hr, timesteps
     )
