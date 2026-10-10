@@ -189,6 +189,266 @@ comparison/<Method>/
 
 所有方法统一直接在 `main` 分支维护，不通过额外分支隔离不同对比实验。
 
+## 新增对比模型的统一接入规范
+
+根目录的统一训练/测试入口通过 `experiment_protocol.py` 中的
+`ModelAdapter` 注册表定位模型实现。后续新增一个对比模型时，
+**只需要在这里注册一次**，日常训练/测试命令不再改变。
+
+当前适配器字段为：
+
+```python
+ModelAdapter(
+    canonical="NewModel",
+    folder="NewModel",
+
+    # 六个 synthetic x4 数据集
+    registered_train="comparison/NewModel/train_registered.py",
+    mixed_train="comparison/NewModel/train_mixed.py",
+    test_script="comparison/NewModel/test.py",
+
+    # 真实世界 Augsburg-2 center-heldout Wald x3
+    real_train="comparison/NewModel/train_augsburg2_wald.py",
+    real_infer="comparison/NewModel/infer_augsburg2_wald.py",
+)
+```
+
+其中 synthetic x4 的3个核心adapter必须分别实现：
+
+```text
+registered_train adapter
+  -> Stage 1 registered-only training
+
+mixed_train adapter
+  -> Stage 2 10% identity / 90% deformed training
+
+test_script adapter
+  -> registered checkpoint: Registered test
+  -> mixed checkpoint: Registered + Warp test
+```
+
+如果该方法还参加真实世界Augsburg实验，再补：
+
+```text
+real_train adapter
+  -> center-heldout Wald x3 train + reduced-resolution reference test
+
+real_infer adapter
+  -> native 10m heldout ROI inference + QNR
+```
+
+接入完成后，用户侧仍然只修改模型名、数据集名和训练模式：
+
+```bash
+python train.py --model NewModel --dataset Chikusei --mode registered
+python train.py --model NewModel --dataset Chikusei --mode mixed
+python test.py  --model NewModel --dataset Chikusei --mode mixed
+```
+
+真实世界Augsburg则只修改模型名：
+
+```bash
+python train_real.py --model NewModel
+python test_real.py  --model NewModel
+```
+
+模型自己的checkpoint、log和output始终保存在
+`comparison/<Method>/` 内，不写到统一入口所在的仓库根目录。
+
+## 真实世界 Augsburg-2 独立统一入口
+
+真实世界Augsburg-2 **不使用** 六个 synthetic x4 数据集的
+`train.py / test.py`。两套实验协议完全独立：
+
+```text
+synthetic x4:
+  train.py
+  test.py
+
+real Augsburg-2 center-heldout Wald x3:
+  train_real.py
+  test_real.py
+```
+
+注意：
+
+```bash
+python train.py --model UAFL --dataset Augsburg --mode mixed
+```
+
+中的 `Augsburg` 指的是 **synthetic Augsburg x4**。
+
+真实世界实验必须使用：
+
+```bash
+python train_real.py --model UAFL
+python test_real.py  --model UAFL
+```
+
+或：
+
+```bash
+python train_real.py --model EMR-Diff
+python test_real.py  --model EMR-Diff
+```
+
+除可选的 `--device` 外，真实世界实验不暴露其他实验超参数，
+全部冻结在 `experiment_protocol.py`。
+
+### 冻结的真实世界协议
+
+```text
+protocol_id:
+  Augsburg2-Wald-center-holdout-v1
+
+observed HSI:
+  30m
+  100 x 120 x 242
+
+observed real Sentinel-2 MSI:
+  10m
+  300 x 360 x 4
+  B2 / B3 / B4 / B8
+
+scale:
+  x3 Wald
+
+held-out test, 30m:
+  [24:72, 36:84]
+  48 x 48
+
+native held-out ROI, 10m:
+  [72:216, 108:252]
+  144 x 144
+
+training forbidden region, 30m:
+  [18:78, 30:90]
+  center test ROI + 6-pixel PSF guard
+
+train patch:
+  24 x 24
+
+train stride:
+  6
+
+validation / RR test patch:
+  48 x 48
+
+minimum valid fraction:
+  0.80
+
+training epochs:
+  100
+
+optimizer:
+  AdamW
+
+learning rate:
+  1e-5
+
+weight decay:
+  5e-5
+
+batch size:
+  1
+
+validation interval:
+  5 epochs
+
+save interval:
+  5 epochs
+
+best checkpoint:
+  minimum pooled masked validation SAM
+
+seed:
+  10
+```
+
+radiometry必须使用center-holdout专用标定：
+
+```text
+../S2Diff-MH/data/calibration/
+Augsburg2_Wald_center_holdout_radiometry.json
+```
+
+禁止复用旧full-region radiometry或旧full-region checkpoint。
+
+### 真实世界训练
+
+所有模型统一：
+
+```bash
+python train_real.py --model <Method>
+```
+
+当前：
+
+```bash
+python train_real.py --model UAFL
+python train_real.py --model EMR-Diff
+```
+
+checkpoint仍保存在模型自身目录：
+
+```text
+comparison/UAFL/checkpoints/augsburg2_wald_center_holdout/best.pth.tar
+comparison/EMR-Diff/checkpoints/augsburg2_wald_center_holdout/best.pth.tar
+```
+
+### 真实世界测试
+
+统一：
+
+```bash
+python test_real.py --model <Method>
+```
+
+一个命令依次执行：
+
+```text
+Step 1:
+  reduced-resolution center-heldout reference test
+
+  output:
+    REF_PSNR
+    REF_SAM
+    REF_RMSE
+
+Step 2:
+  native 10m center-heldout inference
+
+  output:
+    144 x 144 x 242 reconstructed HSI
+
+Step 3:
+  held-out native QNR evaluation
+
+  output:
+    QNR
+    Dlambda
+    Ds
+
+Step 4:
+  write GeoTIFF with the correct center-ROI geotransform
+```
+
+native inference固定：
+
+```text
+tile size = 96
+tile stride = 48
+
+QNR:
+  HR window = 48
+  minimum valid fraction = 0.80
+  SRF support threshold = 0.01
+```
+
+native 10m尺度不存在真实HR-HSI，因此禁止报告10m PSNR/SAM。
+native质量只使用真实30m HSI作为光谱参考、真实10m MSI作为空间参考的
+QNR / Dlambda / Ds。
+
 ## 所有对比实验固定协议
 
 ### 1. 超分尺度
