@@ -66,6 +66,8 @@ class ModelAdapter:
     registered_train: str
     mixed_train: str
     test_script: str
+    real_train: str
+    real_infer: str
 
 
 _ADAPTERS = {
@@ -75,6 +77,8 @@ _ADAPTERS = {
         registered_train="comparison/UAFL/train.py",
         mixed_train="comparison/UAFL/train_hsi_deformed.py",
         test_script="comparison/UAFL/test_hsi_deformed.py",
+        real_train="comparison/UAFL/train_augsburg2_wald.py",
+        real_infer="comparison/UAFL/infer_augsburg2_wald.py",
     ),
     "emr-diff": ModelAdapter(
         canonical="EMR-Diff",
@@ -82,6 +86,8 @@ _ADAPTERS = {
         registered_train="comparison/EMR-Diff/Train.py",
         mixed_train="comparison/EMR-Diff/train_hsi_deformed.py",
         test_script="comparison/EMR-Diff/test_hsi_deformed.py",
+        real_train="comparison/EMR-Diff/train_augsburg2_wald.py",
+        real_infer="comparison/EMR-Diff/infer_augsburg2_wald.py",
     ),
 }
 _ALIASES = {
@@ -248,6 +254,161 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
     if adapter.canonical == "EMR-Diff":
         cmd += ["--eval_seed", str(EVAL_SEED)]
     return cmd
+
+
+
+# Frozen real-world Augsburg-2 center-heldout Wald x3 protocol.
+REAL_WALD_ROOT = Path("../S2Diff-MH/data/augsburg2_wald_center_holdout")
+REAL_RADIOMETRY = Path(
+    "../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json"
+)
+REAL_SPLIT_PROTOCOL = "Augsburg2-Wald-center-holdout-v1"
+REAL_TEST_BBOX_30M = (24, 36, 72, 84)
+REAL_TEST_BBOX_10M = (72, 108, 216, 252)
+REAL_FORBIDDEN_BBOX_30M = (18, 30, 78, 90)
+REAL_TRAIN_PATCH = 24
+REAL_TRAIN_STRIDE = 6
+REAL_EVAL_PATCH = 48
+REAL_MIN_VALID_FRACTION = 0.80
+REAL_BATCH_SIZE = 1
+REAL_NUM_WORKERS = 0
+REAL_EPOCHS = 100
+REAL_LR = 1e-5
+REAL_WEIGHT_DECAY = 5e-5
+REAL_EVAL_INTERVAL = 5
+REAL_SAVE_INTERVAL = 5
+REAL_MONITOR = "ref_sam"
+REAL_SEED = 10
+REAL_EVAL_SEED = 1234
+REAL_TILE_SIZE = 96
+REAL_TILE_STRIDE = 48
+REAL_QNR_WINDOW_HR = 48
+REAL_QNR_MIN_VALID_FRACTION = 0.80
+REAL_QNR_SUPPORT_FRACTION = 0.01
+
+
+def real_checkpoint_dir(adapter: ModelAdapter) -> Path:
+    return (
+        ROOT / "comparison" / adapter.folder
+        / "checkpoints" / "augsburg2_wald_center_holdout"
+    )
+
+
+def real_log_dir(adapter: ModelAdapter) -> Path:
+    return (
+        ROOT / "comparison" / adapter.folder
+        / "logs" / "augsburg2_wald_center_holdout"
+    )
+
+
+def real_output_dir(adapter: ModelAdapter) -> Path:
+    return (
+        ROOT / "comparison" / adapter.folder
+        / "outputs" / "augsburg2_wald_center_holdout"
+    )
+
+
+def real_checkpoint_path(adapter: ModelAdapter) -> Path:
+    return real_checkpoint_dir(adapter) / "best.pth.tar"
+
+
+def build_real_train_command(adapter: ModelAdapter, device: str):
+    cmd = [
+        sys.executable,
+        str(ROOT / adapter.real_train),
+        "--stage", "train",
+        "--wald_root", str(REAL_WALD_ROOT),
+        "--radiometry_json", str(REAL_RADIOMETRY),
+        "--checkpoint_dir", str(real_checkpoint_dir(adapter).relative_to(ROOT)),
+        "--log_dir", str(real_log_dir(adapter).relative_to(ROOT)),
+        "--train_patch_size", str(REAL_TRAIN_PATCH),
+        "--train_stride", str(REAL_TRAIN_STRIDE),
+        "--eval_patch_size", str(REAL_EVAL_PATCH),
+        "--min_valid_fraction", str(REAL_MIN_VALID_FRACTION),
+        "--batch_size", str(REAL_BATCH_SIZE),
+        "--num_workers", str(REAL_NUM_WORKERS),
+        "--epochs", str(REAL_EPOCHS),
+        "--lr", str(REAL_LR),
+        "--weight_decay", str(REAL_WEIGHT_DECAY),
+        "--eval_interval", str(REAL_EVAL_INTERVAL),
+        "--save_interval", str(REAL_SAVE_INTERVAL),
+        "--monitor", REAL_MONITOR,
+        "--seed", str(REAL_SEED),
+        "--device", device,
+    ]
+    if adapter.canonical == "EMR-Diff":
+        cmd += ["--eval_seed", str(REAL_EVAL_SEED), "--model_width", "64"]
+    return cmd
+
+
+def build_real_reference_test_command(adapter: ModelAdapter, device: str):
+    checkpoint = real_checkpoint_path(adapter)
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Real Augsburg checkpoint not found: {checkpoint}")
+    cmd = [
+        sys.executable,
+        str(ROOT / adapter.real_train),
+        "--stage", "test",
+        "--wald_root", str(REAL_WALD_ROOT),
+        "--radiometry_json", str(REAL_RADIOMETRY),
+        "--checkpoint_dir", str(real_checkpoint_dir(adapter).relative_to(ROOT)),
+        "--log_dir", str(real_log_dir(adapter).relative_to(ROOT)),
+        "--checkpoint", str(checkpoint.relative_to(ROOT)),
+        "--train_patch_size", str(REAL_TRAIN_PATCH),
+        "--train_stride", str(REAL_TRAIN_STRIDE),
+        "--eval_patch_size", str(REAL_EVAL_PATCH),
+        "--min_valid_fraction", str(REAL_MIN_VALID_FRACTION),
+        "--batch_size", "1",
+        "--num_workers", "0",
+        "--epochs", str(REAL_EPOCHS),
+        "--lr", str(REAL_LR),
+        "--weight_decay", str(REAL_WEIGHT_DECAY),
+        "--eval_interval", str(REAL_EVAL_INTERVAL),
+        "--save_interval", str(REAL_SAVE_INTERVAL),
+        "--monitor", REAL_MONITOR,
+        "--seed", str(REAL_SEED),
+        "--device", device,
+    ]
+    if adapter.canonical == "EMR-Diff":
+        cmd += ["--eval_seed", str(REAL_EVAL_SEED), "--model_width", "64"]
+    return cmd
+
+
+def build_real_native_test_command(adapter: ModelAdapter, device: str):
+    checkpoint = real_checkpoint_path(adapter)
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Real Augsburg checkpoint not found: {checkpoint}")
+    cmd = [
+        sys.executable,
+        str(ROOT / adapter.real_infer),
+        "--center_holdout",
+        "--wald_root", str(REAL_WALD_ROOT),
+        "--radiometry_json", str(REAL_RADIOMETRY),
+        "--checkpoint", str(checkpoint.relative_to(ROOT)),
+        "--save_root", str(real_output_dir(adapter).relative_to(ROOT)),
+        "--tile_size", str(REAL_TILE_SIZE),
+        "--tile_stride", str(REAL_TILE_STRIDE),
+        "--device", device,
+        "--write_tif",
+        "--qnr_window_hr", str(REAL_QNR_WINDOW_HR),
+        "--qnr_min_valid_fraction", str(REAL_QNR_MIN_VALID_FRACTION),
+        "--qnr_support_fraction", str(REAL_QNR_SUPPORT_FRACTION),
+    ]
+    if adapter.canonical == "EMR-Diff":
+        cmd += ["--eval_seed", str(REAL_EVAL_SEED)]
+    return cmd
+
+
+def real_protocol_summary() -> str:
+    return (
+        f"{REAL_SPLIT_PROTOCOL}; x3 Wald; test30={REAL_TEST_BBOX_30M}, "
+        f"test10={REAL_TEST_BBOX_10M}, forbidden30={REAL_FORBIDDEN_BBOX_30M}; "
+        f"train={REAL_TRAIN_PATCH}/stride{REAL_TRAIN_STRIDE}, "
+        f"eval={REAL_EVAL_PATCH}; epochs={REAL_EPOCHS}; "
+        f"AdamW lr={REAL_LR:g}, wd={REAL_WEIGHT_DECAY:g}; "
+        f"best={REAL_MONITOR}; native tile={REAL_TILE_SIZE}/"
+        f"{REAL_TILE_STRIDE}; QNR window={REAL_QNR_WINDOW_HR}"
+    )
 
 
 def protocol_summary() -> str:
