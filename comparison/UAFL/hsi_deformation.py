@@ -168,12 +168,22 @@ def sample_synthetic_geometry(
     max_local_px: float = 4.0,
     control_grid: int = 5,
     min_jacobian: float = 0.5,
+    local_strength_min_fraction: float = 0.65,
+    local_strength_max_fraction: float = 1.0,
 ) -> SyntheticGeometry:
-    """Exact final-test style sampler used by the matched protocol."""
+    """Sample one non-folding geometry.
+
+    The legacy caller default retains the former 0.65..1.0 local-strength
+    range. The unified root protocol explicitly passes 0.0..1.0, i.e.
+    proposed local amplitude U(0, max_local_px), conditioned on the
+    non-folding Jacobian constraint.
+    """
     dx = _uniform_scalar(-max_translation, max_translation, device=device, dtype=dtype, generator=generator)
     dy = _uniform_scalar(-max_translation, max_translation, device=device, dtype=dtype, generator=generator)
     theta = _uniform_scalar(-max_rotation_deg, max_rotation_deg, device=device, dtype=dtype, generator=generator)
 
+    if not (0.0 <= local_strength_min_fraction <= local_strength_max_fraction <= 1.0):
+        raise ValueError("local strength fractions must satisfy 0 <= min <= max <= 1")
     control = None
     local = None
     for _ in range(64):
@@ -186,7 +196,13 @@ def sample_synthetic_geometry(
         candidate = zero_mean_control(candidate)
         dense = cubic_bspline_field(candidate, (height, width))
         dense_norm = torch.linalg.vector_norm(dense, dim=1).amax().clamp_min(1e-8)
-        strength = _uniform_scalar(0.65, 1.0, device=device, dtype=dtype, generator=generator) * float(max_local_px)
+        strength = _uniform_scalar(
+            local_strength_min_fraction,
+            local_strength_max_fraction,
+            device=device,
+            dtype=dtype,
+            generator=generator,
+        ) * float(max_local_px)
         candidate = candidate * (strength / dense_norm)
         dense = cubic_bspline_field(candidate, (height, width))
         if float(jacobian_determinant(dense).amin().item()) >= float(min_jacobian):
@@ -221,15 +237,16 @@ def sample_training_geometry_batch(
     control_grid: int = 5,
     min_jacobian: float = 0.5,
 ) -> SyntheticGeometry:
-    """S2Diff-MH-style train sampler: local amplitude covers the whole 0..max range."""
+    """Unified deformed component used after the top-level 10% identity draw.
+
+    For every deformed sample:
+      dx,dy ~ U(-max_translation,+max_translation)
+      theta ~ U(-max_rotation_deg,+max_rotation_deg)
+      proposed local amplitude ~ U(0,max_local_px)
+    The sampled local field must also satisfy min Jacobian >= min_jacobian.
+    """
     items: List[SyntheticGeometry] = []
     for _ in range(int(batch_size)):
-        local_cap = float(max_local_px)
-        if max_local_px > 0.0:
-            if float(torch.rand((), generator=generator, device=device).item()) < 0.10:
-                local_cap = 0.0
-            else:
-                local_cap = float(torch.rand((), generator=generator, device=device).item()) * float(max_local_px)
         items.append(
             sample_synthetic_geometry(
                 height,
@@ -239,9 +256,11 @@ def sample_training_geometry_batch(
                 generator=generator,
                 max_translation=max_translation,
                 max_rotation_deg=max_rotation_deg,
-                max_local_px=local_cap,
+                max_local_px=max_local_px,
                 control_grid=control_grid,
                 min_jacobian=min_jacobian,
+                local_strength_min_fraction=0.0,
+                local_strength_max_fraction=1.0,
             )
         )
     return _cat_geometry(items)
