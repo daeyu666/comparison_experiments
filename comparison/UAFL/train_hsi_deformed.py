@@ -61,6 +61,10 @@ def parse_args():
     p.add_argument("--max_local_px", type=float, default=4.0)
     p.add_argument("--control_grid", type=int, default=5)
     p.add_argument("--min_jacobian", type=float, default=0.5)
+    p.add_argument(
+        "--registered_probability", type=float, default=0.10,
+        help="Stage-2 mixture: exact identity probability; formal protocol is 0.10.",
+    )
 
     # UAFL paper-style optimizer/loss; this run adapts from the registered best.
     p.add_argument("--epochs", type=int, default=400)
@@ -168,6 +172,8 @@ def evaluate_registered_and_warped(model, loader, device, p0, args):
                 max_local_px=args.max_local_px,
                 control_grid=args.control_grid,
                 min_jacobian=args.min_jacobian,
+                local_strength_min_fraction=0.0,
+                local_strength_max_fraction=1.0,
             )
             lr_warp = make_deformed_lr_hsi(gt, geometry, p0)
             pred_warp = model(upsample_lr_hsi(lr_warp, gt.shape[-2:]), hr_msi)
@@ -200,6 +206,8 @@ def main():
         raise ValueError("UAFL SACA requires HR train/validation sizes divisible by 8")
     if args.validation_cases < 1:
         raise ValueError("--validation_cases must be >=1")
+    if not 0.0 <= args.registered_probability <= 1.0:
+        raise ValueError("--registered_probability must be in [0,1]")
 
     set_seed(args.seed)
     cfg = build_shared_cfg(args)
@@ -238,6 +246,9 @@ def main():
         f"rotation=U(-{args.max_rotation_deg},+{args.max_rotation_deg}) deg\n"
         f"local=max {args.max_local_px} HR px, {args.control_grid}x{args.control_grid} controls, cubic B-spline\n"
         f"min_jacobian={args.min_jacobian}\n"
+        f"stage2_identity_probability={args.registered_probability}\n"
+        f"stage2_deformed_probability={1.0-args.registered_probability}\n"
+        "deformed_local_amplitude=U(0,max_local_px) subject to Jacobian constraint\n"
         f"validation_cases={args.validation_cases}, seed={args.seed + 60000}\n"
         "metric_region=full-frame\n"
         f"optimizer=AdamW(lr={args.lr}, wd={args.weight_decay}), batch={args.batch_size}, loss=L1\n"
@@ -259,20 +270,46 @@ def main():
             hr_msi = batch["hr_msi"].to(device, non_blocking=True)
 
             with torch.no_grad():
-                geometry = sample_training_geometry_batch(
-                    gt.shape[0],
-                    gt.shape[-2],
-                    gt.shape[-1],
-                    device=device,
-                    dtype=gt.dtype,
-                    generator=train_gen,
-                    max_translation=args.max_translation,
-                    max_rotation_deg=args.max_rotation_deg,
-                    max_local_px=args.max_local_px,
-                    control_grid=args.control_grid,
-                    min_jacobian=args.min_jacobian,
-                )
-                lr_hsi = make_deformed_lr_hsi(gt, geometry, p0)
+                batch_size = int(gt.shape[0])
+                identity = torch.rand(
+                    (batch_size,), generator=train_gen, device=device
+                ) < float(args.registered_probability)
+                if bool(identity.all()):
+                    lr_hsi = p0.degrade(gt)
+                elif bool((~identity).all()):
+                    geometry = sample_training_geometry_batch(
+                        batch_size,
+                        gt.shape[-2],
+                        gt.shape[-1],
+                        device=device,
+                        dtype=gt.dtype,
+                        generator=train_gen,
+                        max_translation=args.max_translation,
+                        max_rotation_deg=args.max_rotation_deg,
+                        max_local_px=args.max_local_px,
+                        control_grid=args.control_grid,
+                        min_jacobian=args.min_jacobian,
+                    )
+                    lr_hsi = make_deformed_lr_hsi(gt, geometry, p0)
+                else:
+                    geometry = sample_training_geometry_batch(
+                        batch_size,
+                        gt.shape[-2],
+                        gt.shape[-1],
+                        device=device,
+                        dtype=gt.dtype,
+                        generator=train_gen,
+                        max_translation=args.max_translation,
+                        max_rotation_deg=args.max_rotation_deg,
+                        max_local_px=args.max_local_px,
+                        control_grid=args.control_grid,
+                        min_jacobian=args.min_jacobian,
+                    )
+                    lr_reg = p0.degrade(gt)
+                    lr_warp = make_deformed_lr_hsi(gt, geometry, p0)
+                    lr_hsi = torch.where(
+                        identity.view(-1, 1, 1, 1), lr_reg, lr_warp
+                    )
                 x_up = upsample_lr_hsi(lr_hsi, gt.shape[-2:])
 
             optimizer.zero_grad(set_to_none=True)
