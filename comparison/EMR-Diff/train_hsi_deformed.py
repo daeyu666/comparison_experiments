@@ -178,6 +178,9 @@ def validate_stage1_checkpoint(path, trainer):
     checkpoint = torch.load(
         checkpoint_path, map_location=trainer.device, weights_only=False
     )
+    trainer.verify_checkpoint_architecture(
+        checkpoint, context=f"stage-1 init {checkpoint_path}"
+    )
     if checkpoint.get("dataset") != trainer.dataset:
         raise ValueError(
             "Stage-1/2 dataset mismatch: "
@@ -211,6 +214,8 @@ def save_stage2(
         "dataset": trainer.dataset,
         "degradation_mode": "physical",
         "state_channels": trainer.state_channels,
+        "architecture_id": trainer.architecture_id,
+        "backbone_width": trainer.backbone_width,
         "model_state_dict": trainer.Net.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": int(epoch),
@@ -231,6 +236,9 @@ def save_stage2(
 
 def resume_stage2(path, trainer, optimizer):
     checkpoint = torch.load(path, map_location=trainer.device, weights_only=False)
+    trainer.verify_checkpoint_architecture(
+        checkpoint, context=f"stage-2 resume {path}"
+    )
     if checkpoint.get("training_stage") != "stage2_registered_deformed_mixed":
         raise ValueError("Resume checkpoint is not an EMR stage-2 mixed run")
     if checkpoint.get("dataset") != trainer.dataset:
