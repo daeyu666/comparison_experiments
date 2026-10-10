@@ -47,6 +47,8 @@ def parse_args():
         help="Stage-1 EMR-Diff is registered-only; deformation is stage 2.",
     )
     parser.add_argument("--optimizer", choices=["Adam", "AdamW"], default=None)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--weight_decay", type=float, default=None)
     parser.add_argument("--seed", type=int, default=10)
@@ -88,6 +90,8 @@ if __name__ == "__main__":
     configs.diffusion.params.sf = args.scale_ratio
     configs.train.device = args.device
     configs.train.seed = args.seed
+    configs.train.batch = [args.batch_size, 1]
+    configs.train.num_workers = args.num_workers
     if args.optimizer is not None:
         configs.train.optimizer = args.optimizer
     if args.lr is not None:
@@ -162,6 +166,8 @@ if __name__ == "__main__":
         f.write(f"mtf_nyquist: {args.mtf_nyquist}\n")
         f.write(f"psf_truncate: {args.psf_truncate}\n")
         f.write(f"optimizer: {trainer.optimizer_name}\n")
+        f.write(f"batch_size: {args.batch_size}\n")
+        f.write(f"num_workers: {args.num_workers}\n")
         f.write(f"lr: {trainer.optimizer.param_groups[0]['lr']}\n")
         f.write(f"weight_decay: {trainer.weight_decay}\n")
         f.write(f"seed: {args.seed}\n")
