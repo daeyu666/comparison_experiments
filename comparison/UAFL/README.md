@@ -279,3 +279,48 @@ commands. Dedicated entry points:
 
 Do not run `train_hsi_deformed.py` for this real Wald task: it synthesizes
 HSI deformations under a different x4 observation protocol.
+
+## Formal four-dataset final test (registered vs HSI-deformed-mixed checkpoints)
+
+Run from the `comparison_experiments` root once training has finished.
+Applies to **synthetic x4** PaviaU, Houston13, Botswana and Augsburg
+(`Augsburg-2 Wald` is the separate real x3 experiment).
+
+One script processes 8 best checkpoints and writes 12 metric rows:
+
+| Training weights | Registered test | Warp test |
+|---|---|---|
+| `physical/<dataset>/best.pth.tar` (registered-only) | Yes | No |
+| `hsi_warp_final/<dataset>/best.pth.tar` (HSI-deformed mixed) | Yes | Yes |
+
+```bash
+git pull
+python comparison/UAFL/test_four_datasets_final.py --dry_run
+python comparison/UAFL/test_four_datasets_final.py \
+  --data_root ./data/raw --seed 10 --cases 10 --device cuda:0
+```
+
+If you saved weights outside the default locations, set
+`--registered_root /path/to/physical` and
+`--mixed_root /path/to/hsi_warp_final`. In each root, the script expects
+`<Dataset>/best.pth.tar`.
+
+The tester validates each checkpoint's recorded training regime, dataset,
+physical x4 degradation, and HSI-warp geometry. It evaluates **only held-out
+test samples**. Warp uses 10 deterministic synthetic cases per sample with
+the S2Diff-MH `seed+70000` convention. The HR-MSI stays registered in both
+test groups. For multi-tile test splits (Augsburg), scores are macro-averaged
+over 128x128 patches.
+
+Machine-readable results and a human-readable 12-row comparison:
+```text
+comparison/UAFL/outputs/final_four_datasets/
+  PaviaU_registered_seed10.json
+  PaviaU_hsi_deformed_mixed_seed10.json
+  ...
+  UAFL_final_four_datasets_seed10.csv
+```
+
+Reported: PSNR, SSIM, ERGAS, SAM, CC, raw RMSE and RMSE*255.
+Registered-trained checkpoints are **not** subjected to the Warp test,
+and no training weights/checkpoints are overwritten by this evaluation.
