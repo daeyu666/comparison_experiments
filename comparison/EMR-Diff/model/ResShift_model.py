@@ -25,8 +25,8 @@ EXPECTED_MSI_CHANNELS = {
     "Augsburg": 4,
 }
 
-EMR_BACKBONE_WIDTH = 34
-EMR_ARCHITECTURE_ID = "fixed34_state_projection_v1"
+EMR_BACKBONE_WIDTH = 64
+EMR_ARCHITECTURE_ID = "fixed64_state_projection_v1"
 
 
 class EMRStateAdapter(nn.Module):
