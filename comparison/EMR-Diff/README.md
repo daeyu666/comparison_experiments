@@ -122,10 +122,31 @@ resume and testing. The parameter naming has changed; retrain this version.
 The root `train.py` / `test.py` interface, five-step diffusion, data degradation,
 multiscale residual loss and 800/600 registered/mixed protocol remain unchanged.
 
-The separate real-world Augsburg center-heldout Wald x3 adapter retains its
-existing 64-channel hidden trunk, external output head and checkpoint parameter
-names. BAFUNet adds no parameters when `out_channels` equals the decoder width,
-so that independent adapter keeps its existing behavior and compatible weights.
+The separate real-world Augsburg center-heldout Wald x3 path now uses the same
+BAFUNet dynamic IO design: state input/output=246, hidden width=64. Its distinct
+architecture ID is `dynamic_io_wald_v2`, with `state_channels=246` and
+`backbone_width=64` checkpoint metadata. Old external-head Wald checkpoints and
+synthetic checkpoints are rejected for resume, reference test and native inference.
+The original five-step diffusion was already in observation space; this interface
+refactor does not change that residual mechanism.
+
+### Batch size on a 24GB GPU
+
+Both synthetic stages and real Wald default to training batch=2, AdamW lr=1e-5.
+Root `train.py` and `train_real.py` accept `--batch_size` for EMR-Diff only:
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode registered --batch_size 4
+python train_real.py --model EMR-Diff --batch_size 4
+```
+
+For concurrent dataset runs, start with batch=2. For one run, try4 then8 only if
+memory permits and samples/second improves. No GPU memory or throughput estimate
+is guaranteed without measurement on the target server. Training performs a full
+batch forward/backward, not a loop over single samples; the old YAML microbatch
+field is unused. Validation/test batch remains1. Larger batches reduce optimizer
+updates per epoch, so record batch, LR, epochs and update count with final results.
+Learning rate remains1e-5 and is not automatically scaled; AMP is not enabled.
 
 ### Metric consistency
 
@@ -142,8 +163,13 @@ EMR-Diff 使用独立验证区 PSNR 进行早停。考虑不同数据集单个 e
 | PaviaU | 20 epochs | <20 epochs |
 | Houston13 | 10 epochs | <10 epochs |
 | Chikusei | 5 epochs | <5 epochs |
+| CAVE | 5 epochs | <5 epochs |
+| Botswana | 20 epochs | <20 epochs |
+| Augsburg synthetic | 10 epochs | <10 epochs |
 
-默认早停参数：
+这些周期用于EMR-Diff registered和mixed两个synthetic阶段。根入口采用
+800/600epoch预算，patience=999999，仍需按验证结果手动早停。以下是直接
+使用旧独立Stage1入口时的默认早停设置：
 
 ```text
 max epochs = 3000
@@ -348,14 +374,16 @@ The formal Augsburg-2 real-world comparison now follows the same
 - train patch 24x24, stride 6; every intersecting tile is hard rejected;
 - validation remains geographically disjoint `deep_valid`, eval patch 48;
 - center-only radiometry is fitted without the test ROI/guard;
-- 100 epochs, AdamW 1e-5, weight decay 5e-5, validation every 5 epochs;
+- dynamic IO BAFUNet: in=246, hidden=64, out=246; `dynamic_io_wald_v2`;
+- 100 epochs, training batch=2, AdamW 1e-5, weight decay 5e-5, validation every 5 epochs;
 - best checkpoint is selected by minimum pooled masked validation SAM;
 - native inference reconstructs **only** the untrained 144x144 center ROI;
 - QNR/Dlambda/Ds use the same UAFL implementation and only that heldout ROI.
 
 Old `checkpoints/augsburg2_wald/` weights and the old full-region calibration
-must not be reused. Checkpoints now encode `split_protocol_id` and
-`test_bbox_30m`, and legacy weights are rejected.
+must not be reused. Old external-head center-holdout weights also require
+retraining. Checkpoints encode `architecture_id`, `state_channels`,
+`backbone_width`, `split_protocol_id` and `test_bbox_30m`; legacy weights are rejected.
 
 Train / RR test / native inference:
 

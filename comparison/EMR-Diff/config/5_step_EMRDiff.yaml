@@ -45,8 +45,8 @@ data:
   srf_band_set: auto
 
 train:
-  lr: 1e-4
-  batch: [1,1]
+  lr: 1e-5
+  batch: [2,1]
   num_workers: 0
   microbatch: 1
 
@@ -59,6 +59,9 @@ train:
     PaviaU: 20
     Houston13: 10
     Chikusei: 5
+    CAVE: 5
+    Botswana: 20
+    Augsburg: 10
 
   # Leakage-free early stopping on the independent validation region.
   early_stop_metric: PSNR

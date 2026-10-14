@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
@@ -32,6 +31,7 @@ HSI_BANDS = 242
 MSI_BANDS = 4
 STATE_BANDS = HSI_BANDS + MSI_BANDS
 SCALE = 3
+WALD_ARCHITECTURE_ID = "dynamic_io_wald_v2"
 
 
 def require_center_holdout(wald_root):
@@ -71,35 +71,25 @@ def require_center_holdout(wald_root):
     return sigma, CENTER_PROTOCOL, bbox, forbidden
 
 
-class EMRBackbone(nn.Module):
-    """Original BAFUNet topology with a manageable latent width for 242 HSI bands."""
-    def __init__(self, width=64, image_size=64):
-        super().__init__()
-        if width < 32 or width % 32:
-            raise ValueError("EMR Wald width must be >=32 and divisible by 32")
-        self.width = int(width)
-        self.core = BAFUNet(
-            image_size=image_size,
-            in_channels=STATE_BANDS,
-            model_channels=width,
-            out_channels=width,
-            lqrgb_channels=STATE_BANDS,
-            rgb_channels=MSI_BANDS,
-            channel_mult=[1, 1, 1, 1, 1],
-            num_res_blocks=[1, 1, 1, 1, 1],
-            dims=2,
-        )
-        self.state_head = nn.Conv2d(width, STATE_BANDS, kernel_size=1)
-
-    def forward(self, x_t, msi, lq_hr, t):
-        latent, feature_maps = self.core(x_t, msi, lq_hr, t)
-        return self.state_head(latent), [
-            self.state_head(feature) for feature in feature_maps
-        ]
-
-
 def build_model(width=64, device="cpu"):
-    return EMRBackbone(width=width).to(device)
+    """Full-band state IO; only the BAFUNet hidden feature width is reduced."""
+    if width < 32 or width % 32:
+        raise ValueError("EMR Wald width must be >=32 and divisible by 32")
+    model = BAFUNet(
+        image_size=64,
+        in_channels=STATE_BANDS,
+        model_channels=width,
+        out_channels=STATE_BANDS,
+        lqrgb_channels=STATE_BANDS,
+        rgb_channels=MSI_BANDS,
+        channel_mult=[1, 1, 1, 1, 1],
+        num_res_blocks=[1, 1, 1, 1, 1],
+        dims=2,
+    )
+    model.width = int(width)
+    model.architecture_id = WALD_ARCHITECTURE_ID
+    model.state_channels = STATE_BANDS
+    return model.to(device)
 
 
 def build_diffusion(device):
@@ -220,6 +210,16 @@ def verify_checkpoint(
     state, *, radiometry_sha, sigma, split_protocol_id, test_bbox_30m,
     forbidden_bbox_30m, monitor=None, width=None,
 ):
+    if (
+        state.get("architecture_id") != WALD_ARCHITECTURE_ID
+        or int(state.get("state_channels", -1)) != STATE_BANDS
+        or int(state.get("backbone_width", -1)) != int(state.get("model_width", -2))
+    ):
+        raise ValueError(
+            f"Incompatible EMR Wald architecture; expected {WALD_ARCHITECTURE_ID} "
+            "with observation-space state_channels=246. Old external-head "
+            "and synthetic checkpoints cannot be loaded. Retrain from scratch."
+        )
     if (
         state.get("protocol") != PROTOCOL
         or state.get("msi_source") != PROVENANCE

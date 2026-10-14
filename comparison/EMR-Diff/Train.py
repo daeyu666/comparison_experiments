@@ -11,9 +11,9 @@ DEFAULT_VALIDATION_INTERVALS = {
     "PaviaU": 20,
     "Houston13": 10,
     "Chikusei": 5,
-    "CAVE": 20,
+    "CAVE": 5,
     "Botswana": 20,
-    "Augsburg": 20,
+    "Augsburg": 10,
 }
 
 
@@ -47,7 +47,7 @@ def parse_args():
         help="Stage-1 EMR-Diff is registered-only; deformation is stage 2.",
     )
     parser.add_argument("--optimizer", choices=["Adam", "AdamW"], default=None)
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--weight_decay", type=float, default=None)
@@ -74,6 +74,8 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.batch_size < 1:
+        raise ValueError("--batch_size must be >=1")
     print(f"CUDA available: {torch.cuda.is_available()}")
 
     root = os.path.dirname(os.path.abspath(__file__))

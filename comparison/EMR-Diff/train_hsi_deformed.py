@@ -46,6 +46,10 @@ from model.ResShift_model import ResShiftTrainer  # noqa: E402
 
 
 DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
+DEFAULT_VALIDATION_INTERVALS = {
+    "PaviaU": 20, "Houston13": 10, "Chikusei": 5,
+    "CAVE": 5, "Botswana": 20, "Augsburg": 10,
+}
 
 
 def parse_args():
@@ -77,13 +81,13 @@ def parse_args():
     )
 
     p.add_argument("--epochs", type=int, default=600)
-    p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--batch_size", type=int, default=2)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight_decay", type=float, default=5e-5)
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--device", default="cuda:0")
-    p.add_argument("--validation_interval", type=int, default=20)
+    p.add_argument("--validation_interval", type=int, default=None)
     p.add_argument("--validation_cases", type=int, default=5)
     p.add_argument("--early_stop_patience", type=int, default=999999)
     p.add_argument("--early_stop_min_delta", type=float, default=0.02)
@@ -114,7 +118,10 @@ def parse_args():
         default="",
         help="Resume this stage-2 run including optimizer and epoch.",
     )
-    return p.parse_args()
+    args = p.parse_args()
+    if args.validation_interval is None:
+        args.validation_interval = DEFAULT_VALIDATION_INTERVALS[args.dataset]
+    return args
 
 
 def make_generator(device: torch.device, seed: int) -> torch.Generator:
@@ -368,6 +375,8 @@ def append_history(path: Path, row: dict):
 
 def main():
     args = parse_args()
+    if args.batch_size < 1:
+        raise ValueError("--batch_size must be >=1")
     if args.scale_ratio != 4:
         raise ValueError("Formal two-stage comparison uses scale_ratio=4")
     if args.degradation_mode != "physical":
@@ -439,6 +448,7 @@ def main():
         f"min_jacobian={args.min_jacobian}\n"
         f"validation_cases={args.validation_cases}, geometry_seed={args.seed + 60000}\n"
         f"diffusion_eval_seed={args.eval_seed}\n"
+        f"validation_interval={args.validation_interval}\n"
         "validation_reports=Registered + Warp; best_monitor=Warp PSNR\n"
         f"optimizer=AdamW(lr={args.lr}, wd={args.weight_decay}), "
         f"batch={args.batch_size}\n"

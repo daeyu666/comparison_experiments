@@ -53,12 +53,12 @@ def test_state_space_forward_multiscale_backward_and_reverse(hsi, msi):
     assert isinstance(net, BAFUNet)
     assert net.in_channels == net.out_channels == hsi + msi
     assert net.model_channels == EMR_BACKBONE_WIDTH == 64
-    gt = torch.rand(1, hsi, 32, 32)
-    lr = torch.rand(1, hsi, 8, 8)
-    rgb = torch.rand(1, msi, 32, 32)
+    gt = torch.rand(2, hsi, 32, 32)
+    lr = torch.rand(2, hsi, 8, 8)
+    rgb = torch.rand(2, msi, 32, 32)
     condition = trainer._condition(lr, rgb, (32, 32))
     start = trainer._x_start(gt)
-    t = torch.tensor([3])
+    t = torch.tensor([3, 3])
     noise = torch.randn_like(start)
     residual, edge = trainer.EMRDIFF.residual_calculator(start, condition, rgb)
     torch.testing.assert_close(residual, condition - start)
@@ -82,7 +82,7 @@ def test_state_space_forward_multiscale_backward_and_reverse(hsi, msi):
         edge_map = Edge()(rgb)
         current = trainer.EMRDIFF.prior_sample(condition, noise, edge_map)
         for step in reversed(range(5)):
-            tt = torch.tensor([step])
+            tt = torch.tensor([step, step])
             prediction, _ = net(current, rgb, condition[:, :hsi], tt)
             current = trainer.EMRDIFF.inverse_denoise(
                 prediction + condition, current, tt,

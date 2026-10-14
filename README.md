@@ -28,8 +28,9 @@ EMR-Diff
 PaviaU / Houston13 / Chikusei / CAVE / Botswana / Augsburg
 ```
 
-除 `--device` 这一运行环境选项外，正式实验超参数不再从根入口暴露，
-避免不同方法因手工命令不同而产生协议漂移。冻结设置集中定义在
+根入口保留 `--device`，EMR-Diff训练入口还支持 `--batch_size`，用于适配
+服务器显存。学习率不随batch自动放大，运行命令和模型日志记录实际batch。
+其余正式实验超参数集中定义在
 `experiment_protocol.py`。新对比方法接入时只需要增加一次模型适配注册，
 之后训练和测试仍使用上述根命令。
 
@@ -55,8 +56,38 @@ HSI+MSI联合状态、观测条件、多模态残差、加噪与逆扩散均在�
 旧的 `model_channels=state_channels`、`fixed34_state_projection_v1` 与
 `fixed64_state_projection_v1` synthetic权重不直接兼容新参数命名，需重新
 训练，不能用于新结构的stage2初始化、续训或测试。根train.py/test.py用法
-及800/600两阶段协议保持不变。真实世界Augsburg center-heldout Wald x3
-保留独立的64通道隐藏特征适配及原有参数命名，不与synthetic权重混用。
+及800/600两阶段预算保持不变。真实世界Augsburg center-heldout Wald x3
+也直接使用BAFUNet动态输入输出，state=246、hidden=64，架构ID为
+`dynamic_io_wald_v2`。旧Wald外部head权重需重新训练，不与synthetic权重混用。
+
+### EMR-Diff在24G显存服务器上的训练设置
+
+Synthetic registered/mixed及real Wald默认batch=2，AdamW lr=1e-5。
+其他方法的batch默认值仍为1。单独启动一个EMR训练任务时可以尝试batch=4，
+空间充足再试8；多个数据集并发时从2起步。显存占用和加速比需要在目标GPU
+测量，不能将batch=1显存直接乘batch来推算峰值。
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode registered --batch_size 4
+python train_real.py --model EMR-Diff --batch_size 4
+```
+
+batch增大后同epoch的优化更新次数会减少，不保证相同收敛结果。正式结果应
+记录实际batch、学习率、训练epoch和优化更新次数；800/600仍是epoch预算。
+根入口不会自动缩放学习率，也不会默认打开AMP改变当前数值行为。
+
+EMR-Diff两个synthetic训练阶段的验证频率：
+
+| Dataset | Validation interval (epochs) |
+|---|---:|
+| PaviaU | 20 |
+| Houston13 | 10 |
+| Chikusei | 5 |
+| CAVE | 5 |
+| Botswana | 20 |
+| Augsburg synthetic | 10 |
+
+真实世界Wald仍每5epoch验证，以ref_sam选择best，评估batch=1。
 
 ### 两阶段冻结训练协议
 
@@ -80,7 +111,7 @@ PSF truncate = 3.0
 optimizer = AdamW
 lr = 1e-5
 weight decay = 5e-5
-batch size = 1
+batch size = 1 (other methods); EMR-Diff default = 2
 ```
 
 Stage 1固定训练满800 epoch。正式根入口通过极大的early-stop patience避免
@@ -131,7 +162,7 @@ epochs = 600
 optimizer = AdamW
 lr = 1e-5
 weight decay = 5e-5
-batch size = 1
+batch size = 1 (other methods); EMR-Diff default = 2
 
 validation:
   Registered + Warp
@@ -375,7 +406,7 @@ weight decay:
   5e-5
 
 batch size:
-  1
+  1 (other methods); EMR-Diff default = 2
 
 validation interval:
   5 epochs
@@ -550,13 +581,16 @@ patience = 2 validation evaluations
 eval_seed = 1234
 ```
 
-验证间隔按数据集统一设置，不再固定每 100 epoch 才评估一次：
+以下为EMR-Diff两个synthetic阶段的验证周期；其他方法沿用各自注册周期：
 
 | Dataset | Validation interval | Max additional epochs after best under patience=2 |
 |---|---:|---:|
 | PaviaU | 20 | 40 |
 | Houston13 | 10 | 20 |
 | Chikusei | 5 | 10 |
+| CAVE | 5 | 10 |
+| Botswana | 20 | 40 |
+| Augsburg synthetic | 10 | 20 |
 
 这样 PaviaU 这种较小数据集不会在明显收敛后继续空跑很久，Chikusei 这种单 epoch 成本较高的数据集也能在接近收敛后快速触发验证和早停。
 

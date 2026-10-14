@@ -16,9 +16,12 @@ if str(UAFL) not in sys.path:
 
 from augsburg2_wald_center_roi import PROTOCOL as CENTER_PROTOCOL, crop_heldout
 from wald_emr_common import (
-    HSI_BANDS, MSI_BANDS, STATE_BANDS, PROTOCOL,
+    HSI_BANDS, MSI_BANDS, STATE_BANDS, PROTOCOL, WALD_ARCHITECTURE_ID,
     build_diffusion, build_model, masked_l1, pack_batch, verify_checkpoint,
+    training_step, predict,
 )
+from arch.BAFUnet import BAFUNet
+from EMRDiff import Edge
 _infer_spec = importlib.util.spec_from_file_location(
     "emr_infer_augsburg2_wald", HERE / "infer_augsburg2_wald.py"
 )
@@ -28,6 +31,71 @@ parse_infer_args = _infer_module.parse_args
 
 
 class WaldEMRCenterHoldoutChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.previous_threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.previous_threads)
+
+    def test_batch_two_dynamic_io_training_and_reverse(self):
+        model = build_model(64, "cpu")
+        self.assertIsInstance(model, BAFUNet)
+        self.assertEqual((model.in_channels, model.model_channels, model.out_channels),
+                         (246, 64, 246))
+        self.assertFalse(any(key.startswith("core.") or key.startswith("state_head.")
+                             for key in model.state_dict()))
+        sample = {
+            "gt": torch.rand(2, 242, 24, 24),
+            "lr_hsi": torch.rand(2, 242, 8, 8),
+            "hr_msi": torch.rand(2, 4, 24, 24),
+            "valid_mask": torch.ones(2, 1, 24, 24),
+        }
+        gt, lq, msi, mask, _ = pack_batch(sample, "cpu", (np.ones(4), np.zeros(4)))
+        diffusion, edge = build_diffusion("cpu"), Edge()
+        loss = training_step(model, diffusion, edge, gt, lq, msi, mask)
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertTrue(torch.isfinite(model.residual_heads["64"].weight.grad).all())
+        prediction = predict(model, diffusion, edge, lq, msi)
+        self.assertEqual(tuple(prediction.shape), (2, 242, 32, 32))
+        self.assertTrue(torch.isfinite(prediction).all())
+
+    def test_new_wald_checkpoint_save_and_strict_reload(self):
+        import json
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        spec = importlib.util.spec_from_file_location(
+            "emr_train_augsburg2_wald", HERE / "train_augsburg2_wald.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        save_state, load_state = module.save_state, module.load_state
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "train").mkdir()
+            (root / "train" / "meta.json").write_text(json.dumps({"training_area": "synthetic_fixture"}))
+            args = SimpleNamespace(wald_root=str(root), model_width=64, monitor="ref_sam", batch_size=2)
+            model = build_model(64, "cpu")
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+            geometry = dict(split_protocol_id=CENTER_PROTOCOL,
+                            test_bbox_30m=[24, 36, 72, 84],
+                            forbidden_bbox_30m=[18, 30, 78, 90])
+            checkpoint = root / "new.pth.tar"
+            save_state(checkpoint, model=model, optimizer=optimizer, epoch=0,
+                       best=1.0, args=args, sha="fixture", sigma=1.2, **geometry)
+            restored = build_model(64, "cpu")
+            state = load_state(checkpoint, restored, sha="fixture", sigma=1.2,
+                               device="cpu", monitor="ref_sam", **geometry)
+            self.assertEqual(state["architecture_id"], WALD_ARCHITECTURE_ID)
+            self.assertEqual((state["backbone_width"], state["state_channels"]), (64, 246))
+            self.assertEqual(state["args"]["batch_size"], 2)
+            torch.testing.assert_close(restored.residual_heads["64"].weight,
+                                       model.residual_heads["64"].weight)
+
     def test_fixed_observed_dimensions(self):
         self.assertEqual((HSI_BANDS, MSI_BANDS, STATE_BANDS), (242, 4, 246))
         diffusion = build_diffusion("cpu")
@@ -108,9 +176,13 @@ class WaldEMRCenterHoldoutChecks(unittest.TestCase):
             "scale_ratio": 3,
             "split_protocol_id": CENTER_PROTOCOL,
             "test_bbox_30m": [24, 36, 72, 84],
+            "forbidden_bbox_30m": [18, 30, 78, 90],
             "radiometry_sha256": "abc",
             "wald_sigma": 1.2,
             "model_width": 64,
+            "architecture_id": WALD_ARCHITECTURE_ID,
+            "backbone_width": 64,
+            "state_channels": 246,
             "monitor": "ref_sam",
         }
         verify_checkpoint(
@@ -120,6 +192,19 @@ class WaldEMRCenterHoldoutChecks(unittest.TestCase):
             forbidden_bbox_30m=[18, 30, 78, 90],
             monitor="ref_sam", width=64,
         )
+        for field, value in [("architecture_id", None), ("state_channels", 64),
+                             ("backbone_width", 34),
+                             ("architecture_id", "fixed64_dynamic_io_v2")]:
+            old = dict(state)
+            old[field] = value
+            with self.assertRaisesRegex(ValueError, "Incompatible EMR Wald architecture"):
+                verify_checkpoint(
+                    old, radiometry_sha="abc", sigma=1.2,
+                    split_protocol_id=CENTER_PROTOCOL,
+                    test_bbox_30m=[24, 36, 72, 84],
+                    forbidden_bbox_30m=[18, 30, 78, 90],
+                    monitor="ref_sam", width=64,
+                )
 
     def test_center_inference_defaults_route_to_emr_owned_outputs(self):
         with patch("sys.argv", ["infer_augsburg2_wald.py", "--center_holdout"]):

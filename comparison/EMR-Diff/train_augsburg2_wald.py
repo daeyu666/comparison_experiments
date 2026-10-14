@@ -52,7 +52,7 @@ def parse_args():
     p.add_argument("--train_stride", type=int, default=6)
     p.add_argument("--eval_patch_size", type=int, default=48)
     p.add_argument("--min_valid_fraction", type=float, default=0.80)
-    p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--batch_size", type=int, default=2)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-5)
@@ -65,7 +65,7 @@ def parse_args():
     p.add_argument("--device", default="cuda")
     p.add_argument(
         "--model_width", type=int, default=64,
-        help="BAFUNet latent width; diffusion state remains 242+4=246 channels",
+        help="BAFUNet hidden feature width; state input/output remain 242+4=246 channels",
     )
     return p.parse_args()
 
@@ -107,6 +107,9 @@ def save_state(
         "wald_sigma": float(sigma),
         "radiometry_sha256": sha,
         "model_width": args.model_width,
+        "architecture_id": model.architecture_id,
+        "backbone_width": model.width,
+        "state_channels": model.state_channels,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": int(epoch),
@@ -272,6 +275,7 @@ def main():
         f"validation={len(val_set)} patch=24 stride=6 eval_patch=48 "
         f"scale=x3 sigma={sigma} parameters={params} state=246 "
         f"trunk_width={args.model_width} source={PROVENANCE} "
+        f"architecture_id={model.architecture_id} batch={args.batch_size} lr={args.lr} "
         f"split_protocol_id={split_protocol_id} test_bbox_30m={test_bbox_30m} "
         f"forbidden_bbox_30m={forbidden_bbox_30m} EnMAP10_used=False "
         f"train_augmentation=False monitoring={args.monitor}"

@@ -43,7 +43,7 @@ def main():
     native = build_real_native_test_command(adapter, args.device)
 
     print(f"REAL_AUGSBURG_TEST model={adapter.canonical}")
-    print(f"PROTOCOL {real_protocol_summary()}")
+    print(f"PROTOCOL {real_protocol_summary(adapter)}")
     print("STEP1_RR_REFERENCE_TEST " + shlex.join(rr))
     print("STEP2_NATIVE_QNR " + shlex.join(native))
     if args.dry_run:

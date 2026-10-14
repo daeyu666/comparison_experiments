@@ -16,6 +16,8 @@ def parse_args():
     )
     p.add_argument("--model", required=True, help="e.g. UAFL or EMR-Diff")
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--batch_size", type=int, default=None,
+                   help="EMR-Diff training batch override; default=2. Learning rate is unchanged.")
     p.add_argument("--dry_run", action="store_true")
     return p.parse_args()
 
@@ -27,9 +29,9 @@ def main():
         raise ValueError(
             f"{adapter.canonical} has no registered real Augsburg train adapter"
         )
-    cmd = build_real_train_command(adapter, args.device)
+    cmd = build_real_train_command(adapter, args.device, args.batch_size)
     print(f"REAL_AUGSBURG_TRAIN model={adapter.canonical}")
-    print(f"PROTOCOL {real_protocol_summary()}")
+    print(f"PROTOCOL {real_protocol_summary(adapter, args.batch_size)}")
     print("COMMAND " + shlex.join(cmd))
     if args.dry_run:
         return

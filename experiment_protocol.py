@@ -1,8 +1,8 @@
 """Frozen two-stage comparison protocol and model adapter registry.
 
-User-facing entry points are root-level train.py and test.py. They intentionally
-expose only model/dataset/mode (plus device/dry-run) so method comparisons do
-not drift through model-specific CLI knobs.
+User-facing entry points are root-level train.py and test.py. Model/data settings
+remain centralized; EMR-Diff training alone permits a logged batch-size override
+to adapt memory use to the server, without automatically scaling learning rate.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ DATASETS = (
 )
 MODES = ("registered", "mixed")
 
-# Frozen synthetic x4 comparison protocol.
+# Synthetic x4 comparison protocol; EMR training batch may be overridden.
 IMAGE_SIZE = 128
 PATCH_SIZE = 64
 STRIDE = 32
@@ -29,6 +29,7 @@ PSF_TRUNCATE = 3.0
 REGISTERED_EPOCHS = 800
 MIXED_EPOCHS = 600
 BATCH_SIZE = 1
+EMR_BATCH_SIZE = 2
 LR = 1e-5
 WEIGHT_DECAY = 5e-5
 REGISTERED_SEED = 1001
@@ -56,6 +57,11 @@ REGISTERED_VALIDATION_INTERVAL = {
     "CAVE": 20,
     "Botswana": 20,
     "Augsburg": 20,
+}
+EMR_VALIDATION_INTERVAL = {
+    **REGISTERED_VALIDATION_INTERVAL,
+    "CAVE": 5,
+    "Augsburg": 10,
 }
 
 
@@ -143,11 +149,24 @@ def _shared_geometry_args():
     ]
 
 
-def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str):
+def training_batch_size(adapter: ModelAdapter, override=None, *, real=False):
+    if override is not None:
+        if adapter.canonical != "EMR-Diff":
+            raise ValueError("--batch_size override currently applies only to EMR-Diff")
+        if override < 1:
+            raise ValueError("--batch_size must be >=1")
+        return int(override)
+    if adapter.canonical == "EMR-Diff":
+        return EMR_BATCH_SIZE
+    return REAL_BATCH_SIZE if real else BATCH_SIZE
+
+
+def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
+    resolved_batch = training_batch_size(adapter, batch_size)
 
     script = adapter.registered_train if mode == "registered" else adapter.mixed_train
     cmd = [sys.executable, str(ROOT / script)]
@@ -164,12 +183,15 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--psf_truncate", str(PSF_TRUNCATE),
             "--train_misalignment_mode", "registered",
             "--epochs", str(REGISTERED_EPOCHS),
-            "--batch_size", str(BATCH_SIZE),
+            "--batch_size", str(resolved_batch),
             "--lr", str(LR),
             "--weight_decay", str(WEIGHT_DECAY),
             "--seed", str(REGISTERED_SEED),
             "--device", device,
-            "--validation_interval", str(REGISTERED_VALIDATION_INTERVAL[dataset]),
+            "--validation_interval", str(
+                EMR_VALIDATION_INTERVAL[dataset]
+                if adapter.canonical == "EMR-Diff" else REGISTERED_VALIDATION_INTERVAL[dataset]
+            ),
             "--early_stop_patience", str(EARLY_STOP_PATIENCE_FIXED_BUDGET),
             "--early_stop_min_delta", str(EARLY_STOP_MIN_DELTA),
             "--checkpoint_dir", str(checkpoint_dir(adapter, dataset, mode).relative_to(ROOT)),
@@ -201,12 +223,15 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         *_shared_geometry_args(),
         "--registered_probability", str(IDENTITY_PROBABILITY),
         "--epochs", str(MIXED_EPOCHS),
-        "--batch_size", str(BATCH_SIZE),
+        "--batch_size", str(resolved_batch),
         "--lr", str(LR),
         "--weight_decay", str(WEIGHT_DECAY),
         "--seed", str(MIXED_SEED),
         "--device", device,
-        "--validation_interval", str(MIXED_VALIDATION_INTERVAL),
+        "--validation_interval", str(
+            EMR_VALIDATION_INTERVAL[dataset]
+            if adapter.canonical == "EMR-Diff" else MIXED_VALIDATION_INTERVAL
+        ),
         "--validation_cases", str(VALIDATION_CASES),
         "--early_stop_patience", str(EARLY_STOP_PATIENCE_FIXED_BUDGET),
         "--early_stop_min_delta", str(EARLY_STOP_MIN_DELTA),
@@ -312,7 +337,8 @@ def real_checkpoint_path(adapter: ModelAdapter) -> Path:
     return real_checkpoint_dir(adapter) / "best.pth.tar"
 
 
-def build_real_train_command(adapter: ModelAdapter, device: str):
+def build_real_train_command(adapter: ModelAdapter, device: str, batch_size=None):
+    resolved_batch = training_batch_size(adapter, batch_size, real=True)
     cmd = [
         sys.executable,
         str(ROOT / adapter.real_train),
@@ -325,7 +351,7 @@ def build_real_train_command(adapter: ModelAdapter, device: str):
         "--train_stride", str(REAL_TRAIN_STRIDE),
         "--eval_patch_size", str(REAL_EVAL_PATCH),
         "--min_valid_fraction", str(REAL_MIN_VALID_FRACTION),
-        "--batch_size", str(REAL_BATCH_SIZE),
+        "--batch_size", str(resolved_batch),
         "--num_workers", str(REAL_NUM_WORKERS),
         "--epochs", str(REAL_EPOCHS),
         "--lr", str(REAL_LR),
@@ -399,19 +425,21 @@ def build_real_native_test_command(adapter: ModelAdapter, device: str):
     return cmd
 
 
-def real_protocol_summary() -> str:
+def real_protocol_summary(adapter=None, batch_size=None) -> str:
+    resolved_batch = training_batch_size(adapter, batch_size, real=True) if adapter else REAL_BATCH_SIZE
     return (
         f"{REAL_SPLIT_PROTOCOL}; x3 Wald; test30={REAL_TEST_BBOX_30M}, "
         f"test10={REAL_TEST_BBOX_10M}, forbidden30={REAL_FORBIDDEN_BBOX_30M}; "
         f"train={REAL_TRAIN_PATCH}/stride{REAL_TRAIN_STRIDE}, "
         f"eval={REAL_EVAL_PATCH}; epochs={REAL_EPOCHS}; "
-        f"AdamW lr={REAL_LR:g}, wd={REAL_WEIGHT_DECAY:g}; "
+        f"AdamW lr={REAL_LR:g}, wd={REAL_WEIGHT_DECAY:g}, batch={resolved_batch}; "
         f"best={REAL_MONITOR}; native tile={REAL_TILE_SIZE}/"
         f"{REAL_TILE_STRIDE}; QNR window={REAL_QNR_WINDOW_HR}"
     )
 
 
-def protocol_summary() -> str:
+def protocol_summary(adapter=None, batch_size=None) -> str:
+    resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
     return (
         f"x{SCALE_RATIO}, physical MTF={MTF_NYQUIST}, truncate={PSF_TRUNCATE}; "
         f"train={PATCH_SIZE}/stride{STRIDE}, eval={IMAGE_SIZE}; "
@@ -421,5 +449,5 @@ def protocol_summary() -> str:
         f"dx/dy~U(-{MAX_TRANSLATION:g},{MAX_TRANSLATION:g}), "
         f"rot~U(-{MAX_ROTATION_DEG:g},{MAX_ROTATION_DEG:g}), "
         f"local amplitude~U(0,{MAX_LOCAL_PX:g}), minJac={MIN_JACOBIAN}; "
-        f"AdamW lr={LR:g}, wd={WEIGHT_DECAY:g}, batch={BATCH_SIZE}"
+        f"AdamW lr={LR:g}, wd={WEIGHT_DECAY:g}, batch={resolved_batch}"
     )
