@@ -163,8 +163,17 @@ eval_seed = 1234
 | PaviaU | 20 epochs |
 | Houston13 | 10 epochs |
 | Chikusei | 5 epochs |
+| CAVE | 5 epochs |
+| Botswana | 20 epochs |
+| Augsburg synthetic x4 | 10 epochs |
 
-这套验证频率属于同一数据集的统一公平协议。后续新增对比方法在可实现 early stopping 的情况下，应采用相同的数据集验证间隔，避免某个方法因为验证过稀而额外训练大量无效 epoch。
+这套验证频率属于所有现有及后续新增方法的统一协议，适用于registered
+和mixed两个synthetic训练阶段。根 `train.py` 从
+`experiment_protocol.py::DATASET_VALIDATION_INTERVAL` 自动传入
+`--validation_interval`；新方法的两个训练adapter必须接收并实际使用
+这个参数，不能用内部固定周期覆盖，并在日志中记录实际验证周期。
+是否启用自动早停不影响验证周期的继承。真实世界Augsburg Wald保持独立
+每5epoch验证。根入口的800/600epoch预算及patience=999999保持原设置。
 
 连续 2 次验证无有效提升则终止训练。对应最佳点之后的默认最大额外训练量约为 PaviaU 40 epoch、Houston13 20 epoch、Chikusei 10 epoch。
 

@@ -1,4 +1,4 @@
-"""Guard EMR training command resolution without reading any scene data."""
+"""Guard shared validation cadence and EMR runtime overrides without scene data."""
 import sys
 from pathlib import Path
 
@@ -19,13 +19,24 @@ def option(command, flag):
 
 @pytest.mark.parametrize("dataset,interval", INTERVALS.items())
 @pytest.mark.parametrize("mode", ["registered", "mixed"])
-def test_emr_commands_resolve_all_dataset_intervals(tmp_path, monkeypatch, dataset, interval, mode):
+@pytest.mark.parametrize("model", ["EMR-Diff", "UAFL", "FutureMethod"])
+def test_all_methods_inherit_dataset_intervals(tmp_path, monkeypatch, dataset, interval, mode, model):
+    if model == "FutureMethod":
+        # Register a new method without defining any validation-specific logic.
+        adapter = protocol.ModelAdapter(
+            canonical=model, folder=model,
+            registered_train="comparison/FutureMethod/train.py",
+            mixed_train="comparison/FutureMethod/train_mixed.py",
+            test_script="comparison/FutureMethod/test.py", real_train="", real_infer="",
+        )
+        monkeypatch.setitem(protocol._ADAPTERS, "futuremethod", adapter)
+    adapter = protocol.resolve_model(model)
     monkeypatch.setattr(protocol, "ROOT", tmp_path)
     checkpoint = tmp_path / "best.pth.tar"
     checkpoint.touch()
     monkeypatch.setattr(protocol, "checkpoint_path", lambda *args: checkpoint)
-    command = protocol.build_train_command(EMR, dataset, mode, "cuda:0")
-    assert option(command, "--batch_size") == "2"
+    command = protocol.build_train_command(adapter, dataset, mode, "cuda:0")
+    assert option(command, "--batch_size") == ("2" if model == "EMR-Diff" else "1")
     assert option(command, "--lr") == "1e-05"
     assert option(command, "--validation_interval") == str(interval)
     assert option(command, "--epochs") == ("800" if mode == "registered" else "600")
@@ -39,7 +50,7 @@ def test_batch_override_and_other_method_defaults():
     command = protocol.build_train_command(UAFL, "PaviaU", "registered", "cuda:0")
     assert option(command, "--batch_size") == "1"
     command = protocol.build_train_command(UAFL, "CAVE", "registered", "cuda:0")
-    assert option(command, "--validation_interval") == "20"
+    assert option(command, "--validation_interval") == "5"
     with pytest.raises(ValueError, match="only to EMR-Diff"):
         protocol.build_train_command(UAFL, "CAVE", "registered", "cuda:0", batch_size=4)
     with pytest.raises(ValueError, match=">=1"):

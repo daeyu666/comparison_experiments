@@ -167,7 +167,8 @@ EMR-Diff 使用独立验证区 PSNR 进行早停。考虑不同数据集单个 e
 | Botswana | 20 epochs | <20 epochs |
 | Augsburg synthetic | 10 epochs | <10 epochs |
 
-这些周期用于EMR-Diff registered和mixed两个synthetic阶段。根入口采用
+这些周期是所有当前及后续方法共享的协议，由根入口注入registered和
+mixed两个synthetic阶段。根入口采用
 800/600epoch预算，patience=999999，仍需按验证结果手动早停。以下是直接
 使用旧独立Stage1入口时的默认早停设置：
 
@@ -222,7 +223,7 @@ python comparison/EMR-Diff/Train.py \
   --validation_interval 10
 ```
 
-正式默认值仍建议保持数据集统一：PaviaU=20、Houston13=10、Chikusei=5，避免同一数据集不同方法采用不同验证频率。
+正式统一值：PaviaU=20、Houston13=10、Chikusei=5、CAVE=5、Botswana=20、Augsburg synthetic=10。根入口从共享周期表传入，新增方法也自动继承。
 
 ### Early stopping 参数覆盖
 

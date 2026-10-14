@@ -47,20 +47,16 @@ MIN_JACOBIAN = 0.5
 
 VALIDATION_CASES = 5
 TEST_CASES = 10
-MIXED_VALIDATION_INTERVAL = 20
 EARLY_STOP_PATIENCE_FIXED_BUDGET = 999999
 EARLY_STOP_MIN_DELTA = 0.02
-REGISTERED_VALIDATION_INTERVAL = {
+# Shared by every current/future ModelAdapter in both synthetic training stages.
+# New methods must consume --validation_interval from the root launcher.
+DATASET_VALIDATION_INTERVAL = {
     "PaviaU": 20,
     "Houston13": 10,
     "Chikusei": 5,
-    "CAVE": 20,
-    "Botswana": 20,
-    "Augsburg": 20,
-}
-EMR_VALIDATION_INTERVAL = {
-    **REGISTERED_VALIDATION_INTERVAL,
     "CAVE": 5,
+    "Botswana": 20,
     "Augsburg": 10,
 }
 
@@ -188,10 +184,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--weight_decay", str(WEIGHT_DECAY),
             "--seed", str(REGISTERED_SEED),
             "--device", device,
-            "--validation_interval", str(
-                EMR_VALIDATION_INTERVAL[dataset]
-                if adapter.canonical == "EMR-Diff" else REGISTERED_VALIDATION_INTERVAL[dataset]
-            ),
+            "--validation_interval", str(DATASET_VALIDATION_INTERVAL[dataset]),
             "--early_stop_patience", str(EARLY_STOP_PATIENCE_FIXED_BUDGET),
             "--early_stop_min_delta", str(EARLY_STOP_MIN_DELTA),
             "--checkpoint_dir", str(checkpoint_dir(adapter, dataset, mode).relative_to(ROOT)),
@@ -228,10 +221,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         "--weight_decay", str(WEIGHT_DECAY),
         "--seed", str(MIXED_SEED),
         "--device", device,
-        "--validation_interval", str(
-            EMR_VALIDATION_INTERVAL[dataset]
-            if adapter.canonical == "EMR-Diff" else MIXED_VALIDATION_INTERVAL
-        ),
+        "--validation_interval", str(DATASET_VALIDATION_INTERVAL[dataset]),
         "--validation_cases", str(VALIDATION_CASES),
         "--early_stop_patience", str(EARLY_STOP_PATIENCE_FIXED_BUDGET),
         "--early_stop_min_delta", str(EARLY_STOP_MIN_DELTA),

@@ -76,7 +76,7 @@ batch增大后同epoch的优化更新次数会减少，不保证相同收敛结�
 记录实际batch、学习率、训练epoch和优化更新次数；800/600仍是epoch预算。
 根入口不会自动缩放学习率，也不会默认打开AMP改变当前数值行为。
 
-EMR-Diff两个synthetic训练阶段的验证频率：
+所有现有及后续新增方法的两个synthetic训练阶段共用以下验证频率：
 
 | Dataset | Validation interval (epochs) |
 |---|---:|
@@ -250,6 +250,12 @@ comparison/<Method>/
 根目录的统一训练/测试入口通过 `experiment_protocol.py` 中的
 `ModelAdapter` 注册表定位模型实现。后续新增一个对比模型时，
 **只需要在这里注册一次**，日常训练/测试命令不再改变。
+
+验证周期集中保存在 `DATASET_VALIDATION_INTERVAL`，registered与mixed
+均通过 `--validation_interval` 注入。新增方法自动继承六个数据集的周期，
+无需增加模型专属分支。两个训练adapter必须接收并实际使用这个参数，
+不得在内部用固定20/100epoch覆盖；运行日志应记录最终采用的验证周期。
+此规则适用于synthetic x4，真实世界Augsburg Wald保留独立每5epoch验证。
 
 当前适配器字段为：
 
@@ -581,7 +587,7 @@ patience = 2 validation evaluations
 eval_seed = 1234
 ```
 
-以下为EMR-Diff两个synthetic阶段的验证周期；其他方法沿用各自注册周期：
+所有方法的registered和mixed阶段均由根入口注入以下验证周期：
 
 | Dataset | Validation interval | Max additional epochs after best under patience=2 |
 |---|---:|---:|
