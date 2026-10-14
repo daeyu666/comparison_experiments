@@ -76,39 +76,128 @@ CAVE_TEST_SCENES = [
 ]
 
 
-def read_hsi_mat(file_path: str, candidate_keys: Sequence[str]) -> np.ndarray:
+def _mat_array_leaves(value, path="", candidate_keys=(), seen=None):
+    """Find arrays inside MATLAB dict/struct/cell containers without reshaping."""
+    seen = {} if seen is None else seen
+    if id(value) in seen:
+        return
+    # Keep references to temporary structured-array field views so their ids
+    # cannot be recycled while sibling fields are still being visited.
+    seen[id(value)] = value
+    if isinstance(value, dict):
+        keys = list(dict.fromkeys(list(candidate_keys) + list(value)))
+        for key in keys:
+            if key in value and not str(key).startswith("__"):
+                yield from _mat_array_leaves(
+                    value[key], f"{path}/{key}", candidate_keys, seen
+                )
+    elif isinstance(value, (np.ndarray, np.void)) and value.dtype.names:
+        for name in value.dtype.names:
+            yield from _mat_array_leaves(
+                value[name], f"{path}/{name}", candidate_keys, seen
+            )
+    elif isinstance(value, np.ndarray) and value.dtype.kind == "O":
+        for index, item in enumerate(value.flat):
+            yield from _mat_array_leaves(
+                item, f"{path}[{index}]", candidate_keys, seen
+            )
+    elif hasattr(value, "_fieldnames"):
+        for name in value._fieldnames:
+            yield from _mat_array_leaves(
+                getattr(value, name), f"{path}/{name}", candidate_keys, seen
+            )
+    elif isinstance(value, np.ndarray):
+        yield path, value
+
+
+def _hdf5_array_leaves(obj, candidate_keys=(), seen=None):
+    """Walk v7.3 groups and referenced cell/struct values lazily."""
+    seen = set() if seen is None else seen
+    if obj.id in seen:
+        return
+    seen.add(obj.id)
+    if isinstance(obj, h5py.Group):
+        keys = list(dict.fromkeys(list(candidate_keys) + list(obj)))
+        for key in keys:
+            if key in obj and not str(key).startswith("#"):
+                yield from _hdf5_array_leaves(obj[key], candidate_keys, seen)
+    elif isinstance(obj, h5py.Dataset):
+        if h5py.check_dtype(ref=obj.dtype) is not None:
+            for ref in np.asarray(obj).flat:
+                if ref:
+                    yield from _hdf5_array_leaves(obj.file[ref], candidate_keys, seen)
+        else:
+            yield obj.name, obj
+
+
+def read_hsi_mat(
+    file_path: str, candidate_keys: Sequence[str], expected_bands: Optional[int] = None,
+) -> np.ndarray:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Cannot find data file: {file_path}")
-    mat_data = None
-    if hdf5storage is not None:
+    observed, errors = [], []
+
+    def decode(path, obj, backend):
+        # Inspect metadata before materializing large HDF5 datasets. Labels,
+        # wavelengths and flattened matrices must never be guessed into a cube.
+        shape, dtype = tuple(obj.shape), obj.dtype
+        if len(observed) < 24:
+            observed.append(f"{path}: shape={shape}, dtype={dtype}")
+        squeezed_shape = tuple(size for size in shape if size != 1)
+        if len(squeezed_shape) != 3 or dtype.kind not in "buif":
+            return None
+        if expected_bands is not None and int(expected_bands) not in squeezed_shape:
+            return None
+        arr = np.asarray(obj).squeeze()
+        if backend == "h5py" and "MATLAB_class" in obj.attrs:
+            # MATLAB v7.3 reverses ALL axes in HDF5 storage, including H and W.
+            arr = arr.transpose(2, 1, 0)
+        arr = fix_hsi_shape(arr, expected_bands=expected_bands)
+        if expected_bands is not None and arr.shape[2] != int(expected_bands):
+            return None
+        print(
+            f"[MAT HSI] backend={backend} variable={path} "
+            f"stored_shape={shape} resolved_shape={tuple(arr.shape)}"
+        )
+        return arr
+
+    is_hdf5 = h5py is not None and h5py.is_hdf5(file_path)
+    if is_hdf5:
         try:
-            mat_data = hdf5storage.loadmat(file_path)
-        except Exception:
-            mat_data = None
-    if mat_data is None and scio is not None:
-        try:
-            mat_data = scio.loadmat(file_path)
-        except Exception:
-            mat_data = None
-    if mat_data is not None:
-        for key in list(candidate_keys) + list(mat_data.keys()):
-            if key in mat_data and isinstance(mat_data[key], np.ndarray):
-                arr = np.asarray(mat_data[key]).squeeze()
-                if arr.ndim == 3:
-                    return fix_hsi_shape(arr)
-    if h5py is not None:
-        with h5py.File(file_path, "r") as f:
-            for key in list(candidate_keys) + list(f.keys()):
-                if key in f:
-                    obj = f[key]
-                    if not isinstance(obj, h5py.Dataset):
-                        continue
-                    arr = np.asarray(obj).squeeze()
-                    if arr.ndim == 3 and "MATLAB_class" in obj.attrs:
-                        arr = arr.transpose(2, 1, 0)
-                    if arr.ndim == 3:
-                        return fix_hsi_shape(arr)
-    raise RuntimeError(f"No valid 3-D HSI array found in {file_path}")
+            with h5py.File(file_path, "r") as handle:
+                for path, obj in _hdf5_array_leaves(handle, candidate_keys):
+                    arr = decode(path, obj, "h5py")
+                    if arr is not None:
+                        return arr
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            errors.append(f"h5py: {type(exc).__name__}: {exc}")
+    else:
+        for backend, module in (("scipy", scio), ("hdf5storage", hdf5storage)):
+            if module is None:
+                continue
+            try:
+                mat_data = module.loadmat(file_path)
+                for path, obj in _mat_array_leaves(mat_data, candidate_keys=candidate_keys):
+                    arr = decode(path, obj, backend)
+                    if arr is not None:
+                        return arr
+            except Exception as exc:
+                errors.append(f"{backend}: {type(exc).__name__}: {exc}")
+
+    band_hint = f" with {expected_bands} spectral bands" if expected_bands else ""
+    details = "\n".join(f"  {item}" for item in observed) or "  No numeric array metadata was found."
+    reader_errors = "\n".join(f"  {item}" for item in errors) or "  Readers opened the file but found no matching cube."
+    raise RuntimeError(
+        f"No valid 3-D HSI array found in {file_path}{band_hint}.\n"
+        f"Observed variables (up to 24):\n{details}\n"
+        f"Reader details:\n{reader_errors}\n"
+        "Training needs a numeric HxWxC or CxHxW hyperspectral cube, not a "
+        "2-D ground-truth label map or a flattened matrix. No automatic reshape "
+        "is performed. Check the file structure with:\n"
+        f"  python inspect_mat.py {file_path!r}\n"
+        "For MATLAB v7.3 support, install the data dependencies: "
+        "python -m pip install -r requirements_data.txt"
+    )
 
 
 def fix_hsi_shape(img: np.ndarray, expected_bands: Optional[int] = None) -> np.ndarray:
@@ -622,7 +711,10 @@ def build_datasets(cfg, include_validation: bool = False):
         train, val, test, info = _build_augsburg(cfg, degradation_operator)
     else:
         dcfg = cfg.datasets[cfg.dataset]
-        img = read_hsi_mat(os.path.join(cfg.data_root, dcfg.file_name), dcfg.mat_keys)
+        img = read_hsi_mat(
+            os.path.join(cfg.data_root, dcfg.file_name), dcfg.mat_keys,
+            expected_bands=128 if cfg.dataset == "Chikusei" else None,
+        )
         (
             train, val, test, img, weights, names, wavelengths, wavelength_path,
             profile, val_rect, test_rect

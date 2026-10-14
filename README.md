@@ -622,12 +622,35 @@ comparison/<Method>/logs/<degradation_mode>/<Dataset>/
 comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 ```
 
+## MAT文件读取失败的检查
+
+公共读取器支持classic MAT和MATLAB v7.3/HDF5，并递归查找group、struct、
+cell中的数值三维数组。v7.3数值数组按MATLAB存储规则恢复全部3个轴，
+普通HDF5则保留空间轴顺序。Chikusei读取时核验128个光谱波段。
+
+如果出现 `No valid 3-D HSI array found`，先检查变量元数据：
+
+```bash
+python inspect_mat.py data/raw/Chikusei.mat
+```
+
+此命令只读变量名、尺寸、类型和MATLAB类型标记，不加载完整高光谱立方体。
+读取失败信息也会列出找到的变量尺寸及后端异常；成功时会打印所选变量路径、
+存储尺寸和恢复后的HWC尺寸。正式Chikusei原始数据为2517x2335x128，
+训练协议中的中心裁剪仍为2304x2048x128。
+
+二维ground-truth标签图、像素展平矩阵及损坏文件不能直接用于训练。
+读取器不会猜测二维数组的空间布局并自动reshape；请使用完整高光谱数据文件，
+或根据明确的原始尺寸和展平顺序另行转换。这是所有对比方法共享的读取修复，
+不改变空间划分、SRF、退化模式或模型训练设置。
+
 ## 公共组件
 
 | 文件/目录 | 说明 |
 |---|---|
 | `config.py` | 公共数据、SRF 与退化模式配置 |
 | `data_loader.py` | 公共 HSI 数据读取、train/validation/test 空间划分、patch 构建和观测生成 |
+| `inspect_mat.py` | 仅查看MAT/HDF5变量元数据，不加载完整HSI |
 | `degradations/` | `gaussian_bicubic` 与 `physical` 公共退化算子 |
 | `metrics.py` | PSNR / RMSE / SAM / ERGAS / SSIM / CC |
 | `srf_utils.py` | SRF 加载、插值、权重构建和 HSI→MSI |
