@@ -68,66 +68,64 @@ Chikusei:  128 HSI + 8 MSI = 136 channels
 
 Houston13 按实际 HSI 波段数加 8 个 WV2 MSI 通道自动确定。
 
-### Synthetic EMR-Diff backbone capacity is fixed at the original width
+### Synthetic EMR-Diff: dynamic observation-space IO, fixed hidden width
 
-For the six synthetic x4 datasets, the diffusion state dimension still follows
-the sensor/data channels, but the BAFUNet hidden trunk no longer scales with
-the number of HSI bands.
-
-Formal architecture:
+The six synthetic x4 experiments use `BAFUNet` directly, without an external
+`EMRStateAdapter`:
 
 ```text
-dynamic state:
-  C_state = HSI bands + MSI bands
-
-BAFUNet hidden width:
-  fixed 34 channels
-
-output:
-  shared 1x1 state head
-  34 -> C_state
+in_channels = C_state = HSI bands + MSI bands
+model_channels = 64
+out_channels = C_state
+lqrgb_channels = C_state
 ```
 
-Examples:
+| Dataset | State IO channels | Hidden channels |
+|---|---:|---:|
+| CAVE | 34 | 64 |
+| PaviaU | 107 | 64 |
+| Chikusei | 136 | 64 |
+| Houston13 | 152 | 64 |
+| Botswana | 153 | 64 |
+| Augsburg synthetic | 246 | 64 |
+
+State channel counts are still resolved from the actual loaded HSI/MSI data.
+The input convolutions consume the full state and full HSI+MSI condition.
+Decoder recurrence and skip connections use hidden features. Inside BAFUNet,
+a shared 1x1 residual head maps the main output and decoder outputs back to
+`C_state`; in particular, `up_out[2/4/6]` is in the original band space before
+adding the multiscale condition and computing residual supervision.
+
+The multimodal residual `y - x_start`, noisy state, prior, inverse update,
+observation additions and losses remain in the original HSI+MSI space.
+There is no latent-space diffusion. The previous external state-projection
+implementation also performed these operations in the original band space;
+moving its output head inside BAFUNet does not change that diffusion mechanism.
+With matching weights, the previous fixed64 single-width adapter and this
+internal shared-head implementation are numerically equivalent. Fixed34 and
+fixed64 have different capacity; metric gains require retraining and measurement.
+
+This is a documented cross-dataset hidden-width adaptation, not a claim of an
+unchanged original network or matched parameter counts across different methods.
+
+Synthetic checkpoints store:
 
 ```text
-CAVE:
-  state 34 -> backbone 34 -> state 34
-
-PaviaU:
-  state 107 -> backbone 34 -> state 107
-
-Chikusei:
-  state 136 -> backbone 34 -> state 136
-
-Augsburg synthetic:
-  state 246 -> backbone 34 -> state 246
-```
-
-This matches the original EMR-Diff capacity convention: the released 31-HSI +
-3-MSI setting uses a 34-channel state and a 34-channel BAFUNet trunk. Changing
-the dataset spectral dimensionality must not silently enlarge the entire
-baseline network.
-
-The main output and multiscale outputs are all projected with the same 1x1
-state head, so the original five-step diffusion state and multiscale residual
-loss are unchanged.
-
-Synthetic checkpoints now store:
-
-```text
-architecture_id = fixed34_state_projection_v1
-backbone_width = 34
+architecture_id = fixed64_dynamic_io_v2
+backbone_width = 64
 state_channels = dataset dependent
 ```
 
-Old synthetic checkpoints trained with `model_channels=state_channels` are
-rejected and must be retrained.
+The old variable-width checkpoints and `fixed34_state_projection_v1` /
+`fixed64_state_projection_v1` checkpoints are rejected for stage2 initialization,
+resume and testing. The parameter naming has changed; retrain this version.
+The root `train.py` / `test.py` interface, five-step diffusion, data degradation,
+multiscale residual loss and 800/600 registered/mixed protocol remain unchanged.
 
-This change applies to the **six synthetic x4 experiments only**. The separate
-real-world Augsburg center-heldout Wald x3 adapter has its own documented
-64-channel latent trunk and its checkpoints must never be mixed with synthetic
-EMR-Diff checkpoints.
+The separate real-world Augsburg center-heldout Wald x3 adapter retains its
+existing 64-channel hidden trunk, external output head and checkpoint parameter
+names. BAFUNet adds no parameters when `out_channels` equals the decoder width,
+so that independent adapter keeps its existing behavior and compatible weights.
 
 ### Metric consistency
 

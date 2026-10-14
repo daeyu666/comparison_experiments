@@ -26,40 +26,7 @@ EXPECTED_MSI_CHANNELS = {
 }
 
 EMR_BACKBONE_WIDTH = 64
-EMR_ARCHITECTURE_ID = "fixed64_state_projection_v1"
-
-
-class EMRStateAdapter(nn.Module):
-    """Keep original EMR-Diff BAFUNet capacity fixed while state bands vary.
-
-    Original EMR-Diff uses a 34-channel state (31 HSI + 3 MSI) and a
-    34-channel BAFUNet trunk. Cross-dataset adaptation must change the
-    observation/state dimensionality, not silently widen the whole backbone.
-    The backbone therefore consumes the dynamic state directly at its input
-    convolutions, keeps every hidden stage at width 34, and projects its
-    34-channel outputs back to the dynamic state with one shared 1x1 head.
-    """
-
-    def __init__(self, params, state_channels):
-        super().__init__()
-        params = dict(params)
-        params["model_channels"] = EMR_BACKBONE_WIDTH
-        params["out_channels"] = EMR_BACKBONE_WIDTH
-        self.backbone = BAFUNet(**params)
-        self.state_channels = int(state_channels)
-        if self.state_channels == EMR_BACKBONE_WIDTH:
-            self.state_head = nn.Identity()
-        else:
-            self.state_head = nn.Conv2d(
-                EMR_BACKBONE_WIDTH, self.state_channels, kernel_size=1
-            )
-
-    def forward(self, x_t, rgb, lq, timesteps):
-        latent, up_out = self.backbone(x_t, rgb, lq, timesteps)
-        return self.state_head(latent), [
-            self.state_head(feature) for feature in up_out
-        ]
-
+EMR_ARCHITECTURE_ID = "fixed64_dynamic_io_v2"
 
 
 def _sample_or_resize(x, target_hw):
@@ -287,7 +254,7 @@ class ResShiftTrainer:
         params = self.configs.model.params
         params.in_channels = self.state_channels
         params.model_channels = EMR_BACKBONE_WIDTH
-        params.out_channels = EMR_BACKBONE_WIDTH
+        params.out_channels = self.state_channels
         params.lqrgb_channels = self.state_channels
         params.rgb_channels = self.msi_channels
         self.configs.diffusion.params.band_dim = self.hsi_channels
@@ -316,9 +283,9 @@ class ResShiftTrainer:
 
     def build_model(self):
         params = dict(self.configs.model.params)
-        self.Net = EMRStateAdapter(
-            params, state_channels=self.state_channels
-        ).to(self.device)
+        # Only internal features use width 64. State input, residual output,
+        # conditions, losses and all diffusion steps retain HSI+MSI channels.
+        self.Net = BAFUNet(**params).to(self.device)
         self.backbone_width = EMR_BACKBONE_WIDTH
         self.architecture_id = EMR_ARCHITECTURE_ID
 
@@ -335,7 +302,8 @@ class ResShiftTrainer:
                 f"architecture_id={architecture_id!r}, backbone_width={backbone_width}. "
                 f"Current formal baseline requires {self.architecture_id!r} "
                 f"with fixed backbone_width={self.backbone_width}. "
-                "Old hidden=state_channels checkpoints must be retrained."
+                "Old hidden=state_channels and external state-projection "
+                "checkpoints (fixed34/fixed64 v1) must be retrained."
             )
         if int(checkpoint.get("state_channels", -1)) != self.state_channels:
             raise ValueError(

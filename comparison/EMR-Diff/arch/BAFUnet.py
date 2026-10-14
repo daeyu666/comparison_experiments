@@ -283,6 +283,27 @@ class BAFUNet(nn.Module):
                     ds *= 2
                 self.output_blocks.append(nn.Sequential(*layers))
 
+        # Decode hidden features into observation-space residuals before they
+        # reach the diffusion update or multiscale loss. Equal input/output
+        # feature widths keep the original head-free BAFUNet behavior (also
+        # used by the independent Wald adapter).
+        decoder_channels = [
+            int(self.init_channels * mult)
+            for level, mult in list(enumerate(channel_mult))[::-1]
+            for _ in range(num_res_blocks[level] + 1)
+        ]
+        self.residual_heads = nn.ModuleDict({
+            str(width): conv_nd(dims, width, out_channels, 1)
+            for width in sorted(set(decoder_channels))
+            if width != out_channels
+        })
+
+    def _decode_residual(self, feature):
+        key = str(feature.shape[1])
+        if key in self.residual_heads:
+            return self.residual_heads[key](feature)
+        return feature
+
     def forward(self, x, rgb, lq, timesteps):
         emb = self.time_embed(
             timestep_embedding(timesteps, self.model_channels)
@@ -310,21 +331,24 @@ class BAFUNet(nn.Module):
             skip = th.cat([denoise_skip, lqrgb_skip], dim=1)
             h = th.cat([h, skip], dim=1)
             h = module(h)
-            upsample_outputs.append(h)
+            # Keep h and all decoder skip connections in hidden feature space.
+            upsample_outputs.append(self._decode_residual(h))
 
-        return h, upsample_outputs
+        return upsample_outputs[-1], upsample_outputs
 
     def convert_to_fp16(self):
         self.input_blocks_denoise.apply(convert_module_to_f16)
         self.input_blocks_lqrgb.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
         self.output_blocks.apply(convert_module_to_f16)
+        self.residual_heads.apply(convert_module_to_f16)
 
     def convert_to_fp32(self):
         self.input_blocks_denoise.apply(convert_module_to_f32)
         self.input_blocks_lqrgb.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
+        self.residual_heads.apply(convert_module_to_f32)
 
 
 class MSGAB(nn.Module):

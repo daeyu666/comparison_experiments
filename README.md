@@ -33,23 +33,30 @@ PaviaU / Houston13 / Chikusei / CAVE / Botswana / Augsburg
 `experiment_protocol.py`。新对比方法接入时只需要增加一次模型适配注册，
 之后训练和测试仍使用上述根命令。
 
-### EMR-Diff synthetic基线的固定容量适配
+### EMR-Diff synthetic基线的动态输入输出适配
 
-EMR-Diff在六个synthetic x4数据集上固定使用原始模型容量：
+六个synthetic x4数据集统一使用以下网络配置：
 
 ```text
-BAFUNet hidden width = 34
-dynamic state = HSI bands + MSI bands
-state output = shared 1x1 projection from 34 channels
+in_channels = out_channels = HSI bands + MSI bands
+model_channels = 64
+architecture_id = fixed64_dynamic_io_v2
 ```
 
-也就是说，Chikusei、Botswana、Augsburg不会再因为光谱波段更多而把整个
-BAFUNet主干扩成136、153、246通道。这样保持不同数据集之间的baseline
-模型容量一致，也更接近原始EMR-Diff的31+3=34通道配置。
+HSI+MSI联合状态、观测条件、多模态残差、加噪与逆扩散均在原始波段空间
+计算。只有BAFUNet内部隐藏特征使用64通道，入口卷积接收完整状态，内部
+共享1x1残差输出卷积将主输出和多尺度输出映射回完整状态维度。
 
-旧的 `model_channels=state_channels` synthetic EMR checkpoint与新结构
-不兼容，正式结果必须从头训练。真实世界Augsburg center-heldout Wald x3
-是独立适配，仍使用其单独记录的64通道latent trunk，不与synthetic权重混用。
+这属于显式记录的跨数据集网络宽度适配，不应称为未经修改的原版网络，
+也不能仅凭不同方法的base_channels相同就认定参数量或计算量相同。
+此前fixed34/fixed64外部state-projection版本也在原始波段空间执行扩散；
+本次将输出接口收进BAFUNet，并未把latent diffusion改回原空间扩散。
+
+旧的 `model_channels=state_channels`、`fixed34_state_projection_v1` 与
+`fixed64_state_projection_v1` synthetic权重不直接兼容新参数命名，需重新
+训练，不能用于新结构的stage2初始化、续训或测试。根train.py/test.py用法
+及800/600两阶段协议保持不变。真实世界Augsburg center-heldout Wald x3
+保留独立的64通道隐藏特征适配及原有参数命名，不与synthetic权重混用。
 
 ### 两阶段冻结训练协议
 
