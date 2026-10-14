@@ -432,7 +432,15 @@ def _read_cave_band(path: str) -> np.ndarray:
     return arr.astype(np.float32) / float((1 << bit_depth) - 1)
 
 
-@functools.lru_cache(maxsize=4)
+# Shuffled training patches span 16 scenes. A four-scene cache repeatedly
+# evicted decoded cubes and reopened 31 PNGs per miss. Retain all canonical
+# train/validation/test scenes in host RAM; loading remains lazy.
+CAVE_SCENE_CACHE_SIZE = (
+    len(CAVE_TRAIN_SCENES) + len(CAVE_VALIDATION_SCENES) + len(CAVE_TEST_SCENES)
+)
+
+
+@functools.lru_cache(maxsize=CAVE_SCENE_CACHE_SIZE)
 def _load_cave_scene(scene_dir: str) -> np.ndarray:
     try:
         from PIL import Image
@@ -644,6 +652,7 @@ def _build_cave(cfg, degradation_operator):
     if not os.path.isdir(root):
         root = cfg.data_root
     scene_dirs = _find_cave_scene_dirs(root)
+    print(f"[CAVE cache] max_scenes={CAVE_SCENE_CACHE_SIZE} location=CPU loading=lazy")
     weights, names, wavelengths, wavelength_path, profile, n_select = _make_srf(cfg, 31)
     common = dict(
         scene_dirs=scene_dirs, scale_ratio=cfg.scale_ratio, n_select_bands=n_select,

@@ -76,6 +76,14 @@ batch增大后同epoch的优化更新次数会减少，不保证相同收敛结�
 记录实际batch、学习率、训练epoch和优化更新次数；800/600仍是epoch预算。
 根入口不会自动缩放学习率，也不会默认打开AMP改变当前数值行为。
 
+CAVE的解码场景缓存在CPU内存中保留全部32个固定场景，按需加载，避免
+随机训练patch跨16个场景时反复淘汰、重读31张PNG。启动日志显示
+`[CAVE cache] max_scenes=32 location=CPU loading=lazy`。float32立方体缓存中，
+16个训练场景加4个验证场景约620MiB，全部32个约992MiB；这是每个进程的
+缓存数据量，不含其他CPU内存或GPU显存。像素读取、归一化、增强和数据
+划分保持原处理方式。第一次解码场景仍需时间，预热后再测吞吐量；正在
+运行的Python进程不会因git pull自动更新，需在新启动的进程中使用。
+
 所有现有及后续新增方法的两个synthetic训练阶段共用以下验证频率：
 
 | Dataset | Validation interval (epochs) |
