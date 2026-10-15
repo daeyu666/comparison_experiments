@@ -772,3 +772,10 @@ held-out sample (macro mean; minimum Jacobian retains the worst case). Previousl
 used only the first validation/test patch. The legacy standalone CDRDI final-test diagnostic
 and HSIFN misalignment visualization now reject multi-sample splits rather than report partial
 results as full benchmarks. Model-specific visualization extensions remain separate work.
+
+### 六档固定形变强度测试
+
+运行 `python test_fixed_deformation.py --model EMR-Diff --dataset CAVE --mode mixed`，
+对全部test patch分别测试固定的6档平移/旋转和范围内随机局部形变。
+默认每张图每档10个局部场，输出逐档JSON及6行指标CSV；也支持UAFL。
+完整协议、S2Diff-MH对应命令和参数见 [FIXED_DEFORMATION_TESTS.md](FIXED_DEFORMATION_TESTS.md)。

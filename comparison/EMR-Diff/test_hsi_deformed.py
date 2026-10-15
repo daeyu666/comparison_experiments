@@ -199,6 +199,8 @@ def format_metrics(m):
 def build_trainer(args):
     configs = OmegaConf.load(THIS_DIR / "config" / "5_step_EMRDiff.yaml")
     configs.data.dataset = args.dataset
+    if getattr(args, "data_root", None):
+        configs.data.data_root = str(Path(args.data_root).resolve())
     configs.data.degradation_mode = "physical"
     configs.data.patch_size = args.patch_size
     configs.data.stride = args.stride
