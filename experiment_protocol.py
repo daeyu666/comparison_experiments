@@ -73,6 +73,15 @@ class ModelAdapter:
 
 
 _ADAPTERS = {
+    "clsnet": ModelAdapter(
+        canonical="CLSNet",
+        folder="CLSNet",
+        registered_train="comparison/CLSNet/train.py",
+        mixed_train="comparison/CLSNet/train_hsi_deformed.py",
+        test_script="comparison/CLSNet/test_hsi_deformed.py",
+        real_train="comparison/CLSNet/train_augsburg2_wald.py",
+        real_infer="comparison/CLSNet/infer_augsburg2_wald.py",
+    ),
     "uafl": ModelAdapter(
         canonical="UAFL",
         folder="UAFL",

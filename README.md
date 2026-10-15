@@ -19,6 +19,7 @@ python test.py --model <Method> --dataset <Dataset> --mode mixed
 ```text
 UAFL
 EMR-Diff
+CLSNet
 ```
 
 模型名大小写不敏感，并支持 `EMR` / `EMRDiff` 等常用别名。
@@ -815,3 +816,20 @@ python train.py --model EMR-Diff --dataset PaviaU --mode mixed \
 
 这会恢复stage-2自己的模型和optimizer；不能将stage-1权重作为stage-2的resume。
 普通新建mixed训练仍通过原来的stage-1初始化逻辑启动。
+
+## CLSNet 对比方法
+
+已接入官方[CLSNet](https://github.com/HengYang01/CLSNet)的适配实现，
+代码与说明见[comparison/CLSNet](comparison/CLSNet/README.md)。
+沿用共享六数据集synthetic两阶段协议、固定形变测试和真实Augsburg-2 Wald入口。
+使用官方CAVE版宽度62的统一backbone，观测通道动态适配；最近邻上采样改为4×/3×。
+保留L1损失，优化器采用本仓库共享AdamW配置，batch采用通用默认值1。
+
+```bash
+python train.py --model CLSNet --dataset PaviaU --mode registered
+python train.py --model CLSNet --dataset PaviaU --mode mixed
+python test.py --model CLSNet --dataset PaviaU --mode mixed
+python test_fixed_deformation.py --model CLSNet --dataset PaviaU --mode mixed
+python train_real.py --model CLSNet
+python test_real.py --model CLSNet
+```

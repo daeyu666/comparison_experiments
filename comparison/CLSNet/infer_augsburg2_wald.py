@@ -1,0 +1,202 @@
+"""Full-resolution Augsburg-2 Wald inference for strictly Wald-trained CLSNet.
+
+Input: observed 30m HSI + REAL Sentinel-2 10m MSI, sub_area_2.
+Output: x3 -> 10m 242-band fused HSI, without 10m HSI labels or PSNR.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+
+THIS=Path(__file__).resolve().parent
+sys.path.insert(0,str(THIS.parents[1]))
+from comparison.CLSNet.wald_common import (
+    correct_msi, load_state, read_json, read_radiometry, require_wald, predict_clsnet
+)
+from comparison.CLSNet.model import build_clsnet
+from comparison.UAFL.augsburg2_wald_qnr import evaluate_cache
+from comparison.UAFL.augsburg2_wald_center_roi import crop_heldout, geotiff_transform
+
+
+def parse_args():
+    p=argparse.ArgumentParser(description="Strict Augsburg-2 Wald CLSNet 10m inference")
+    p.add_argument("--center_holdout",action="store_true",
+                   help="Use center-test Wald cache, center-trained checkpoint and CLSNet-owned results folder")
+    p.add_argument("--wald_root",default="./data/augsburg2_wald")
+    p.add_argument("--checkpoint",default="./comparison/CLSNet/checkpoints/augsburg2_wald/best.pth.tar")
+    p.add_argument("--radiometry_json",default="./data/calibration/Augsburg2_Wald_radiometry.json")
+    p.add_argument("--save_root",default="./comparison/CLSNet/outputs/augsburg2_wald")
+    p.add_argument("--tile_size",type=int,default=96)
+    p.add_argument("--tile_stride",type=int,default=48)
+    p.add_argument("--device",default="cuda")
+    p.add_argument("--write_tif",action="store_true")
+    p.add_argument("--skip_qnr", action="store_true", help="Skip original-scale no-reference QNR evaluation")
+    p.add_argument("--qnr_window_hr", type=int, default=48, help="UIQI high-res window in 10m pixels")
+    p.add_argument("--qnr_min_valid_fraction", type=float, default=0.8)
+    p.add_argument("--qnr_support_fraction", type=float, default=0.01,
+                   help="SRF relative-to-peak threshold for MSI-covered HSI bands")
+    args=p.parse_args()
+    if args.center_holdout:
+        if args.wald_root=="./data/augsburg2_wald":
+            args.wald_root="../S2Diff-MH/data/augsburg2_wald_center_holdout"
+        if args.checkpoint=="./comparison/CLSNet/checkpoints/augsburg2_wald/best.pth.tar":
+            args.checkpoint="./comparison/CLSNet/checkpoints/augsburg2_wald_center_holdout/best.pth.tar"
+        if args.radiometry_json=="./data/calibration/Augsburg2_Wald_radiometry.json":
+            args.radiometry_json="../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json"
+        if args.save_root=="./comparison/CLSNet/outputs/augsburg2_wald":
+            args.save_root="./comparison/CLSNet/outputs/augsburg2_wald_center_holdout"
+        if args.skip_qnr:
+            p.error("--center_holdout requires QNR output; omit --skip_qnr")
+    if not args.center_holdout:
+        p.error("CLSNet native inference requires --center_holdout")
+    return args
+
+
+def positions(length, tile, stride):
+    if length<tile:
+        raise ValueError("Full scene dimension is smaller than tile")
+    out=list(range(0,length-tile+1,stride))
+    last=length-tile
+    if not out or out[-1]!=last:
+        out.append(last)
+    if any(x%3 for x in out):
+        raise ValueError("Tiling origins must be divisible by 3 for the LR grid")
+    return out
+
+
+@torch.no_grad()
+def main():
+    args=parse_args()
+    if args.tile_size%24 or args.tile_stride%24 or args.tile_stride>args.tile_size:
+        raise ValueError("CLSNet full tiles/strides must be multiples of 24; stride<=tile")
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available")
+    sigma=require_wald(args.wald_root)
+    calibration=read_radiometry(args.radiometry_json, args.wald_root)
+    sha=hashlib.sha256(Path(args.radiometry_json).read_bytes()).hexdigest()
+    device=torch.device(args.device)
+
+    model=build_clsnet(242,4,3).to(device)
+    ckpt=load_state(args.checkpoint,model,device=device)
+    if ckpt.get("radiometry_sha256")!=sha or abs(float(ckpt.get("wald_sigma",-1))-sigma)>1e-8:
+        raise ValueError("Wald inference checkpoint radiometry/PSF mismatch")
+    model.eval()
+
+    root=Path(args.wald_root)/"full"
+    meta=read_json(root/"meta.json")
+    if meta.get("region")!="sub_area_2":
+        raise ValueError("Expected exact sub_area_2 Wald original-resolution inputs")
+    lr=np.load(root/"lr_hsi.npy",mmap_mode="r")
+    msi=np.load(root/"hr_msi.npy",mmap_mode="r")
+    mask=np.load(root/"valid_mask.npy",mmap_mode="r")
+    h,w,c=msi.shape
+    if (c!=4 or lr.shape!=(h//3,w//3,242) or
+        mask.shape!=(h,w) or h%6 or w%6):
+        raise ValueError(f"Bad full Wald array shapes HSI={lr.shape}, MSI={msi.shape}, mask={mask.shape}")
+
+    lr, msi, mask, roi_y0, roi_x0, output_suffix, split_protocol_id = crop_heldout(
+        args.wald_root, lr, msi, mask,
+        ckpt_protocol_id=ckpt.get("split_protocol_id"),
+        ckpt_bbox_30m=ckpt.get("test_bbox_30m"),
+    )
+    h,w=msi.shape[:2]
+    print(
+        f"CLSNet_WALD_INFERENCE spatial_protocol={split_protocol_id} "
+        f"area={output_suffix} HR_shape={h}x{w} "
+        f"origin_10m_rowcol=({roi_y0},{roi_x0})"
+    )
+    ys=positions(h,args.tile_size,args.tile_stride)
+    xs=positions(w,args.tile_size,args.tile_stride)
+    sum_cube=np.zeros((h,w,242),dtype=np.float32)
+    count=np.zeros((h,w),dtype=np.float32)
+
+    for i,top in enumerate(ys):
+        for j,left in enumerate(xs):
+            ts=args.tile_size
+            lp=np.asarray(lr[top//3:(top+ts)//3,left//3:(left+ts)//3]).copy()
+            mp=np.asarray(msi[top:top+ts,left:left+ts]).copy()
+            x_h=torch.from_numpy(np.ascontiguousarray(lp.transpose(2,0,1))).float().unsqueeze(0).to(device)
+            x_m=torch.from_numpy(np.ascontiguousarray(mp.transpose(2,0,1))).float().unsqueeze(0).to(device)
+            x_m=correct_msi(x_m,calibration)
+            pred=predict_clsnet(model,x_h,x_m)
+            arr=pred[0].permute(1,2,0).float().cpu().numpy()
+            sum_cube[top:top+ts,left:left+ts]+=arr
+            count[top:top+ts,left:left+ts]+=1.0
+            print(f"CLSNet_FULL_TILE {i+1}/{len(ys)} {j+1}/{len(xs)} at={top},{left}")
+    if not np.all(count>0):
+        raise RuntimeError("Full-resolution reconstruction has uncovered pixels")
+    fused=sum_cube/count[...,None]
+    fused[np.asarray(mask)==0]=0.
+    dest=Path(args.save_root)
+    dest.mkdir(parents=True,exist_ok=True)
+    output=dest/f"Augsburg2_Wald_CLSNet_{output_suffix}_HSI.npy"
+    np.save(output,fused.astype(np.float32))
+
+    if args.write_tif:
+        try:
+            import rasterio
+            from affine import Affine
+        except ImportError as exc:
+            raise ImportError("GeoTIFF output requires rasterio and affine") from exc
+        geotiff=dest/f"Augsburg2_Wald_CLSNet_{output_suffix}_HSI.tif"
+        with rasterio.open(
+            geotiff,"w",driver="GTiff",height=h,width=w,count=242,
+            dtype="float32",crs=meta["crs"],
+            transform=geotiff_transform(meta["transform_6"], roi_y0, roi_x0),compress="deflate",tiled=True,
+        ) as dst:
+            for k in range(242):
+                dst.write(fused[:,:,k],k+1)
+        print(f"CLSNet_WALD_GEOTIFF={geotiff}")
+
+    no_reference_quality = None
+    if not args.skip_qnr:
+        no_reference_quality = evaluate_cache(
+            args.wald_root, str(output), args.radiometry_json,
+            window_hr=args.qnr_window_hr,
+            min_valid_fraction=args.qnr_min_valid_fraction,
+            support_fraction=args.qnr_support_fraction,
+        )
+        (dest/f"CLSNet_Wald_{output_suffix}_QNR.json").write_text(
+            json.dumps(no_reference_quality, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(
+            f"CLSNet_WALD_HSI_MSI_QNR "
+            f"QNR={no_reference_quality['QNR']:.6f} "
+            f"Dlambda={no_reference_quality['Dlambda']:.6f} "
+            f"Ds={no_reference_quality['Ds']:.6f} "
+            f"SPECTRAL_REFERENCE=242_band_LR_HSI "
+            f"SPATIAL_REFERENCE=original_HR_MSI"
+        )
+
+    report={
+        "protocol":"Augsburg-2-Wald-CLSNet",
+        "no_reference_quality":no_reference_quality,
+        "inputs":"observed 30m HSI and original real Sentinel-2 10m MSI",
+        "region":"sub_area_2",
+        "split_protocol_id":split_protocol_id,
+        "evaluation_area":output_suffix,
+        "test_bbox_30m":ckpt.get("test_bbox_30m"),
+        "full_reference_HSI_10m":False,
+        "quantitative_full_psnr":None,
+        "output_shape":list(fused.shape),
+        "valid_fraction":float(np.asarray(mask).mean()),
+        "tile_size":args.tile_size,
+        "tile_stride":args.tile_stride,
+        "checkpoint":str(Path(args.checkpoint).resolve()),
+        "srf_source":"fixed Wald cache",
+        "radiometry_sha256":sha,
+    }
+    (dest/f"CLSNet_Wald_{output_suffix}_protocol.json").write_text(
+        json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8"
+    )
+    print(f"CLSNet_WALD_FULL_OUTPUT={output} shape={fused.shape} HR_HSI_REFERENCE=unavailable")
+
+
+if __name__=="__main__":
+    main()

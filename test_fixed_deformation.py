@@ -80,9 +80,26 @@ def _uafl(args):
     return test_set, predict, p0.degrade, device, details
 
 
+def _clsnet(args):
+    from comparison.CLSNet.common import (
+        build_shared_cfg, model_for_info, load_checkpoint, resolve_device,
+    )
+    from data_loader import build_datasets
+    _, _, test_set, info = build_datasets(build_shared_cfg(args), include_validation=True)
+    device = resolve_device(args.device)
+    model = model_for_info(info, args, device)
+    state = load_checkpoint(args.checkpoint, model, args, expected_stage=args.mode)
+    model.eval()
+    p0 = test_set.degradation_operator.to(device)
+    details = {"checkpoint_epoch": state["epoch"], "training_stage": state["training_stage"],
+               "architecture_id": state["architecture_id"],
+               "registered_probability": state.get("registered_probability")}
+    return test_set, model, p0.degrade, device, details
+
+
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet}
 
 
 def parse_args(argv=None):

@@ -1,0 +1,1 @@
+"""CLSNet comparison adapter."""

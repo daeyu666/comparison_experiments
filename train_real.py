@@ -14,7 +14,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Unified real-world Augsburg-2 center-heldout training launcher"
     )
-    p.add_argument("--model", required=True, help="e.g. UAFL or EMR-Diff")
+    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff or CLSNet")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--batch_size", type=int, default=None,
                    help="EMR-Diff training batch override; default=2. Learning rate is unchanged.")
