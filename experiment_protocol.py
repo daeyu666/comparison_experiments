@@ -47,6 +47,7 @@ MIN_JACOBIAN = 0.5
 
 VALIDATION_CASES = 5
 TEST_CASES = 10
+TEST_GEOMETRY_SEEDS = tuple(range(10001, 10011))
 EARLY_STOP_PATIENCE_FIXED_BUDGET = 999999
 EARLY_STOP_MIN_DELTA = 0.02
 # Shared by every current/future ModelAdapter in both synthetic training stages.
@@ -276,14 +277,38 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     return cmd
 
 
-def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: str):
+def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, *,
+                       geometry_seeds=None, cases=TEST_CASES, eval_seed=EVAL_SEED,
+                       data_root="./data/raw", checkpoint_override="", output_override="",
+                       max_samples=0, resume_output=False, overwrite_output=False,
+                       legacy_single_seed=False, check_files=True):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
-    checkpoint = checkpoint_path(adapter, dataset, mode)
-    if not checkpoint.is_file():
+    if mode not in MODES:
+        raise ValueError(f"Unsupported mode={mode!r}")
+    checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else checkpoint_path(adapter, dataset, mode)
+    if check_files and not checkpoint.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
 
-    output = (
+    if mode == "mixed" and not legacy_single_seed:
+        seeds = TEST_GEOMETRY_SEEDS if geometry_seeds is None else geometry_seeds
+        if not seeds or len(set(seeds)) != len(seeds) or any(s < 0 for s in seeds) or cases < 1 or max_samples < 0:
+            raise ValueError("Invalid multiseed evaluation settings")
+        cmd = [sys.executable, str(ROOT / "test_multiseed_deformation.py"),
+               "--model", adapter.canonical, "--dataset", dataset, "--mode", "mixed",
+               "--checkpoint", str(checkpoint), "--data_root", str(data_root),
+               "--device", device, "--seed", str(MIXED_SEED),
+               "--geometry_seeds", *map(str, seeds), "--cases", str(cases),
+               "--eval_seed", str(eval_seed), "--max_samples", str(max_samples)]
+        if output_override:
+            cmd += ["--output_dir", str(output_override)]
+        if resume_output:
+            cmd.append("--resume_output")
+        if overwrite_output:
+            cmd.append("--overwrite_output")
+        return cmd
+
+    output = Path(output_override) / "legacy_test.json" if output_override else (
         ROOT / "comparison" / adapter.folder / "outputs" / "unified_two_stage"
         / dataset / f"{adapter.canonical.replace('-', '')}_{mode}_seed{MIXED_SEED}.json"
     )
@@ -300,16 +325,17 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
         "--psf_truncate", str(PSF_TRUNCATE),
         *_shared_geometry_args(),
         "--seed", str(MIXED_SEED),
-        "--cases", str(TEST_CASES),
+        "--cases", str(cases),
         "--device", device,
         "--test_mode", (
             "registered_only" if mode == "registered" else "registered_and_warp"
         ),
-        "--checkpoint", str(checkpoint.relative_to(ROOT)),
-        "--output_json", str(output.relative_to(ROOT)),
+        "--checkpoint", str(checkpoint),
+        "--data_root", str(data_root),
+        "--output_json", str(output),
     ]
     if adapter.canonical == "EMR-Diff":
-        cmd += ["--eval_seed", str(EVAL_SEED)]
+        cmd += ["--eval_seed", str(eval_seed)]
     return cmd
 
 

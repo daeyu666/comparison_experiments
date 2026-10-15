@@ -51,6 +51,7 @@ DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
 def parse_args():
     p = argparse.ArgumentParser(description="EMR-Diff unified two-stage final test")
     p.add_argument("--dataset", default="PaviaU", choices=DATASETS)
+    p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--cases", type=int, default=10)

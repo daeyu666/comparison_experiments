@@ -181,7 +181,9 @@ validation:
 final test:
   registered checkpoint -> Registered
   mixed checkpoint -> Registered + Warp
-  warped test cases = 10
+  warped test geometry seeds = 10
+  warped cases per patch per geometry seed = 10
+  report Warp mean +/- sample std of 10 full-test-set seed means
 ```
 
 Warp validation/test使用相同的几何范围：
@@ -209,15 +211,16 @@ python test.py  --model EMR-Diff --dataset Chikusei --mode mixed
 EMR-Diff mixed训练会逐epoch显示进度条、iter/s、平均loss和累计registered占比。
 mixed测试中的`REGISTERED`/`WARP`两行使用同一个stage-2混合训练权重；
 它们表示两种输入条件，不是两套训练权重。测试会打印checkpoint的训练阶段，
-并在JSON中记录实际patch数、权重阶段、形变seed及`geometry_summary`。
+并在JSON中记录实际patch数、权重阶段、形变种子、逐case形变与输入校验信息。
 
 统一测试目前显式使用局部幅度proposal `U(0,4)` HR像素，再施加min Jacobian约束。
 S2Diff-MH的`cdrdi_geometry.sample_synthetic_geometry`旧默认是
 `U(0.65,1.0)*max_local_px`，当max_local_px=4时为2.6到4 HR像素；
 两者不能只凭相同seed和相同最大幅度就视为同一测试。
-比较前应确认两边实际脚本、幅度分布、patch列表及逐case形变一致。
-EMR当前每个patch重置geometry generator，因此重复同一组10个case；
-JSON的`distinct_geometry_cases`按case统计，不会把重复patch计成新形变。
+这次新主表入口已将两个仓库统一为`multiseed_deformation_protocol.py`：
+CPU/float32生成10个形变种子，每个种子每个patch独立生成10个case。
+旧各模型`test_hsi_deformed.py`仍重置generator并重复同一组case，
+只用于复现旧结果；可通过根入口`--legacy_single_seed`调用。
 `local_max_hr_px`是局部场的最大位移，不是平移、旋转、局部场合成后的总位移。
 RMSE的raw值可直接与[0,1]域结果比较；终端另显示的RMSE_x255只是乘255的数值。
 当前SSIM为全局统计简化实现，不能直接与滑动窗口SSIM混用。
@@ -274,7 +277,10 @@ comparison/<Method>/
 
 根目录的统一训练/测试入口通过 `experiment_protocol.py` 中的
 `ModelAdapter` 注册表定位模型实现。后续新增一个对比模型时，
-**只需要在这里注册一次**，日常训练/测试命令不再改变。
+训练与配准测试在这里注册，日常训练/测试命令不再改变。
+新主表mixed测试与固定强度测试还共用`test_fixed_deformation.MODEL_BUILDERS`，
+新增模型需提供一次返回`test_set, predict, degrade, device, metadata`的builder；
+几何、遍历和统计逻辑无需复制。
 
 验证周期集中保存在 `DATASET_VALIDATION_INTERVAL`，registered与mixed
 均通过 `--validation_interval` 注入。新增方法自动继承六个数据集的周期，
@@ -311,7 +317,11 @@ mixed_train adapter
 
 test_script adapter
   -> registered checkpoint: Registered test
-  -> mixed checkpoint: Registered + Warp test
+  -> legacy mixed checkpoint evaluation (optional)
+
+shared MODEL_BUILDERS adapter
+  -> mixed checkpoint: Registered once + Warp 10 seeds x 10 cases
+  -> fixed-strength robustness test
 ```
 
 如果该方法还参加真实世界Augsburg实验，再补：
@@ -836,3 +846,12 @@ python test_fixed_deformation.py --model CLSNet --dataset PaviaU --mode mixed
 python train_real.py --model CLSNet
 python test_real.py --model CLSNet
 ```
+
+## 主表10×10形变测试与mean±std
+
+`python test.py --model <Method> --dataset <Dataset> --mode mixed`默认使用
+新共享协议，Registered单独评估1次，Warp使用10个测试形变种子×每种子每patch 10个case。
+先得到每个种子的完整测试集均值，再对10个均值计算mean与样本std（ddof=1）。
+模型权重固定，std不表示10次训练的波动。
+两个仓库的形变/指标/统计模块逐字相同，支持逐种子保存和`--resume_output`续跑。
+命令、输出和新旧协议差异见 [MULTISEED_MAIN_TABLE_TEST.md](MULTISEED_MAIN_TABLE_TEST.md)。
