@@ -8,9 +8,24 @@
 
 保留官方 SCSC、HIGF、MSAB、3级编码/解码、特征残差连接及 L1 重建损失。
 保留官方代码中已声明但未参与 forward 的模块，保证参数键与该基线实现一致。
-所有数据集统一采用官方 CAVE 版 backbone：`n_feat=62`，每头维度31、2个头。
-HSI/MSI 通道由共享 loader 的实际观测决定。该选择是明确记录的跨数据集
-容量设定；官方另外提供的 Houston 版宽度150与 GF5 版宽度180未在此版本使用。
+按数据集选择固定宽度与注意力头数。CAVE与Houston13保留官方对应模型配置，
+PaviaU、Chikusei、Botswana、Augsburg采用预先指定的跨数据集配置。
+所有7个HIGF块中的42个MS_MSA模块均使用对应配置，输入输出波段数与hidden width分开设置。
+
+| 数据集 | HSI波段 | MSI波段 | hidden channels | 注意力头数 | 每头维度 | 总参数量 |
+|---|---:|---:|---:|---:|---:|---:|
+| PaviaU | 103 | 4 | 120 | 4 | 30 | 15,032,292 |
+| Houston13 | 144 | 8 | 150 | 5 | 30 | 23,440,964 |
+| Chikusei | 128 | 8 | 150 | 5 | 30 | 23,397,764 |
+| CAVE | 31 | 3 | 62 | 2 | 31 | 4,062,116 |
+| Botswana | 145 | 8 | 150 | 5 | 30 | 23,443,664 |
+| Augsburg synthetic / real Wald | 242 | 4 | 270 | 9 | 30 | 75,308,692 |
+
+`hidden channels = 注意力头数 × 每头维度`。官方HIGF中名为`heads`的参数实际传入
+每头维度；本版本明确区分`num_heads`与`dim_head`，避免将30维误写为30个头。
+配置集中在`model.py`的`MODEL_PROFILES`，由训练、最终测试、固定形变测试和真实Wald
+入口共用。数据集与实际HSI波段不匹配时立即拒绝，不自动缩窄网络。
+这些配置延续官方网络的主要结构；它们并不代表相同参数预算，论文中需披露本表。
 本目录不声称复现官方论文原训练配置或其已发表数值。
 
 接口为 `model(lr_hsi, hr_msi) -> hr_hsi`，顺序与官方一致：
@@ -20,9 +35,10 @@ HSI/MSI 通道由共享 loader 的实际观测决定。该选择是明确记录�
 - 不增加外部配准网络、光谱校正头或新的损失项；
 - 删除导入时执行的 CUDA/thop profiling，不要求 thop 或 timm。
 
-CPU 对照验证：加载相同官方权重、使用31+3通道、8×、16×24输出时，
-与官方 `model/CLSNet.py` 的输出逐元素一致，最大绝对差为0。
-CAVE 配置总参数量为4,062,116，包含官方未参与 forward 的参数。
+CPU 对照验证：CAVE使用31+3通道，Houston使用官方144+4通道；在相同官方权重、
+8×、16×24输出下，分别与`CLSNet.py`和`CLSNet_Houston.py`逐元素一致，最大绝对差均为0。
+正式Houston13使用共享WV2的8波段MSI，输入卷积按8通道适配，内部仍为官方150维、5个头。
+总参数量包含官方未参与forward的模块。
 
 ## 统一实验设置
 
@@ -80,8 +96,11 @@ python train.py --model CLSNet --dataset PaviaU --mode registered --epochs 1600 
 python train.py --model CLSNet --dataset PaviaU --mode mixed --epochs 1200 --resume auto
 ```
 
-checkpoint校验模型版本、波段、数据集、阶段、退化、SRF指纹、patch及几何配置。
+checkpoint校验模型版本、数据集结构配置、hidden width、注意力头数、每头维度、
+波段、数据集、阶段、退化、SRF指纹、patch及几何配置。
 错误数据集、不同阶段或不同观测设置的权重会被拒绝。
+结构版本为`clsnet_dataset_profiles_v2`；之前统一宽度62的v1权重不能用于本版
+初始化、resume或测试，使用新配置重新训练。
 产物均在本方法目录：
 
 ```text
@@ -92,7 +111,7 @@ outputs/unified_two_stage/<Dataset>/CLSNet_<mode>_seed10.json
 outputs/fixed_deformation/<Dataset>/<mode>_seed10_cases10_eval1234/
 ```
 
-每次启动会写入`checkpoints/.../run_protocol.txt`，记录结构、参数量、SRF、实际参数。
+每次启动会写入`checkpoints/.../run_protocol.txt`，记录结构配置、hidden width、注意力头数、每头维度、参数量、SRF、实际参数。
 
 调试1轮（正式报告仍使用根入口协议）：
 
@@ -137,7 +156,7 @@ python test_real.py --model CLSNet
 python -m pytest -q tests/test_clsnet.py tests/test_clsnet_wald.py
 ```
 
-测试包含6组波段接口、3×/4×/8×、双路补边、真实forward/backward、
+测试包含6组数据集宽度/头数配置、全部42个注意力模块、3×/4×/8×、双路补边、真实forward/backward、
 优化器/RNG续训恢复、跨阶段/跨数据集权重拒绝、两阶段训练与最终多patch形变测试。
 测试还覆盖真实Wald入口的训练、参考测试、144×144中心ROI推理与QNR输出链路。
 测试使用CPU和合成fixture，不代表已完成真实数据集训练或GPU显存测试。

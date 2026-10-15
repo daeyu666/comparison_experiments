@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from comparison.CLSNet.model import build_clsnet
+from comparison.CLSNet.model import build_clsnet, MS_MSA
 from comparison.CLSNet.common import (
     checkpoint_payload, deformed_observation, load_checkpoint, make_generator,
     restore_rng, set_seed, verify_checkpoint,
@@ -28,13 +28,36 @@ def one_thread():
     torch.set_num_threads(old)
 
 
-@pytest.mark.parametrize('hsi,msi',[(31,3),(103,4),(128,8),(144,8),(145,8),(242,4)])
-def test_dataset_channel_shapes(hsi,msi):
-    model=build_clsnet(hsi,msi).eval()
-    with torch.no_grad():
-        pred=model(torch.rand(1,hsi,4,6),torch.rand(1,msi,16,24))
+@pytest.mark.parametrize('dataset,hsi,msi,width,heads,head_dim',[
+    ('PaviaU',103,4,120,4,30),
+    ('Houston13',144,8,150,5,30),
+    ('Chikusei',128,8,150,5,30),
+    ('CAVE',31,3,62,2,31),
+    ('Botswana',145,8,150,5,30),
+    ('Augsburg',242,4,270,9,30),
+])
+def test_dataset_channel_shapes(dataset,hsi,msi,width,heads,head_dim):
+    model=build_clsnet(hsi,msi,dataset=dataset)
+    assert (model.n_feat,model.num_heads,model.dim_head)==(width,heads,head_dim)
+    attention=[module for module in model.modules() if isinstance(module,MS_MSA)]
+    assert len(attention)==42  # 7 HIGF blocks, 6 attentions per block
+    for module in attention:
+        assert (module.num_heads,module.dim_head)==(heads,head_dim)
+        assert module.to_q.weight.shape==(width,width)
+    pred=model(torch.rand(1,hsi,4,6),torch.rand(1,msi,16,24))
     assert pred.shape==(1,hsi,16,24)
     assert torch.isfinite(pred).all()
+    pred.square().mean().backward()
+    assert torch.isfinite(model.conv_in_x.weight.grad).all()
+
+
+def test_profile_resolution_rejects_wrong_band_count():
+    with pytest.raises(ValueError,match='requires 103 HSI bands'):
+        build_clsnet(31,3,dataset='PaviaU')
+    with pytest.raises(ValueError,match='No unique CLSNet profile'):
+        build_clsnet(100,4)
+    with pytest.raises(ValueError,match='Unsupported CLSNet dataset'):
+        build_clsnet(103,4,dataset='unknown')
 
 
 @pytest.mark.parametrize('scale,h,w',[(4,20,28),(3,24,24),(8,16,24)])
@@ -49,7 +72,7 @@ def test_scale_padding_backward(scale,h,w):
 
 
 def test_checkpoint_resume_and_rejection(tmp_path):
-    args=parser().parse_args(['--device','cpu'])
+    args=parser().parse_args(['--device','cpu','--dataset','CAVE'])
     args.validation_interval=20
     model=build_clsnet(31,3)
     optimizer=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=args.weight_decay)
@@ -74,9 +97,16 @@ def test_checkpoint_resume_and_rejection(tmp_path):
     assert len(new_optimizer.state)==len(optimizer.state)>0
     with pytest.raises(ValueError,match='stage mismatch'):
         verify_checkpoint(state,model,args,expected_stage='mixed')
-    wrong=copy.copy(args); wrong.dataset='CAVE'
+    wrong=copy.copy(args); wrong.dataset='PaviaU'
     with pytest.raises(ValueError,match='dataset'):
         verify_checkpoint(state,model,wrong,expected_stage='registered')
+
+    for key,value in [('backbone_width',64),('attention_heads',4),
+                      ('attention_head_dim',30),('architecture_profile','PaviaU'),
+                      ('architecture_id','clsnet_cave62_dynamic_io_v1')]:
+        wrong_state={**state,key:value}
+        with pytest.raises(ValueError,match='architecture mismatch'):
+            verify_checkpoint(wrong_state,model,args,expected_stage='registered')
 
 
 def test_mixed_identity_and_warp_order(monkeypatch):

@@ -48,6 +48,8 @@ def test_wald_training_reference_and_native_qnr(tmp_path,monkeypatch):
         best=dest/'best.pth.tar'
         checkpoint=torch.load(best,weights_only=False)
         assert checkpoint['protocol']=='Augsburg-2-Wald-CLSNet'
+        assert checkpoint['backbone_width']==270 and checkpoint['attention_heads']==9
+        assert checkpoint['attention_head_dim']==30 and checkpoint['architecture_profile']=='Augsburg'
         assert checkpoint['split_protocol_id']==protocol
         monkeypatch.setattr(sys,'argv',['wald.py',*shared,'--stage','test'])
         train.main()
@@ -64,3 +66,4 @@ def test_wald_training_reference_and_native_qnr(tmp_path,monkeypatch):
     assert all(np.isfinite(quality[key]) for key in ('QNR','Dlambda','Ds'))
     report=json.loads((out/'CLSNet_Wald_heldout_protocol.json').read_text())
     assert report['test_bbox_30m']==bbox and report['full_reference_HSI_10m'] is False
+    assert report['backbone_width']==270 and report['attention_heads']==9

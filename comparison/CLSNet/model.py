@@ -1,9 +1,12 @@
 """CLSNet core from HengYang01/CLSNet, commit 6b13371297a78922c1d7fd3096fdf1e51f5f7192.
 
 Core blocks retain upstream behavior, including upstream's unused modules.
-Benchmark adaptations: configurable observation channels/scale; symmetric input
-padding after nearest-neighbor HSI upsampling; no import-time CUDA profiling.
+Benchmark adaptations: dataset-specific hidden widths and attention heads;
+configurable observation channels/scale; paired input padding after nearest
+HSI upsampling; no import-time CUDA profiling.
 """
+from dataclasses import dataclass
+
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
@@ -179,15 +182,17 @@ class HIGF(nn.Module):
     def __init__(
             self,
             dim_num,
-            heads,
+            dim_head,
     ):
         super().__init__()
-        self.MSAB_1 = MSAB1(dim=dim_num, num_blocks=1, dim_head=heads, heads=dim_num // heads)
-        self.MSAB_2 = MSAB1(dim=dim_num, num_blocks=1, dim_head=heads, heads=dim_num // heads)
-        self.LIGI_1 = MSAB1(dim=dim_num, num_blocks=1, dim_head=heads, heads=dim_num // heads)
-        self.LIGI_2 = MSAB1(dim=dim_num, num_blocks=1, dim_head=heads, heads=dim_num // heads)
-        self.GIGI_1 = MSAB2(dim=dim_num, num_blocks=1, dim_head=heads, heads=dim_num // heads)
-        self.GIGI_2 = MSAB2(dim=dim_num, num_blocks=1, dim_head=heads, heads=dim_num // heads)
+        if dim_head < 1 or dim_num % dim_head:
+            raise ValueError("HIGF width must be divisible by head dimension")
+        self.MSAB_1 = MSAB1(dim=dim_num, num_blocks=1, dim_head=dim_head, heads=dim_num // dim_head)
+        self.MSAB_2 = MSAB1(dim=dim_num, num_blocks=1, dim_head=dim_head, heads=dim_num // dim_head)
+        self.LIGI_1 = MSAB1(dim=dim_num, num_blocks=1, dim_head=dim_head, heads=dim_num // dim_head)
+        self.LIGI_2 = MSAB1(dim=dim_num, num_blocks=1, dim_head=dim_head, heads=dim_num // dim_head)
+        self.GIGI_1 = MSAB2(dim=dim_num, num_blocks=1, dim_head=dim_head, heads=dim_num // dim_head)
+        self.GIGI_2 = MSAB2(dim=dim_num, num_blocks=1, dim_head=dim_head, heads=dim_num // dim_head)
         self.outc = nn.Conv2d(dim_num * 2, dim_num, kernel_size=1)
         self.fuc1 = nn.Conv2d(dim_num * 2, dim_num, kernel_size=1)
         self.fuc2 = nn.Conv2d(dim_num * 2, dim_num, kernel_size=1)
@@ -267,7 +272,7 @@ class SCSC(nn.Module):
         return out
 
 class Block(nn.Module):
-    def __init__(self,dim=62, stage=3):
+    def __init__(self,dim=62, stage=3, dim_head=31):
         super(Block, self).__init__()
         self.dim = dim
         self.stage = stage
@@ -288,9 +293,9 @@ class Block(nn.Module):
         self.fea_extrax3 = nn.Conv2d(dim, dim, 3, 1, padding=1)
         self.fea_extray3 = nn.Conv2d(dim, dim, 3, 1, padding=1)
 
-        self.HIGF_1 = HIGF(dim_num=dim, heads=31)
-        self.HIGF_2 = HIGF(dim_num=dim, heads=31)
-        self.HIGF_3 = HIGF(dim_num=dim, heads=31)
+        self.HIGF_1 = HIGF(dim_num=dim, dim_head=dim_head)
+        self.HIGF_2 = HIGF(dim_num=dim, dim_head=dim_head)
+        self.HIGF_3 = HIGF(dim_num=dim, dim_head=dim_head)
 
         self.FeaDownSample1 = nn.AvgPool2d(kernel_size=2, stride=2)
         self.FeaDownSample2 = nn.AvgPool2d(kernel_size=2, stride=2)
@@ -304,7 +309,7 @@ class Block(nn.Module):
 
         self.fea_extrax4 = nn.Conv2d(dim, dim, 3, 1, padding=1)
         self.fea_extray4 = nn.Conv2d(dim, dim, 3, 1, padding=1)
-        self.HIGF_4 = HIGF(dim_num=dim, heads=31)
+        self.HIGF_4 = HIGF(dim_num=dim, dim_head=dim_head)
 
         self.FeaUpSample1 = nn.ConvTranspose2d(dim, dim, stride=2, kernel_size=2, padding=0, output_padding=0)
         self.FeaUpSample2 = nn.ConvTranspose2d(dim, dim, stride=2, kernel_size=2, padding=0, output_padding=0)
@@ -314,9 +319,9 @@ class Block(nn.Module):
         self.Fution2 = nn.Conv2d(dim*2, dim, 1, 1, bias=False)
         self.Fution3 = nn.Conv2d(dim*2, dim, 1, 1, bias=False)
 
-        self.HIGF_5 = HIGF(dim_num=dim, heads=31)
-        self.HIGF_6 = HIGF(dim_num=dim, heads=31)
-        self.HIGF_7 = HIGF(dim_num=dim, heads=31)
+        self.HIGF_5 = HIGF(dim_num=dim, dim_head=dim_head)
+        self.HIGF_6 = HIGF(dim_num=dim, dim_head=dim_head)
+        self.HIGF_7 = HIGF(dim_num=dim, dim_head=dim_head)
 
         self.deres1 = ResBlock(dim)
         self.deres2 = ResBlock(dim)
@@ -389,10 +394,17 @@ class Block(nn.Module):
         return out
 
 class CLSNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=31, n_feat=62, stage=3, scale_ratio=4):
+    def __init__(self, in_channels=3, out_channels=31, n_feat=62, stage=3, scale_ratio=4, num_heads=2):
         super(CLSNet, self).__init__()
-        if stage != 3 or n_feat != 62:
-            raise ValueError("Benchmark CLSNet fixes upstream CAVE backbone at stage=3, n_feat=62")
+        if stage != 3:
+            raise ValueError("CLSNet retains the upstream 3-level encoder/decoder")
+        if not isinstance(n_feat, int) or n_feat < 6:
+            raise ValueError("CLSNet hidden width must be an integer >=6")
+        if not isinstance(num_heads, int) or num_heads < 1 or n_feat % num_heads:
+            raise ValueError("CLSNet hidden width must be divisible by positive num_heads")
+        self.n_feat, self.num_heads = n_feat, num_heads
+        self.dim_head = n_feat // num_heads
+        self.dataset = None
         if not isinstance(scale_ratio, int) or scale_ratio < 1:
             raise ValueError("scale_ratio must be a positive integer")
         self.scale_ratio = scale_ratio
@@ -401,7 +413,7 @@ class CLSNet(nn.Module):
         self.conv_in_x = nn.Conv2d(in_channels, n_feat, kernel_size=3, padding=(3 - 1) // 2, bias=False)
         self.conv_in_y = nn.Conv2d(out_channels, n_feat, kernel_size=3, padding=(3 - 1) // 2, bias=False)
         self.conv_in = nn.Conv2d(n_feat*2, n_feat, kernel_size=1, bias=False)
-        self.CLSNetBlock = Block(dim=n_feat, stage=3)
+        self.CLSNetBlock = Block(dim=n_feat, stage=3, dim_head=self.dim_head)
         self.conv_out = nn.Conv2d(n_feat, out_channels, kernel_size=3, padding=(3 - 1) // 2, bias=False)
         self.upsamp = nn.Upsample(scale_factor=scale_ratio, mode='nearest')
 
@@ -431,13 +443,67 @@ class CLSNet(nn.Module):
         return h[:, :, :h_inp, :w_inp]
 
 
-ARCHITECTURE_ID = "clsnet_cave62_dynamic_io_v1"
+ARCHITECTURE_ID = "clsnet_dataset_profiles_v2"
 UPSTREAM_COMMIT = "6b13371297a78922c1d7fd3096fdf1e51f5f7192"
 
 
-def build_clsnet(hsi_channels, msi_channels, scale_ratio=4):
-    return CLSNet(in_channels=int(msi_channels), out_channels=int(hsi_channels),
-                  scale_ratio=int(scale_ratio))
+@dataclass(frozen=True)
+class ModelProfile:
+    hsi_channels: int
+    width: int
+    heads: int
+
+    @property
+    def head_dim(self):
+        return self.width // self.heads
+
+
+# CAVE and Houston13 retain their official backbone configurations.
+# The remaining profiles are the fixed user-specified cross-dataset adaptations.
+MODEL_PROFILES = {
+    "PaviaU": ModelProfile(103, 120, 4),
+    "Houston13": ModelProfile(144, 150, 5),
+    "Chikusei": ModelProfile(128, 150, 5),
+    "CAVE": ModelProfile(31, 62, 2),
+    "Botswana": ModelProfile(145, 150, 5),
+    "Augsburg": ModelProfile(242, 270, 9),
+}
+
+
+def build_clsnet(hsi_channels, msi_channels, scale_ratio=4, *, dataset=None):
+    hsi_channels, msi_channels = int(hsi_channels), int(msi_channels)
+    if dataset is None:
+        matches = [name for name, profile in MODEL_PROFILES.items()
+                   if profile.hsi_channels == hsi_channels]
+        if len(matches) != 1:
+            raise ValueError(f"No unique CLSNet profile for {hsi_channels} HSI bands; specify dataset")
+        dataset = matches[0]
+    if dataset not in MODEL_PROFILES:
+        raise ValueError(f"Unsupported CLSNet dataset profile: {dataset!r}")
+    profile = MODEL_PROFILES[dataset]
+    if hsi_channels != profile.hsi_channels:
+        raise ValueError(f"CLSNet {dataset} requires {profile.hsi_channels} HSI bands, got {hsi_channels}")
+    model = CLSNet(in_channels=msi_channels, out_channels=hsi_channels,
+                   n_feat=profile.width, num_heads=profile.heads,
+                   scale_ratio=int(scale_ratio))
+    model.dataset = dataset
+    return model
+
+
+def architecture_metadata(model):
+    return dict(architecture_id=ARCHITECTURE_ID, architecture_profile=model.dataset,
+                backbone_width=model.n_feat, attention_heads=model.num_heads,
+                attention_head_dim=model.dim_head)
+
+
+def verify_architecture(checkpoint, model):
+    for key, expected in architecture_metadata(model).items():
+        if checkpoint.get(key) != expected:
+            raise ValueError(
+                f"CLSNet checkpoint architecture mismatch for {key}: "
+                f"recorded={checkpoint.get(key)!r}, expected={expected!r}. "
+                "Do not reuse checkpoints from the former fixed62 configuration."
+            )
 
 
 def parameter_count(model):

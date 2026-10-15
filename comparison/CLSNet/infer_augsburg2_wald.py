@@ -19,7 +19,7 @@ sys.path.insert(0,str(THIS.parents[1]))
 from comparison.CLSNet.wald_common import (
     correct_msi, load_state, read_json, read_radiometry, require_wald, predict_clsnet
 )
-from comparison.CLSNet.model import build_clsnet
+from comparison.CLSNet.model import build_clsnet, architecture_metadata
 from comparison.UAFL.augsburg2_wald_qnr import evaluate_cache
 from comparison.UAFL.augsburg2_wald_center_roi import crop_heldout, geotiff_transform
 
@@ -82,7 +82,7 @@ def main():
     sha=hashlib.sha256(Path(args.radiometry_json).read_bytes()).hexdigest()
     device=torch.device(args.device)
 
-    model=build_clsnet(242,4,3).to(device)
+    model=build_clsnet(242,4,3,dataset="Augsburg").to(device)
     ckpt=load_state(args.checkpoint,model,device=device)
     if ckpt.get("radiometry_sha256")!=sha or abs(float(ckpt.get("wald_sigma",-1))-sigma)>1e-8:
         raise ValueError("Wald inference checkpoint radiometry/PSF mismatch")
@@ -176,6 +176,7 @@ def main():
 
     report={
         "protocol":"Augsburg-2-Wald-CLSNet",
+        **architecture_metadata(model),
         "no_reference_quality":no_reference_quality,
         "inputs":"observed 30m HSI and original real Sentinel-2 10m MSI",
         "region":"sub_area_2",

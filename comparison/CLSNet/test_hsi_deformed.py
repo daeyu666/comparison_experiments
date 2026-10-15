@@ -19,6 +19,7 @@ from comparison.CLSNet.common import (
 )
 from comparison.UAFL.hsi_deformation import jacobian_determinant
 from comparison.CLSNet.final_metrics import calc_metrics, average_metrics, format_metrics, summarize_geometry_cases
+from comparison.CLSNet.model import architecture_metadata
 from data_loader import build_datasets
 
 
@@ -152,6 +153,7 @@ def main():
     geometry_summary = summarize_geometry_cases(per_case)
     conditions = {
         "method": "CLSNet",
+        **architecture_metadata(model),
         "dataset": args.dataset,
         "test_mode": args.test_mode,
         "checkpoint": str(ckpt_path),

@@ -822,7 +822,10 @@ python train.py --model EMR-Diff --dataset PaviaU --mode mixed \
 已接入官方[CLSNet](https://github.com/HengYang01/CLSNet)的适配实现，
 代码与说明见[comparison/CLSNet](comparison/CLSNet/README.md)。
 沿用共享六数据集synthetic两阶段协议、固定形变测试和真实Augsburg-2 Wald入口。
-使用官方CAVE版宽度62的统一backbone，观测通道动态适配；最近邻上采样改为4×/3×。
+按数据集设置hidden width/注意力头数：PaviaU=120/4，Houston13=150/5，Chikusei=150/5，
+CAVE=62/2，Botswana=150/5，Augsburg synthetic与真实Wald=270/9。
+CAVE、Houston13保留官方对应骨干配置；其余为明确记录的跨数据集适配。
+最近邻上采样适配为4×/3×。本版结构ID为`clsnet_dataset_profiles_v2`，需使用本版新训练权重。
 保留L1损失，优化器采用本仓库共享AdamW配置，batch采用通用默认值1。
 
 ```bash

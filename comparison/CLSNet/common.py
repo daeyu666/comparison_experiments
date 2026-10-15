@@ -12,7 +12,7 @@ from comparison.UAFL.common import build_shared_cfg, require_srf_weights, set_se
 from comparison.UAFL.hsi_deformation import (
     make_deformed_lr_hsi, sample_synthetic_geometry, sample_training_geometry_batch,
 )
-from comparison.CLSNet.model import ARCHITECTURE_ID, UPSTREAM_COMMIT, build_clsnet
+from comparison.CLSNet.model import UPSTREAM_COMMIT, build_clsnet, architecture_metadata, verify_architecture
 from experiment_protocol import DATASETS, DATASET_VALIDATION_INTERVAL
 
 HERE = Path(__file__).resolve().parent
@@ -66,7 +66,7 @@ def make_generator(device, seed):
 
 def model_for_info(info, args, device):
     require_srf_weights(info)
-    model = build_clsnet(info['n_bands'], info['n_select_bands'], args.scale_ratio).to(device)
+    model = build_clsnet(info['n_bands'], info['n_select_bands'], args.scale_ratio, dataset=args.dataset).to(device)
     model.sensor_fingerprint = hashlib.sha256(
         require_srf_weights(info).cpu().numpy().tobytes()).hexdigest()
     return model
@@ -90,10 +90,10 @@ def restore_rng(state, geometry_gen=None):
 
 
 def checkpoint_payload(model, optimizer, epoch, best, bad, args, generator):
-    return dict(method='CLSNet', architecture_id=ARCHITECTURE_ID,
+    return dict(method='CLSNet', **architecture_metadata(model),
                 upstream_commit=UPSTREAM_COMMIT, sensor_fingerprint=getattr(model,'sensor_fingerprint',None),
                 hsi_channels=model.hsi_channels,
-                msi_channels=model.msi_channels, backbone_width=62,
+                msi_channels=model.msi_channels,
                 training_stage=args.stage,
                 registered_probability=(1.0 if args.stage=='registered' else args.registered_probability),
                 args=vars(args).copy(),
@@ -103,14 +103,13 @@ def checkpoint_payload(model, optimizer, epoch, best, bad, args, generator):
 
 
 def verify_checkpoint(checkpoint, model, args, *, expected_stage):
-    if checkpoint.get('method') != 'CLSNet' or checkpoint.get('architecture_id') != ARCHITECTURE_ID:
-        raise ValueError('CLSNet checkpoint architecture/method mismatch')
+    if checkpoint.get('method') != 'CLSNet':
+        raise ValueError('CLSNet checkpoint method mismatch')
+    verify_architecture(checkpoint, model)
     if checkpoint.get('hsi_channels') != model.hsi_channels or checkpoint.get('msi_channels') != model.msi_channels:
         raise ValueError('CLSNet checkpoint observation channels mismatch')
     if checkpoint.get('training_stage') != expected_stage:
         raise ValueError(f'CLSNet checkpoint stage mismatch: expected {expected_stage}')
-    if checkpoint.get('backbone_width') != 62:
-        raise ValueError('CLSNet checkpoint backbone width mismatch')
     fingerprint = getattr(model,'sensor_fingerprint',None)
     if fingerprint is not None and checkpoint.get('sensor_fingerprint') != fingerprint:
         raise ValueError('CLSNet checkpoint sensor SRF mismatch')

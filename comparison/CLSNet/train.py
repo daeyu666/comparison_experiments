@@ -24,7 +24,7 @@ from comparison.CLSNet.common import (
 )
 from data_loader import build_datasets
 from metrics import MetricAverager, calc_metrics
-from comparison.CLSNet.model import ARCHITECTURE_ID, UPSTREAM_COMMIT, parameter_count
+from comparison.CLSNet.model import UPSTREAM_COMMIT, parameter_count, architecture_metadata
 
 
 def parser(stage='registered'):
@@ -106,8 +106,8 @@ def main(stage='registered'):
     logs = Path(args.log_dir or HERE/'logs'/family/args.dataset)
     ckpts.mkdir(parents=True,exist_ok=True)
     logs.mkdir(parents=True,exist_ok=True)
-    protocol = dict(method='CLSNet',architecture_id=ARCHITECTURE_ID,upstream_commit=UPSTREAM_COMMIT,
-                    hsi_channels=model.hsi_channels,msi_channels=model.msi_channels,backbone_width=62,
+    protocol = dict(method='CLSNet',**architecture_metadata(model),upstream_commit=UPSTREAM_COMMIT,
+                    hsi_channels=model.hsi_channels,msi_channels=model.msi_channels,
                     parameters=parameter_count(model),optimizer='AdamW',loss='L1',scheduler=None,
                     observation='Y_H=P0(W_phi(X)); HR-MSI=R0(X), GT=X; identity uses P0(X)',
                     validation_rect=info.get('validation_rect'),srf_profile=info.get('srf_profile'),

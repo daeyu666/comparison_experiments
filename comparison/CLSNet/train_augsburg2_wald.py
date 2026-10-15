@@ -24,7 +24,7 @@ from comparison.CLSNet.wald_common import (
     masked_l1, metrics_from_sums, metrics_sums, read_json,
     read_radiometry, require_wald, predict_clsnet,
 )
-from comparison.CLSNet.model import build_clsnet, parameter_count, ARCHITECTURE_ID, UPSTREAM_COMMIT
+from comparison.CLSNet.model import build_clsnet, parameter_count, UPSTREAM_COMMIT, architecture_metadata
 
 
 def parser():
@@ -93,9 +93,9 @@ def restore_rng(state):
 def checkpoint(model, optimizer, epoch, best, args, sha, sigma):
     return {
         "protocol":"Augsburg-2-Wald-CLSNet",
-        "architecture_id":ARCHITECTURE_ID,
+        **architecture_metadata(model),
         "upstream_commit":UPSTREAM_COMMIT,
-        "hsi_channels":242, "msi_channels":4, "backbone_width":62,
+        "hsi_channels":242, "msi_channels":4,
         "msi_source":PROVENANCE,
         "target":"observed_30m_HSI_only",
         "scale_ratio":3,
@@ -159,7 +159,7 @@ def main():
     calibration=read_radiometry(args.radiometry_json, args.wald_root)
     seed_everything(args.seed)
     device=get_device(args.device)
-    model=build_clsnet(242,4,3).to(device)
+    model=build_clsnet(242,4,3,dataset="Augsburg").to(device)
     out=Path(args.checkpoint_dir)
     logs=Path(args.log_dir)
     if args.stage=="test":
@@ -199,8 +199,8 @@ def main():
     logs.mkdir(parents=True,exist_ok=True)
     history=logs/"history.csv"
     (out/"run_protocol.txt").write_text(
-        str(vars(args))+"\narchitecture_id="+ARCHITECTURE_ID+
-        "\nbackbone_width=62; loss=masked_L1; optimizer=AdamW\n", encoding="utf-8")
+        str(vars(args))+"\n"+str(architecture_metadata(model))+
+        "\nloss=masked_L1; optimizer=AdamW\n", encoding="utf-8")
     print(f"CLSNet_AUGSBURG2_WALD train={count[0]} validation={count[1]} "
           f"patch={args.train_patch_size} stride={args.train_stride} "
           f"eval_patch={args.eval_patch_size} scale=x3 sigma={sigma} "

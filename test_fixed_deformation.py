@@ -81,6 +81,7 @@ def _uafl(args):
 
 
 def _clsnet(args):
+    from comparison.CLSNet.model import architecture_metadata
     from comparison.CLSNet.common import (
         build_shared_cfg, model_for_info, load_checkpoint, resolve_device,
     )
@@ -92,8 +93,8 @@ def _clsnet(args):
     model.eval()
     p0 = test_set.degradation_operator.to(device)
     details = {"checkpoint_epoch": state["epoch"], "training_stage": state["training_stage"],
-               "architecture_id": state["architecture_id"],
-               "registered_probability": state.get("registered_probability")}
+               "registered_probability": state.get("registered_probability"),
+               **architecture_metadata(model)}
     return test_set, model, p0.degrade, device, details
 
 
