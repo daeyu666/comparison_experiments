@@ -165,6 +165,28 @@ def average_metrics(rows):
     return {key: float(mean(float(row[key]) for row in rows)) for key in rows[0]}
 
 
+def summarize_geometry_cases(records):
+    """Summarize the fixed case schedule, counting each geometry only once.
+
+    The geometry generator is reset for every patch. Hundreds of patch/case
+    results therefore still represent only ``cases`` distinct geometries.
+    """
+    first_patch = [row for row in records if row["sample"] == 1]
+    if not first_patch:
+        return {}
+    fields = (
+        "dx_hr_px", "dy_hr_px", "rotation_deg", "local_max_hr_px",
+        "min_jacobian",
+    )
+    summary = {"distinct_geometry_cases": len(first_patch)}
+    for field in fields:
+        values = [float(row[field]) for row in first_patch]
+        summary[field] = {
+            "min": min(values), "mean": mean(values), "max": max(values),
+        }
+    return summary
+
+
 def format_metrics(m):
     return (
         f"PSNR={m['PSNR']:.4f} SSIM={m['SSIM']:.6f} "
@@ -251,6 +273,20 @@ def main():
 
     trainer.Net.load_state_dict(checkpoint["model_state_dict"], strict=True)
     trainer.Net.eval()
+    print(
+        f"EMR_TEST_CHECKPOINT stage={checkpoint.get('training_stage')} "
+        f"epoch={checkpoint.get('epoch')} path={ckpt_path}"
+    )
+    if args.test_mode == "registered_and_warp":
+        print(
+            f"WARP_PROTOCOL cases={args.cases} geometry_seed={args.seed + 70000}; "
+            "same case schedule on every patch; "
+            f"dx/dy=U(-{args.max_translation:g},{args.max_translation:g}) HR px; "
+            f"rotation=U(-{args.max_rotation_deg:g},{args.max_rotation_deg:g}) deg; "
+            f"local amplitude proposal=U(0,{args.max_local_px:g}) HR px, "
+            f"min local Jacobian>={args.min_jacobian:g}; "
+            "HSI warped before blur/downsample; HR-MSI and GT stay registered"
+        )
 
     registered_rows, warp_rows, per_case = [], [], []
     cuda_devices = []
@@ -336,17 +372,41 @@ def main():
 
     reg = average_metrics(registered_rows)
     warp = average_metrics(warp_rows) if warp_rows else None
+    geometry_summary = summarize_geometry_cases(per_case)
     conditions = {
         "method": "EMR-Diff",
         "dataset": args.dataset,
         "test_mode": args.test_mode,
         "checkpoint": str(ckpt_path),
         "checkpoint_epoch": checkpoint.get("epoch"),
+        "checkpoint_training_stage": checkpoint.get("training_stage"),
+        "checkpoint_registered_probability": checkpoint.get("registered_probability"),
+        "checkpoint_architecture_id": checkpoint.get("architecture_id"),
+        "test_patch_count": len(test_set),
+        "registered_observations": len(registered_rows),
+        "warp_observations": len(warp_rows),
+        "metric_aggregation": "arithmetic mean over patches/cases, not pooled MSE",
+        "rmse_scale": "RMSE is raw [0,1]; RMSE_x255 is display only",
+        "ssim_definition": "simplified global-statistics SSIM",
         "formal_mixed_identity_probability": 0.10,
         "formal_mixed_deformed_probability": 0.90,
-        "warp_dx_dy": "independent U(-4,4) HR pixels",
-        "warp_rotation": "U(-2,2) degrees",
-        "warp_local_amplitude": "U(0,4) proposal subject to min Jacobian 0.5",
+        "warp_dx_dy": f"independent U(-{args.max_translation:g},{args.max_translation:g}) HR pixels",
+        "warp_rotation": f"U(-{args.max_rotation_deg:g},{args.max_rotation_deg:g}) degrees",
+        "warp_local_amplitude": f"U(0,{args.max_local_px:g}) proposal subject to min Jacobian {args.min_jacobian:g}",
+        "geometry_generator_seed": args.seed + 70000,
+        "geometry_generator_device": str(trainer.device),
+        "geometry_schedule": "generator reset for each patch; same cases reused",
+        "warp_observation": "Y_H=P0(W_phi(X)); HR-MSI and GT remain registered",
+        "scale_ratio": args.scale_ratio,
+        "mtf_nyquist": args.mtf_nyquist,
+        "psf_truncate": args.psf_truncate,
+        "max_translation_hr_px": args.max_translation,
+        "max_rotation_deg": args.max_rotation_deg,
+        "max_local_hr_px": args.max_local_px,
+        "local_strength_min_fraction": 0.0,
+        "local_strength_max_fraction": 1.0,
+        "control_grid": args.control_grid,
+        "min_local_jacobian": args.min_jacobian,
         "cases_per_patch": args.cases if warp is not None else 0,
         "seed": args.seed,
         "eval_seed": args.eval_seed,
@@ -357,10 +417,18 @@ def main():
     print(f"REGISTERED {format_metrics(reg)}")
     if warp is not None:
         print(f"WARP       {format_metrics(warp)}")
+        local = geometry_summary["local_max_hr_px"]
+        print(
+            f"WARP_STRENGTH distinct_cases={geometry_summary['distinct_geometry_cases']} "
+            f"local_max_hr_px min/mean/max="
+            f"{local['min']:.3f}/{local['mean']:.3f}/{local['max']:.3f}; "
+            f"test_patches={len(test_set)} warp_observations={len(warp_rows)}"
+        )
     print("=" * 118)
 
     output = {
         "test_conditions": conditions,
+        "geometry_summary": geometry_summary,
         "average_metrics": (
             {"Registered": reg, "Warp": warp}
             if warp is not None else {"Registered": reg}

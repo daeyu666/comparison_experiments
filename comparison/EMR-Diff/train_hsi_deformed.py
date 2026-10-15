@@ -24,6 +24,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
+from tqdm import tqdm
 
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = THIS_DIR.parents[1]
@@ -469,7 +470,13 @@ def main():
         count = 0
         registered_count = 0
 
-        for batch in trainer.train_dataloader:
+        progress = tqdm(
+            trainer.train_dataloader,
+            desc=f"EMR-Diff {args.dataset} mixed {epoch + 1}/{args.epochs}",
+            dynamic_ncols=True,
+            mininterval=1.0,
+        )
+        for batch in progress:
             gt = batch["gt"].to(
                 trainer.device, dtype=torch.float32, non_blocking=True
             )
@@ -534,6 +541,11 @@ def main():
             loss_sum += float(loss.item()) * batch_size
             count += batch_size
             registered_count += int(choose_registered.sum().item())
+            progress.set_postfix(
+                loss=f"{loss_sum / max(count, 1):.6f}",
+                registered=f"{registered_count / max(count, 1):.3f}",
+                refresh=False,
+            )
 
         current = epoch + 1
         row = {

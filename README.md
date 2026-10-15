@@ -205,6 +205,22 @@ python test.py  --model EMR-Diff --dataset Chikusei --mode registered
 python test.py  --model EMR-Diff --dataset Chikusei --mode mixed
 ```
 
+EMR-Diff mixed训练会逐epoch显示进度条、iter/s、平均loss和累计registered占比。
+mixed测试中的`REGISTERED`/`WARP`两行使用同一个stage-2混合训练权重；
+它们表示两种输入条件，不是两套训练权重。测试会打印checkpoint的训练阶段，
+并在JSON中记录实际patch数、权重阶段、形变seed及`geometry_summary`。
+
+统一测试目前显式使用局部幅度proposal `U(0,4)` HR像素，再施加min Jacobian约束。
+S2Diff-MH的`cdrdi_geometry.sample_synthetic_geometry`旧默认是
+`U(0.65,1.0)*max_local_px`，当max_local_px=4时为2.6到4 HR像素；
+两者不能只凭相同seed和相同最大幅度就视为同一测试。
+比较前应确认两边实际脚本、幅度分布、patch列表及逐case形变一致。
+EMR当前每个patch重置geometry generator，因此重复同一组10个case；
+JSON的`distinct_geometry_cases`按case统计，不会把重复patch计成新形变。
+`local_max_hr_px`是局部场的最大位移，不是平移、旋转、局部场合成后的总位移。
+RMSE的raw值可直接与[0,1]域结果比较；终端另显示的RMSE_x255只是乘255的数值。
+当前SSIM为全局统计简化实现，不能直接与滑动窗口SSIM混用。
+
 换数据集时只修改 `--dataset`；换模型只修改 `--model`；
 切换配准/混合训练只修改 `--mode`。
 
