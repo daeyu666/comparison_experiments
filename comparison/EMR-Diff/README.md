@@ -2,6 +2,11 @@
 
 本目录保存 EMR-Diff 对比实验代码及其统一实验协议适配。EMR-Diff 通过 `dataset_loader/ufg_adapter.py` 复用仓库根目录公共数据、SRF、退化和评价指标接口。
 
+`model/__init__.py`明确将EMR-Diff的model目录声明为Python包，防止复用
+UAFL几何模块时被同名的`UAFL/model.py`遮蔽。如果旧版测试报
+`'model' is not a package`，更新代码后按原命令重试即可；这个导入修复
+不改变模型结构、权重键名或checkpoint架构ID，无需重新训练。
+
 ## Shared comparison protocol
 
 ### MSI 模拟固定
