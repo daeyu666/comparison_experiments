@@ -157,12 +157,41 @@ def training_batch_size(adapter: ModelAdapter, override=None, *, real=False):
     return REAL_BATCH_SIZE if real else BATCH_SIZE
 
 
-def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None):
+def resolve_resume_checkpoint(adapter, dataset, mode, resume):
+    if not resume:
+        return None
+    if resume != "auto":
+        path = Path(resume).expanduser().resolve()
+    else:
+        directory = checkpoint_dir(adapter, dataset, mode)
+        candidates = list(directory.glob("model_epoch_*.pth.tar"))
+        numbered = []
+        for candidate in candidates:
+            try:
+                numbered.append((int(candidate.name.split("model_epoch_")[1].split(".")[0]), candidate))
+            except ValueError:
+                continue
+        # Old EMR stage-1 runs saved numbered checkpoints; current adapters
+        # also maintain last.pth.tar. Never silently substitute best weights.
+        path = directory / "last.pth.tar"
+        if not path.is_file() and numbered:
+            path = max(numbered, key=lambda pair: pair[0])[1]
+    if not path.is_file():
+        raise FileNotFoundError(f"Resume checkpoint not found: {path}")
+    return path
+
+
+def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None,
+                        *, epochs=None, resume=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
     resolved_batch = training_batch_size(adapter, batch_size)
+    if epochs is not None and epochs < 1:
+        raise ValueError("--epochs must be >=1")
+    total_epochs = epochs if epochs is not None else (REGISTERED_EPOCHS if mode == "registered" else MIXED_EPOCHS)
+    resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume)
 
     script = adapter.registered_train if mode == "registered" else adapter.mixed_train
     cmd = [sys.executable, str(ROOT / script)]
@@ -178,7 +207,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--mtf_nyquist", str(MTF_NYQUIST),
             "--psf_truncate", str(PSF_TRUNCATE),
             "--train_misalignment_mode", "registered",
-            "--epochs", str(REGISTERED_EPOCHS),
+            "--epochs", str(total_epochs),
             "--batch_size", str(resolved_batch),
             "--lr", str(LR),
             "--weight_decay", str(WEIGHT_DECAY),
@@ -197,10 +226,12 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
                 "--output_dir", str(output_dir(adapter, dataset, mode).relative_to(ROOT)),
             ]
         cmd += common
+        if resume_path:
+            cmd += ["--resume", str(resume_path)]
         return cmd
 
     stage1 = checkpoint_path(adapter, dataset, "registered")
-    if not stage1.is_file():
+    if not stage1.is_file() and resume_path is None:
         raise FileNotFoundError(
             f"Stage-1 best checkpoint is required before mixed training: {stage1}"
         )
@@ -215,7 +246,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         "--psf_truncate", str(PSF_TRUNCATE),
         *_shared_geometry_args(),
         "--registered_probability", str(IDENTITY_PROBABILITY),
-        "--epochs", str(MIXED_EPOCHS),
+        "--epochs", str(total_epochs),
         "--batch_size", str(resolved_batch),
         "--lr", str(LR),
         "--weight_decay", str(WEIGHT_DECAY),
@@ -231,6 +262,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     ]
     if adapter.canonical == "EMR-Diff":
         cmd += ["--eval_seed", str(EVAL_SEED)]
+    if resume_path:
+        cmd += ["--resume", str(resume_path)]
     return cmd
 
 
@@ -428,13 +461,15 @@ def real_protocol_summary(adapter=None, batch_size=None) -> str:
     )
 
 
-def protocol_summary(adapter=None, batch_size=None) -> str:
+def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None) -> str:
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
+    stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
+    stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
     return (
         f"x{SCALE_RATIO}, physical MTF={MTF_NYQUIST}, truncate={PSF_TRUNCATE}; "
         f"train={PATCH_SIZE}/stride{STRIDE}, eval={IMAGE_SIZE}; "
-        f"stage1={REGISTERED_EPOCHS} epochs registered; "
-        f"stage2={MIXED_EPOCHS} epochs: {IDENTITY_PROBABILITY:.0%} identity + "
+        f"stage1={stage1_epochs} epochs registered; "
+        f"stage2={stage2_epochs} epochs: {IDENTITY_PROBABILITY:.0%} identity + "
         f"{DEFORMED_PROBABILITY:.0%} deformed, "
         f"dx/dy~U(-{MAX_TRANSLATION:g},{MAX_TRANSLATION:g}), "
         f"rot~U(-{MAX_ROTATION_DEG:g},{MAX_ROTATION_DEG:g}), "

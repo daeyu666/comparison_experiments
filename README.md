@@ -779,3 +779,39 @@ results as full benchmarks. Model-specific visualization extensions remain separ
 对全部test patch分别测试固定的6档平移/旋转和范围内随机局部形变。
 默认每张图每档10个局部场，输出逐档JSON及6行指标CSV；也支持UAFL。
 完整协议、S2Diff-MH对应命令和参数见 [FIXED_DEFORMATION_TESTS.md](FIXED_DEFORMATION_TESTS.md)。
+
+### 延长训练与续训
+
+根入口新增`--epochs`（总目标轮数）和`--resume`（checkpoint路径或`auto`）。
+不传参数时，原registered=800、mixed=600及各数据集验证周期保持原值。
+
+PaviaU的EMR-Diff配准训练完成800轮后，继续到总计1600轮：
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode registered \
+  --resume auto --epochs 1600
+```
+
+`auto`优先使用对应模型/数据集/阶段目录的`last.pth.tar`；
+旧版EMR配准训练没有last文件时，使用编号最大的`model_epoch_*.pth.tar`。
+旧版800轮结果即`comparison/EMR-Diff/checkpoints/physical/PaviaU/model_epoch_800.pth.tar`。
+也可将`--resume auto`换为这个明确路径。不会自动改用更早的best权重。
+`--epochs 1600`表示训练到1600轮，不是再增加1600轮。
+
+EMR配准续训恢复模型、optimizer、已完成epoch和历史best分数；
+optimizer中的学习率及动量一起恢复。PaviaU仍每20轮验证，best只在验证改善时更新，
+日志继续追加801、802…，并在验证轮及最终轮保存编号checkpoint和last文件。
+新checkpoint还保存早停计数、best epoch、退化配置及随机数状态。
+旧checkpoint没有记录随机数状态和早停计数时，恢复其已有内容；
+旧随机流不能逐步复现，早停计数从0开始，历史best分数保留。
+相同配置下新checkpoint的中断恢复路径已与连续训练逐步更新核对一致。
+
+EMR混合阶段也可通过根入口传递其原有resume功能：
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode mixed \
+  --resume auto --epochs 1200
+```
+
+这会恢复stage-2自己的模型和optimizer；不能将stage-1权重作为stage-2的resume。
+普通新建mixed训练仍通过原来的stage-1初始化逻辑启动。

@@ -34,6 +34,7 @@ def parse_args():
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--resume", default="", help="Resume a stage-1 checkpoint including optimizer and completed epochs")
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument("--stride", type=int, default=32)
@@ -109,6 +110,7 @@ if __name__ == "__main__":
 
     if args.epochs is not None:
         configs.train.epochs = args.epochs
+    configs.train.resume = args.resume
 
     if args.validation_interval is not None:
         validation_interval = int(args.validation_interval)
@@ -150,6 +152,14 @@ if __name__ == "__main__":
             f"requested={args.degradation_mode}, resolved={trainer.degradation_mode}."
         )
 
+    if args.resume:
+        trainer.resume_training(args.resume)
+    if int(configs.train.epochs) <= getattr(trainer, "start_epoch", 0):
+        raise ValueError(
+            f"--epochs is the total target and must exceed completed epochs "
+            f"({trainer.start_epoch}); got {configs.train.epochs}."
+        )
+
     checkpoint_dir = trainer.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -160,6 +170,9 @@ if __name__ == "__main__":
         f.write(f"requested_degradation_mode: {args.degradation_mode}\n")
         f.write(f"resolved_degradation_mode: {trainer.degradation_mode}\n")
         f.write("training_stage: stage1_registered\n")
+        f.write(f"resume_checkpoint: {args.resume}\n")
+        f.write(f"completed_epochs_at_start: {getattr(trainer, 'start_epoch', 0)}\n")
+        f.write(f"total_target_epochs: {configs.train.epochs}\n")
         f.write(f"train_misalignment_mode: {args.train_misalignment_mode}\n")
         f.write(f"image_size: {args.image_size}\n")
         f.write(f"patch_size: {args.patch_size}\n")

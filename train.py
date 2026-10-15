@@ -20,6 +20,10 @@ def parse_args():
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--batch_size", type=int, default=None,
                    help="EMR-Diff training batch override; default=2. Learning rate is unchanged.")
+    p.add_argument("--epochs", type=int, default=None,
+                   help="Total target epochs, including completed epochs when resuming")
+    p.add_argument("--resume", default="",
+                   help="Checkpoint path, or 'auto' to use the latest checkpoint of this model/dataset/stage")
     p.add_argument("--dry_run", action="store_true")
     return p.parse_args()
 
@@ -27,12 +31,13 @@ def parse_args():
 def main():
     args = parse_args()
     adapter = resolve_model(args.model)
-    cmd = build_train_command(adapter, args.dataset, args.mode, args.device, args.batch_size)
+    cmd = build_train_command(adapter, args.dataset, args.mode, args.device, args.batch_size,
+                              epochs=args.epochs, resume=args.resume)
     print(
         f"UNIFIED_TRAIN model={adapter.canonical} dataset={args.dataset} "
         f"mode={args.mode}"
     )
-    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size)}")
+    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode)}")
     print("COMMAND " + shlex.join(cmd))
     if args.dry_run:
         return

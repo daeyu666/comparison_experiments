@@ -29,6 +29,27 @@ EMR_BACKBONE_WIDTH = 64
 EMR_ARCHITECTURE_ID = "fixed64_dynamic_io_v2"
 
 
+def capture_rng_state():
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": (numpy_state[0], numpy_state[1].tolist(), int(numpy_state[2]),
+                  int(numpy_state[3]), float(numpy_state[4])),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None,
+    }
+
+
+def restore_rng_state(state):
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    np.random.set_state((numpy_state[0], np.asarray(numpy_state[1], dtype=np.uint32),
+                         numpy_state[2], numpy_state[3], numpy_state[4]))
+    torch.set_rng_state(state["torch_cpu"].cpu())
+    if state.get("torch_cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([value.cpu() for value in state["torch_cuda"]])
+
+
 def _sample_or_resize(x, target_hw):
     target_h, target_w = int(target_hw[0]), int(target_hw[1])
     h, w = x.shape[-2:]
@@ -60,6 +81,9 @@ def save_checkpoint(
     best_metric=None,
     best_score=None,
     checkpoint_dir=None,
+    best_epoch=None,
+    bad_evals=0,
+    training_protocol=None,
 ):
     checkpoint_dir = checkpoint_dir or os.path.join(
         EMR_ROOT, "checkpoints", degradation_mode, dataset
@@ -78,7 +102,14 @@ def save_checkpoint(
         "state_channels": int(state_channels),
         "architecture_id": str(architecture_id),
         "backbone_width": int(backbone_width),
+        "training_stage": "stage1_registered",
+        "optimizer_name": optimizer.__class__.__name__.lower(),
+        "best_epoch": best_epoch,
+        "bad_evals": int(bad_evals),
+        "rng_state": capture_rng_state(),
     }
+    if training_protocol is not None:
+        payload["training_protocol"] = training_protocol
     if validation_metrics is not None:
         payload["validation_metrics"] = {
             key: float(value) for key, value in validation_metrics.items()
@@ -88,7 +119,9 @@ def save_checkpoint(
     if best_score is not None:
         payload["best_score"] = float(best_score)
 
-    torch.save(payload, model_out_path)
+    temporary_path = model_out_path + ".tmp"
+    torch.save(payload, temporary_path)
+    os.replace(temporary_path, model_out_path)
     return model_out_path
 
 
@@ -443,7 +476,60 @@ class ResShiftTrainer:
                 f.write(f"{key}: {value:.8f}\n")
         return average
 
+    def registered_training_protocol(self):
+        return {
+            "scale_ratio": self.diffusion_sf,
+            "diffusion_steps": self.num_timesteps,
+            **{key: self.configs.data.get(key) for key in (
+                "patch_size", "stride", "validation_size", "test_size",
+                "mtf_nyquist", "psf_truncate",
+            )},
+        }
+
+    def resume_training(self, checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.verify_checkpoint_architecture(checkpoint, context=f"stage-1 resume {checkpoint_path}")
+        if checkpoint.get("training_stage") not in (None, "stage1_registered"):
+            raise ValueError("Stage-1 resume requires a registered checkpoint, not stage-2 mixed weights")
+        if checkpoint.get("dataset") != self.dataset:
+            raise ValueError("Resume checkpoint dataset mismatch")
+        if checkpoint.get("degradation_mode") != self.degradation_mode:
+            raise ValueError("Resume checkpoint degradation_mode mismatch")
+        optimizer_name = checkpoint.get("optimizer_name")
+        if optimizer_name is not None and optimizer_name != self.optimizer_name:
+            raise ValueError(f"Resume optimizer mismatch: {optimizer_name} vs {self.optimizer_name}")
+        for key, value in checkpoint.get("training_protocol", {}).items():
+            if value != self.registered_training_protocol().get(key):
+                raise ValueError(f"Resume training protocol mismatch: {key}")
+        if "optimizer_state_dict" not in checkpoint:
+            raise ValueError("Resume checkpoint has no optimizer state; cannot perform full training resume")
+        completed = int(checkpoint["epoch"])
+        if completed < 0:
+            raise ValueError("Completed stage-1 epoch count must be nonnegative")
+        # Stage 1 saves completed epoch counts (800 means next epoch is 801).
+        self.Net.load_state_dict(checkpoint["model_state_dict"], strict=True)
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.weight_decay = float(self.optimizer.param_groups[0].get("weight_decay", 0.0))
+        self.start_epoch = completed
+        self.resume_best_score = float(checkpoint.get("best_score", checkpoint.get("validation_metrics", {}).get(self.early_stop_metric, float("-inf"))))
+        self.resume_best_epoch = checkpoint.get("best_epoch")
+        self.resume_bad_evals = int(checkpoint.get("bad_evals", 0))
+        if checkpoint.get("rng_state") is not None:
+            restore_rng_state(checkpoint["rng_state"])
+            rng_status = "restored"
+        else:
+            rng_status = "not recorded in this older checkpoint"
+        print(
+            f"[resume] checkpoint={checkpoint_path} completed_epochs={completed} "
+            f"next_epoch={completed + 1} best_{self.early_stop_metric}={self.resume_best_score:.6f} "
+            f"lr={self.optimizer.param_groups[0]['lr']:.3e} optimizer=restored RNG={rng_status}"
+        )
+        return completed
+
     def train(self, epoch, verbose):
+        start_epoch = getattr(self, "start_epoch", 0)
+        if int(epoch) <= start_epoch:
+            raise ValueError(f"Total target epochs ({epoch}) must exceed completed epochs ({start_epoch})")
         history_path = os.path.join(self.log_dir, "train_loss.csv")
         if not os.path.exists(history_path):
             with open(history_path, "w", encoding="utf-8") as f:
@@ -458,11 +544,21 @@ class ResShiftTrainer:
                     "epoch,PSNR,SAM,best_score,bad_evals,is_best\n"
                 )
 
-        best_score = float("-inf")
-        best_epoch = 0
-        bad_evals = 0
+        best_score = getattr(self, "resume_best_score", float("-inf"))
+        best_epoch = getattr(self, "resume_best_epoch", None)
+        bad_evals = getattr(self, "resume_bad_evals", 0)
 
-        for epoch_index in range(int(epoch)):
+        def save_training_checkpoint(current_epoch, filename=None, validation_metrics=None):
+            return save_checkpoint(
+                self.Net, self.optimizer, current_epoch, self.dataset,
+                self.degradation_mode, self.state_channels, filename=filename,
+                validation_metrics=validation_metrics, best_metric=self.early_stop_metric,
+                best_score=best_score, best_epoch=best_epoch, bad_evals=bad_evals,
+                checkpoint_dir=self.checkpoint_dir,
+                training_protocol=self.registered_training_protocol(),
+            )
+
+        for epoch_index in range(start_epoch, int(epoch)):
             current_epoch = epoch_index + 1
             self.Net.train()
             running_loss = 0.0
@@ -515,7 +611,7 @@ class ResShiftTrainer:
                 f"epoch={current_epoch} train_loss={mean_loss:.6f}"
             )
 
-            if current_epoch % int(verbose) != 0:
+            if current_epoch % int(verbose) != 0 and current_epoch != int(epoch):
                 continue
 
             validation_metrics = self.evaluate(
@@ -536,18 +632,10 @@ class ResShiftTrainer:
                 best_score = current_score
                 best_epoch = current_epoch
                 bad_evals = 0
-                best_path = save_checkpoint(
-                    self.Net,
-                    self.optimizer,
+                best_path = save_training_checkpoint(
                     current_epoch,
-                    self.dataset,
-                    self.degradation_mode,
-                    self.state_channels,
                     filename="best.pth.tar",
                     validation_metrics=validation_metrics,
-                    best_metric=self.early_stop_metric,
-                    best_score=best_score,
-                    checkpoint_dir=self.checkpoint_dir,
                 )
                 print(
                     f"[best] epoch={best_epoch} {self.early_stop_metric}="
@@ -562,19 +650,14 @@ class ResShiftTrainer:
                     f"bad_evals={bad_evals}/{self.early_stop_patience}"
                 )
 
-            epoch_path = save_checkpoint(
-                self.Net,
-                self.optimizer,
+            epoch_path = save_training_checkpoint(
                 current_epoch,
-                self.dataset,
-                self.degradation_mode,
-                self.state_channels,
                 validation_metrics=validation_metrics,
-                best_metric=self.early_stop_metric,
-                best_score=best_score,
-                checkpoint_dir=self.checkpoint_dir,
             )
             print(f"checkpoint={epoch_path}")
+            save_training_checkpoint(
+                current_epoch, filename="last.pth.tar", validation_metrics=validation_metrics,
+            )
 
             with open(validation_history_path, "a", encoding="utf-8") as f:
                 f.write(

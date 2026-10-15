@@ -69,3 +69,34 @@ def test_wald_batch_override_does_not_change_reference_eval_protocol():
     assert "batch=4" in protocol.real_protocol_summary(EMR, 4)
     command = protocol.build_real_train_command(UAFL, "cuda:0")
     assert option(command, "--batch_size") == "1"
+
+
+def test_resume_auto_old_stage1_and_total_epoch_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(protocol, "ROOT", tmp_path)
+    directory = protocol.checkpoint_dir(EMR, "PaviaU", "registered")
+    directory.mkdir(parents=True)
+    for epoch in (20, 100, 780, 800):
+        (directory / f"model_epoch_{epoch}.pth.tar").touch()
+    command = protocol.build_train_command(EMR, "PaviaU", "registered", "cuda:0",
+                                            epochs=1600, resume="auto")
+    assert option(command, "--epochs") == "1600"
+    assert option(command, "--resume").endswith("model_epoch_800.pth.tar")
+    assert option(command, "--validation_interval") == "20"
+    assert option(command, "--lr") == "1e-05"
+    assert "stage1=1600" in protocol.protocol_summary(EMR, epochs=1600, mode="registered")
+    with pytest.raises(ValueError, match="epochs"):
+        protocol.build_train_command(EMR, "PaviaU", "registered", "cuda:0", epochs=0)
+
+
+def test_mixed_resume_does_not_require_stage1_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(protocol, "ROOT", tmp_path)
+    directory = protocol.checkpoint_dir(EMR, "PaviaU", "mixed")
+    directory.mkdir(parents=True)
+    last = directory / "last.pth.tar"
+    last.touch()
+    command = protocol.build_train_command(EMR, "PaviaU", "mixed", "cuda:0",
+                                            epochs=1200, resume="auto")
+    assert option(command, "--epochs") == "1200"
+    assert Path(option(command, "--resume")) == last
+    with pytest.raises(FileNotFoundError, match="Resume checkpoint"):
+        protocol.build_train_command(EMR, "CAVE", "mixed", "cuda:0", resume="auto")
