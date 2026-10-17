@@ -98,9 +98,27 @@ def _clsnet(args):
     return test_set, model, p0.degrade, device, details
 
 
+def _drtnet(args):
+    from comparison.DRTNet.model import architecture_metadata
+    from comparison.DRTNet.common import (
+        build_shared_cfg, model_for_info, load_checkpoint, resolve_device,
+    )
+    from data_loader import build_datasets
+    _, _, test_set, info = build_datasets(build_shared_cfg(args), include_validation=True)
+    device = resolve_device(args.device)
+    model = model_for_info(info, args, device)
+    state = load_checkpoint(args.checkpoint, model, args, expected_stage=args.mode)
+    model.eval()
+    p0 = test_set.degradation_operator.to(device)
+    details = {"checkpoint_epoch": state["epoch"], "training_stage": state["training_stage"],
+               "registered_probability": state.get("registered_probability"),
+               **architecture_metadata(model)}
+    return test_set, model, p0.degrade, device, details
+
+
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet}
 
 
 def parse_args(argv=None):

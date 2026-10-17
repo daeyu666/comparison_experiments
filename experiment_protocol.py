@@ -74,6 +74,14 @@ class ModelAdapter:
 
 
 _ADAPTERS = {
+    "drtnet": ModelAdapter(
+        canonical="DRTNet", folder="DRTNet",
+        registered_train="comparison/DRTNet/train.py",
+        mixed_train="comparison/DRTNet/train_hsi_deformed.py",
+        test_script="comparison/DRTNet/test_hsi_deformed.py",
+        real_train="comparison/DRTNet/train_augsburg2_wald.py",
+        real_infer="comparison/DRTNet/infer_augsburg2_wald.py",
+    ),
     "clsnet": ModelAdapter(
         canonical="CLSNet",
         folder="CLSNet",
@@ -103,6 +111,9 @@ _ADAPTERS = {
     ),
 }
 _ALIASES = {
+    "drt": "drtnet",
+    "drt-net": "drtnet",
+    "drtnet": "drtnet",
     "ua": "uafl",
     "uafl": "uafl",
     "emr": "emr-diff",
