@@ -180,11 +180,13 @@ def main(argv=None):
         raise ValueError("Unified comparison protocol is fixed at 128/64/32/x4")
 
     device = resolve_device(args.device)
-    _, _, test_set, info = build_datasets(
+    _, val_set, test_set, info = build_datasets(
         build_shared_cfg(args), include_validation=True
     )
-    if len(test_set) < 2:
-        raise ValueError("other_sample ablation requires at least two test patches")
+    if len(test_set) < 1:
+        raise ValueError("Empty test split")
+    if len(test_set) == 1 and len(val_set) < 1:
+        raise ValueError("Single-patch test split needs a validation donor for other_sample")
 
     p0 = test_set.degradation_operator.to(device)
     model = model_for_info(info, args, device)
@@ -214,6 +216,17 @@ def main(argv=None):
             )
         )
 
+    # PaviaU/Houston/Botswana center-128 protocols contain one test item.
+    # For their other_sample diagnostic, use the held-out validation region as
+    # a donor instead of leaking a training patch. Multi-item test sets use the
+    # next test item as the donor.
+    validation_donor = None
+    if len(samples) == 1:
+        item = val_set[0]
+        validation_donor = item["gt"].unsqueeze(0).to(
+            device=device, dtype=torch.float32
+        )
+
     rows_by_condition = {name: [] for name in CONDITIONS}
     detail_rows = []
 
@@ -232,10 +245,26 @@ def main(argv=None):
                 base_lrs.append(lr_hsi)
                 geometry_records.append(geometry_record)
 
+            validation_donor_lr = None
+            if validation_donor is not None:
+                validation_donor_lr, _ = synthesize_base_lr(
+                    validation_donor,
+                    p0,
+                    args,
+                    sample_index=1000000,
+                    case_index=case_index,
+                )
+
             for sample_index, (gt, hr_msi) in enumerate(samples):
                 base_lr = base_lrs[sample_index]
-                donor_index = (sample_index + 1) % len(samples)
-                donor_lr = base_lrs[donor_index]
+                if len(samples) > 1:
+                    donor_index = (sample_index + 1) % len(samples)
+                    donor_lr = base_lrs[donor_index]
+                    donor_label = f"test:{donor_index + 1}"
+                else:
+                    donor_index = None
+                    donor_lr = validation_donor_lr
+                    donor_label = "validation:1"
                 perturb_seed = (
                     int(args.eval_seed)
                     + sample_index * 1000003
@@ -260,7 +289,7 @@ def main(argv=None):
                             "sample": sample_index + 1,
                             "case": case_index + 1,
                             "condition": condition,
-                            "donor_sample": donor_index + 1
+                            "donor_sample": donor_label
                             if condition == "other_sample"
                             else None,
                             "perturb_seed": perturb_seed,
@@ -309,7 +338,10 @@ def main(argv=None):
             "non-overlapping LR blocks permuted; within-block spectra/spatial structure preserved"
         ),
         "mean_broadcast": "per-band LR spatial mean broadcast to all LR positions",
-        "other_sample": "next held-out sample LR-HSI paired with current HR-MSI",
+        "other_sample": (
+            "next test LR-HSI paired with current HR-MSI; for single-item center-128 "
+            "test splits, use the held-out validation region as donor"
+        ),
         "seed": args.seed,
         "eval_seed": args.eval_seed,
     }
