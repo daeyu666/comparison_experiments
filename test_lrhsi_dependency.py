@@ -71,6 +71,12 @@ def parse_args(argv=None):
         default=4,
         help="Square block size in LR-HSI pixels for patch_shuffle.",
     )
+    p.add_argument(
+        "--max_samples",
+        type=int,
+        default=0,
+        help="0 uses the full held-out split; positive values use a deterministic stratified subset when scene metadata is available.",
+    )
     p.add_argument("--output_dir", default="")
     return p.parse_args(argv)
 
@@ -163,6 +169,68 @@ def _average(rows):
     return {key: mean(row[key] for row in rows) for key in METRIC_KEYS}
 
 
+def _select_sample_indices(test_set, max_samples):
+    """Deterministic full-split or scene-stratified diagnostic subset."""
+    total = len(test_set)
+    max_samples = int(max_samples)
+    if max_samples <= 0 or max_samples >= total:
+        return list(range(total))
+
+    samples_meta = getattr(test_set, "samples", None)
+    if samples_meta and len(samples_meta) == total:
+        groups = {}
+        for idx, meta in enumerate(samples_meta):
+            scene = meta[0] if isinstance(meta, (tuple, list)) and meta else str(idx)
+            groups.setdefault(str(scene), []).append(idx)
+        if len(groups) > 1:
+            selected = []
+            depth = 0
+            scene_names = sorted(groups)
+            while len(selected) < max_samples:
+                added = False
+                for scene in scene_names:
+                    rows = groups[scene]
+                    if depth < len(rows):
+                        selected.append(rows[depth])
+                        added = True
+                        if len(selected) >= max_samples:
+                            break
+                if not added:
+                    break
+                depth += 1
+            return selected
+
+    step = max(1, total // max_samples)
+    return list(range(0, total, step))[:max_samples]
+
+
+def _donor_index(test_set, selected_indices, local_position):
+    """Prefer a different held-out scene for CAVE-like scene datasets."""
+    current_index = selected_indices[local_position]
+    samples_meta = getattr(test_set, "samples", None)
+    if samples_meta and len(samples_meta) == len(test_set):
+        current_meta = samples_meta[current_index]
+        current_scene = (
+            current_meta[0]
+            if isinstance(current_meta, (tuple, list)) and current_meta
+            else None
+        )
+        if current_scene is not None:
+            for offset in range(1, len(selected_indices)):
+                candidate_pos = (local_position + offset) % len(selected_indices)
+                candidate_index = selected_indices[candidate_pos]
+                candidate_meta = samples_meta[candidate_index]
+                candidate_scene = (
+                    candidate_meta[0]
+                    if isinstance(candidate_meta, (tuple, list)) and candidate_meta
+                    else None
+                )
+                if candidate_scene != current_scene:
+                    return candidate_pos
+
+    return (local_position + 1) % len(selected_indices)
+
+
 def _predict_with_fixed_rng(predict, lr_hsi, hr_msi, *, device, seed):
     """Use identical reconstruction randomness across all LR perturbations."""
     device = torch.device(device)
@@ -207,11 +275,10 @@ def main(argv=None):
 
     torch.manual_seed(args.seed)
     test_set, predict, degrade, device, details = MODEL_BUILDERS[adapter.canonical](args)
-    if len(test_set) < 2:
+    selected_indices = _select_sample_indices(test_set, args.max_samples)
+    if len(selected_indices) < 2:
         raise ValueError(
-            "Generic dependency test needs at least two held-out test items for "
-            "other_sample. Use test_clsnet_lrhsi_dependency.py for the current "
-            "single-patch PaviaU/Houston/Botswana CLSNet diagnostic."
+            "Dependency test needs at least two selected held-out items for other_sample."
         )
 
     tag = args.source_deformation
@@ -235,10 +302,11 @@ def main(argv=None):
     # Cache only held-out inputs. CAVE has multiple test patches/scenes, so
     # other_sample is another held-out test item and never a training sample.
     samples = []
-    for sample_index in range(len(test_set)):
-        item = test_set[sample_index]
+    for original_index in selected_indices:
+        item = test_set[original_index]
         samples.append(
             (
+                original_index,
                 item["gt"].unsqueeze(0).to(device=device, dtype=torch.float32),
                 item["hr_msi"].unsqueeze(0).to(device=device, dtype=torch.float32),
             )
@@ -251,30 +319,33 @@ def main(argv=None):
         for case_index in range(args.cases):
             base_lrs = []
             geometry_records = []
-            for sample_index, (gt, _hr_msi) in enumerate(samples):
+            for sample_position, (original_index, gt, _hr_msi) in enumerate(samples):
                 lr_hsi, geometry_record = _synthesize_base_lr(
                     gt,
                     degrade,
                     args,
-                    sample_index=sample_index,
+                    sample_index=original_index,
                     case_index=case_index,
                 )
                 base_lrs.append(lr_hsi)
                 geometry_records.append(geometry_record)
 
-            for sample_index, (gt, hr_msi) in enumerate(samples):
-                base_lr = base_lrs[sample_index]
-                donor_index = (sample_index + 1) % len(samples)
-                donor_lr = base_lrs[donor_index]
+            for sample_position, (original_index, gt, hr_msi) in enumerate(samples):
+                base_lr = base_lrs[sample_position]
+                donor_position = _donor_index(
+                    test_set, selected_indices, sample_position
+                )
+                donor_original_index = selected_indices[donor_position]
+                donor_lr = base_lrs[donor_position]
                 perturb_seed = (
                     int(args.eval_seed)
-                    + sample_index * 1000003
+                    + original_index * 1000003
                     + case_index * 9176
                 ) % (2**63 - 1)
                 reconstruction_seed = (
                     int(args.eval_seed)
                     + 900000
-                    + sample_index * 1000003
+                    + original_index * 1000003
                     + case_index * 9176
                 ) % (2**63 - 1)
 
@@ -299,10 +370,11 @@ def main(argv=None):
                     rows_by_condition[condition].append(metrics)
                     detail_rows.append(
                         {
-                            "sample": sample_index + 1,
+                            "sample": original_index + 1,
+                            "selected_position": sample_position + 1,
                             "case": case_index + 1,
                             "condition": condition,
-                            "donor_sample": donor_index + 1
+                            "donor_sample": donor_original_index + 1
                             if condition == "other_sample"
                             else None,
                             "perturb_seed": perturb_seed,
@@ -341,6 +413,8 @@ def main(argv=None):
         "patch_shuffle_size_lr_px": args.patch_shuffle_size,
         "cases_per_patch": args.cases,
         "test_patch_count": len(test_set),
+        "evaluated_test_items": len(selected_indices),
+        "selected_test_indices_1based": [i + 1 for i in selected_indices],
         "ablation_conditions": list(CONDITIONS),
         "pixel_shuffle": (
             "one shared spatial permutation across all HSI bands; each LR pixel spectrum preserved"
@@ -349,7 +423,10 @@ def main(argv=None):
             "non-overlapping LR blocks permuted; within-block content preserved"
         ),
         "mean_broadcast": "per-band LR spatial mean broadcast to every LR position",
-        "other_sample": "next held-out test item's LR-HSI paired with current HR-MSI",
+        "other_sample": (
+            "another held-out test LR-HSI paired with current HR-MSI; when scene "
+            "metadata is available, donor is chosen from a different held-out scene"
+        ),
         "stochastic_control": (
             "identical reconstruction RNG seed across all six conditions for each sample/case"
         ),
