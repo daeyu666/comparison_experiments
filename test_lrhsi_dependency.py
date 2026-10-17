@@ -379,7 +379,7 @@ def main(argv=None):
                             else None,
                             "perturb_seed": perturb_seed,
                             "reconstruction_seed": reconstruction_seed,
-                            "geometry": geometry_records[sample_index],
+                            "geometry": geometry_records[sample_position],
                             "metrics": metrics,
                         }
                     )
