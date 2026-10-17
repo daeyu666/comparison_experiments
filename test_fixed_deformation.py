@@ -120,8 +120,8 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
     adapter = resolve_model(args.model)
     if adapter.canonical not in MODEL_BUILDERS:
         raise ValueError(f"Register a fixed-test model builder for {adapter.canonical}")
@@ -130,7 +130,8 @@ def main():
     args.data_root = str(Path(args.data_root).resolve())
     if not args.output_dir:
         args.output_dir = str(ROOT / "comparison" / adapter.folder / "outputs" / "fixed_deformation"
-                              / args.dataset / f"{args.mode}_seed{args.seed}_cases{args.cases}_eval{args.eval_seed}")
+                              / args.dataset
+                              / f"{args.mode}_{args.local_deformation}_seed{args.seed}_cases{args.cases}_eval{args.eval_seed}")
     # The training/sensor protocol remains fixed; test strength never changes
     # network architecture or the geometry-estimator's training-time bounds.
     args.image_size, args.patch_size, args.stride, args.scale_ratio = 128, 64, 32, 4
@@ -155,6 +156,9 @@ def main():
                   "degradation": "physical", "mtf_nyquist": 0.2, "psf_truncate": 3.0, **details},
         cases=args.cases, seed=args.seed, eval_seed=args.eval_seed, levels=args.levels,
         control_grid=args.control_grid, min_jacobian=args.min_jacobian,
+        local_deformation=args.local_deformation,
+        elastic_sigma_hr_px=args.elastic_sigma_hr_px,
+        elastic_truncate=args.elastic_truncate,
     )
 
 
