@@ -147,9 +147,13 @@ def main(argv=None):
                           else checkpoint_path(adapter, args.dataset, args.mode))
     args.data_root = str(Path(args.data_root).resolve())
     if not args.output_dir:
+        deformation_tag = (
+            f"{args.local_deformation}_a{args.tarc_alpha:g}_s{args.tarc_sigma_hr_px:g}"
+            if args.local_deformation.startswith("tarc") else args.local_deformation
+        )
         args.output_dir = str(ROOT / "comparison" / adapter.folder / "outputs" / "fixed_deformation"
                               / args.dataset
-                              / f"{args.mode}_{args.local_deformation}_seed{args.seed}_cases{args.cases}_eval{args.eval_seed}")
+                              / f"{args.mode}_{deformation_tag}_seed{args.seed}_cases{args.cases}_eval{args.eval_seed}")
     # The training/sensor protocol remains fixed; test strength never changes
     # network architecture or the geometry-estimator's training-time bounds.
     args.image_size, args.patch_size, args.stride, args.scale_ratio = 128, 64, 32, 4
@@ -177,6 +181,8 @@ def main(argv=None):
         local_deformation=args.local_deformation,
         elastic_sigma_hr_px=args.elastic_sigma_hr_px,
         elastic_truncate=args.elastic_truncate,
+        tarc_alpha=args.tarc_alpha,
+        tarc_sigma_hr_px=args.tarc_sigma_hr_px,
     )
 
 
