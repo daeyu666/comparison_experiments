@@ -14,12 +14,13 @@ python test.py --model <Method> --dataset <Dataset> --mode registered
 python test.py --model <Method> --dataset <Dataset> --mode mixed
 ```
 
-当前已经接入：
+当前已经接入统一 synthetic x4 训练/测试适配器：
 
 ```text
 UAFL
 EMR-Diff
 CLSNet
+DRTNet
 ```
 
 模型名大小写不敏感，并支持 `EMR` / `EMRDiff` 等常用别名。
@@ -34,6 +35,39 @@ PaviaU / Houston13 / Chikusei / CAVE / Botswana / Augsburg
 其余正式实验超参数集中定义在
 `experiment_protocol.py`。新对比方法接入时只需要增加一次模型适配注册，
 之后训练和测试仍使用上述根命令。
+
+### 主表多随机种子非配准测试（均值 ± 标准差）
+
+使用与 `S2Diff-MH/test_multiseed_deformation.py` 相同的
+`multiseed_deformation_protocol.py` 和 `fixed_deformation_protocol.py`。
+入口支持通过 `--model` 与 `--dataset` 选择正式模型和数据集：
+
+```bash
+# 先检查默认checkpoint路径、协议和输出目录，不启动推理
+python test_multiseed_deformation.py --model UAFL --dataset PaviaU --dry_run
+
+# 正式主表测试：10个独立形变seed，每个seed、每个test patch取10个形变case
+python test_multiseed_deformation.py --model UAFL --dataset PaviaU --device cuda:0
+
+# 切换模型和数据集
+python test_multiseed_deformation.py --model DRTNet --dataset Botswana --device cuda:0
+python test_multiseed_deformation.py --model EMR-Diff --dataset Augsburg --device cuda:0
+python test_multiseed_deformation.py --model CLSNet --dataset CAVE --device cuda:0
+```
+
+当前多seed模型适配器为 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`；
+数据集支持 `PaviaU`、`Houston13`、`Chikusei`、`CAVE`、`Botswana`、
+`Augsburg`。该入口使用各方法的 mixed checkpoint，默认形变seed为
+`10001..10010`、每seed每patch 10 cases、重建随机数seed为 `1234`，
+并遍历完整test split。不要把 `--max_samples` 大于0的smoke结果写入主表。
+
+统计口径固定为：每个形变seed内先对case取均值，再对完整test split的patch
+取均值；最后对10个seed的完整测试集均值计算总体均值和样本标准差
+(`ddof=1`)。Registered只评估一次，不报告标准差。结果写入所选模型目录下的
+`outputs/multiseed_deformation/<Dataset>/`，其中 `summary.csv` 为主表摘要，
+`per_seed.csv` 为逐seed结果，`summary.json` 保存完整协议和明细。支持
+`--resume_output` 续跑已完成的seed，以及 `--overwrite_output` 清除同一输出目录
+中的旧seed标记后重跑。
 
 ### EMR-Diff synthetic基线的动态输入输出适配
 
