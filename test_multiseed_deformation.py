@@ -17,7 +17,11 @@ from multiseed_deformation_protocol import (
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", required=True)
+    p.add_argument(
+        "--model", required=True,
+        help=("Mixed-trained model adapter: UAFL, EMR-Diff, CLSNet, or DRTNet; "
+              "model names are case-insensitive and registered aliases are accepted."),
+    )
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--mode", choices=["mixed"], default="mixed")
     p.add_argument("--checkpoint", default="")
