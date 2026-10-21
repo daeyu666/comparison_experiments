@@ -431,7 +431,8 @@ class ResShiftTrainer:
                 torch.cuda.manual_seed_all(self.eval_seed)
 
             for step, batch in enumerate(
-                tqdm(loader, desc=f"EMR-Diff {split_name} eval")
+                tqdm(loader, desc=f"EMR-Diff {split_name} eval",
+                     dynamic_ncols=True, mininterval=1.0, disable=None)
             ):
                 gt, lq, msi = self._prepare_batch(batch)
                 prediction = self._reconstruct(lq, msi)
@@ -439,7 +440,7 @@ class ResShiftTrainer:
                     prediction, gt, scale_ratio=self.diffusion_sf
                 )
                 averager.update(metric_values)
-                print(
+                tqdm.write(
                     " ".join(
                         f"{name}={value:.6f}"
                         for name, value in metric_values.items()
@@ -569,6 +570,7 @@ class ResShiftTrainer:
                     f"EMR-Diff {self.dataset} {self.degradation_mode} "
                     f"epoch {current_epoch}"
                 ),
+                dynamic_ncols=True, mininterval=1.0, disable=None,
             )
 
             for batch in progress:
@@ -601,7 +603,7 @@ class ResShiftTrainer:
 
                 running_loss += float(loss.item())
                 num_batches += 1
-                progress.set_postfix(loss=f"{loss.item():.6f}")
+                progress.set_postfix(loss=f"{loss.item():.6f}", refresh=False)
 
             mean_loss = running_loss / max(num_batches, 1)
             with open(history_path, "a", encoding="utf-8") as f:

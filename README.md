@@ -889,3 +889,23 @@ python test_real.py --model CLSNet
 模型权重固定，std不表示10次训练的波动。
 两个仓库的形变/指标/统计模块逐字相同，支持逐种子保存和`--resume_output`续跑。
 命令、输出和新旧协议差异见 [MULTISEED_MAIN_TABLE_TEST.md](MULTISEED_MAIN_TABLE_TEST.md)。
+
+## 训练进度条重复换行
+
+CLSNet、DRTNet与EMR-Diff的tqdm显示采用动态终端宽度、1秒刷新间隔；
+每个batch更新postfix时使用`refresh=False`，由迭代器统一决定何时绘制。
+旧版强制postfix刷新可与迭代刷新叠加，使同一个batch计数显示两次；
+终端缩窄或IDE分屏后，缓存的旧行宽还可能导致换行，回车无法覆盖上一行。
+这些重复状态行不表示训练batch被重新执行。
+
+重定向到文件、pipe或非TTY的IDE输出窗口时，自动关闭覆盖式进度条；
+CLSNet/DRTNet每个epoch仍输出一条loss和identity摘要，EMR-Diff保留原epoch摘要。
+EMR-Diff逐patch评价信息通过`tqdm.write`输出，避免打断活动状态行。
+本项修复只改变显示与日志，不改变模型、优化器、训练协议和checkpoint兼容性。
+已启动的Python进程不会热更新；更新后在下次启动或正常断点续训时生效。
+
+回归检查（无需GPU与数据集）：
+
+```bash
+python -m pytest -q tests/test_training_progress.py tests/test_emr_training_protocol.py
+```

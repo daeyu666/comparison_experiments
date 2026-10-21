@@ -475,6 +475,7 @@ def main():
             desc=f"EMR-Diff {args.dataset} mixed {epoch + 1}/{args.epochs}",
             dynamic_ncols=True,
             mininterval=1.0,
+            disable=None,
         )
         for batch in progress:
             gt = batch["gt"].to(

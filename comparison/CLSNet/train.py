@@ -118,7 +118,10 @@ def main(stage='registered'):
     for epoch in range(start,args.epochs):
         model.train()
         loss_sum,count,identities = 0.,0,0
-        progress=tqdm(train_loader,desc=f'CLSNet {stage} {epoch+1}/{args.epochs}')
+        progress=tqdm(
+            train_loader, desc=f'CLSNet {stage} {epoch+1}/{args.epochs}',
+            dynamic_ncols=True, mininterval=1.0, disable=None,
+        )
         for batch in progress:
             gt,msi=batch['gt'].to(device),batch['hr_msi'].to(device)
             with torch.no_grad():
@@ -133,7 +136,12 @@ def main(stage='registered'):
             count+=gt.shape[0]
             identities+=identity_count
             loss_sum+=float(loss.item())*gt.shape[0]
-            progress.set_postfix(l1=f'{loss_sum/count:.6f}',identity=f'{identities/count:.3f}')
+            progress.set_postfix(l1=f'{loss_sum/count:.6f}',identity=f'{identities/count:.3f}',refresh=False)
+        print(
+            f'CLSNet {stage} {epoch+1}/{args.epochs} '
+            f'loss={loss_sum/max(count,1):.6f} identity={identities/max(count,1):.3f}',
+            flush=True,
+        )
         do_eval=(epoch+1)%args.validation_interval==0 or epoch+1==args.epochs
         if do_eval:
             reg,warp=evaluate(model,val_loader,device,p0,args)
