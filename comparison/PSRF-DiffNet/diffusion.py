@@ -140,7 +140,6 @@ class PSRFDiffusion(nn.Module):
         hr_msi: torch.Tensor,
         *,
         prepared: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        *,
         warp_state: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if prepared is None:
