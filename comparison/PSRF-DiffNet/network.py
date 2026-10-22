@@ -55,8 +55,8 @@ class CrossAffineAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
-        self.qkv_hsi = nn.Linear(dim, dim * 3)
-        self.qkv_msi = nn.Linear(dim, dim * 3)
+        self.qkv_hsi = nn.Linear(dim, dim * 3, bias=False)
+        self.qkv_msi = nn.Linear(dim, dim * 3, bias=False)
         self.localizer = nn.Sequential(
             nn.Linear(dim * token_count, 32),
             nn.ReLU(inplace=True),
