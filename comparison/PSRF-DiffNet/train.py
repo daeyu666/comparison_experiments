@@ -177,14 +177,15 @@ def load_checkpoint(path, model, args, *, expected_stage, optimizer=None):
 def evaluate(model, loader, device, p0, args):
     model.eval()
     registered, warped = MetricAverager(), MetricAverager()
-    geometry_gen = make_generator(device, args.eval_seed + 60000)
     for batch in loader:
+        geometry_gen = make_generator(device, args.seed + 60000)
+        sample_gen = torch.Generator(device="cpu").manual_seed(args.eval_seed)
         gt = batch["gt"].to(device, non_blocking=True)
         msi = batch["hr_msi"].to(device, non_blocking=True)
         lr_registered = p0.degrade(gt)
         pred, _ = model.sample_tiled(
             lr_registered, msi, sample_steps=args.val_sample_steps,
-            tile_stride=args.patch_size,
+            tile_stride=args.patch_size, generator=sample_gen,
         )
         registered.update(calc_metrics(pred, gt, args.scale_ratio))
 
@@ -198,7 +199,7 @@ def evaluate(model, loader, device, p0, args):
                 lr_warped = make_deformed_lr_hsi(gt, geometry, p0)
                 pred, _ = model.sample_tiled(
                     lr_warped, msi, sample_steps=args.val_sample_steps,
-                    tile_stride=args.patch_size,
+                    tile_stride=args.patch_size, generator=sample_gen,
                 )
                 warped.update(calc_metrics(pred, gt, args.scale_ratio))
     return registered.average(), warped.average()
@@ -367,12 +368,13 @@ def main(stage: str = "registered"):
                 )
                 break
 
-        if (epoch + 1) % args.save_interval == 0 or epoch + 1 == args.epochs:
-            torch.save(
-                checkpoint_payload(model, optimizer, epoch, best_psnr, bad_validations,
-                                   args, geometry_gen, diffusion_gen),
-                checkpoint_dir / "last.pth.tar",
-            )
+        # Save exact continuation state after every epoch so the root
+        # launcher can resume without silently losing recent optimizer/RNG state.
+        torch.save(
+            checkpoint_payload(model, optimizer, epoch, best_psnr, bad_validations,
+                               args, geometry_gen, diffusion_gen),
+            checkpoint_dir / "last.pth.tar",
+        )
 
 
 if __name__ == "__main__":
