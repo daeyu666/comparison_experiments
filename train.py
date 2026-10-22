@@ -15,7 +15,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Unified two-stage comparison training launcher"
     )
-    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff or CLSNet")
+    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff, CLSNet or PSRF-DiffNet")
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--mode", required=True, choices=MODES)
     p.add_argument("--device", default="cuda:0")
