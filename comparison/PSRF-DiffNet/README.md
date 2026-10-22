@@ -28,7 +28,7 @@ Engineering corrections that intentionally differ from the released script:
 - Uses a deterministic DDIM jump relation for accelerated evaluation and correctly feeds each reconstructed state into the next reverse step.
 - Uses the repository's shared sensor SRFs, physical degradation operators, data splits and metric functions.
 
-These changes mean the model is architecture-aligned for controlled comparison, not bit-for-bit identical to the original implementation. The CRN/FRN parameter alignment update changes parameter names/shapes; **old PSRF checkpoints must be retrained**. New checkpoints record architecture ID `PSRF-DiffNet-official-active-path-v3`.
+These changes mean the model is architecture-aligned for controlled comparison, not bit-for-bit identical to the original implementation. The CRN/FRN QKV projections now use the source implementation's bias-free linear layers; **all earlier PSRF checkpoints must be retrained**. New checkpoints record architecture ID `PSRF-DiffNet-official-active-path-v4`.
 
 ## Unified synthetic comparison protocol
 
