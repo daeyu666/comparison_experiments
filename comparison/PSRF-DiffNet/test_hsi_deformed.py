@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import sys
@@ -24,6 +25,7 @@ from comparison.CLSNet.common import (  # noqa: E402
     geometry_kwargs,
     make_deformed_lr_hsi,
     make_generator,
+    require_srf_weights,
     resolve_device,
     sample_synthetic_geometry,
     set_seed,
@@ -74,6 +76,9 @@ def build_model(info, args, device):
         linear_start=float(getattr(args, "linear_start", 1e-4)),
         linear_end=float(getattr(args, "linear_end", 2e-3)),
     ).to(device)
+    model.sensor_fingerprint = hashlib.sha256(
+        require_srf_weights(info).detach().cpu().numpy().tobytes()
+    ).hexdigest()
     make_autograd_safe(model)
     return model
 
