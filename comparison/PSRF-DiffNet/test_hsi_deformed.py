@@ -175,6 +175,7 @@ def main(argv=None):
         "stage": stage,
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "checkpoint_epoch": int(state["epoch"]),
+        "sensor_fingerprint": state.get("sensor_fingerprint"),
         "sample_steps": args.sample_steps,
         "registered": average(registered_rows),
         "warp": average(warp_rows),
