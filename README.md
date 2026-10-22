@@ -21,6 +21,7 @@ UAFL
 EMR-Diff
 CLSNet
 DRTNet
+PSRF-DiffNet
 ```
 
 模型名大小写不敏感，并支持 `EMR` / `EMRDiff` 等常用别名。
@@ -53,9 +54,10 @@ python test_multiseed_deformation.py --model UAFL --dataset PaviaU --device cuda
 python test_multiseed_deformation.py --model DRTNet --dataset Botswana --device cuda:0
 python test_multiseed_deformation.py --model EMR-Diff --dataset Augsburg --device cuda:0
 python test_multiseed_deformation.py --model CLSNet --dataset CAVE --device cuda:0
+python test_multiseed_deformation.py --model PSRF-DiffNet --dataset PaviaU --device cuda:0
 ```
 
-当前多seed模型适配器为 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`；
+当前多seed模型适配器为 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`、`PSRF-DiffNet`；
 数据集支持 `PaviaU`、`Houston13`、`Chikusei`、`CAVE`、`Botswana`、
 `Augsburg`。该入口使用各方法的 mixed checkpoint，默认形变seed为
 `10001..10010`、每seed每patch 10 cases、重建随机数seed为 `1234`，
