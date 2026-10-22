@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import sys
@@ -37,6 +38,7 @@ from comparison.CLSNet.common import (  # noqa: E402
     sample_synthetic_geometry,
     set_seed,
     make_deformed_lr_hsi,
+    require_srf_weights,
 )
 from data_loader import build_datasets  # noqa: E402
 from experiment_protocol import DATASET_VALIDATION_INTERVAL  # noqa: E402
@@ -113,6 +115,7 @@ def checkpoint_payload(model, optimizer, epoch, best, bad, args, geometry_gen, d
         "patch_size": model.patch_size,
         "scale_ratio": model.scale_ratio,
         "n_timestep": model.n_timestep,
+        "sensor_fingerprint": getattr(model, "sensor_fingerprint", None),
         "training_stage": args.stage,
         "registered_probability": 1.0 if args.stage == "registered" else args.registered_probability,
         "model": model.state_dict(),
@@ -150,6 +153,9 @@ def load_checkpoint(path, model, args, *, expected_stage, optimizer=None):
     ):
         if state.get(key) != actual:
             raise ValueError(f"Checkpoint/model mismatch for {key}: {state.get(key)} != {actual}")
+    fingerprint = getattr(model, "sensor_fingerprint", None)
+    if fingerprint is not None and state.get("sensor_fingerprint") != fingerprint:
+        raise ValueError("Checkpoint sensor SRF fingerprint does not match the current dataset protocol")
     recorded = state.get("args", {})
     for key in (
         "dataset", "image_size", "patch_size", "stride", "scale_ratio",
@@ -248,6 +254,9 @@ def main(stage: str = "registered"):
         linear_start=args.linear_start,
         linear_end=args.linear_end,
     ).to(device)
+    model.sensor_fingerprint = hashlib.sha256(
+        require_srf_weights(info).detach().cpu().numpy().tobytes()
+    ).hexdigest()
     make_autograd_safe(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
