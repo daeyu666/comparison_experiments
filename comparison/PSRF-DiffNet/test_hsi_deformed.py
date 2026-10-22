@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
-from comparison.CLSNet.common import (  # noqa: E402
+from common import (  # noqa: E402
     add_data_args,
     add_geometry_args,
     build_shared_cfg,
