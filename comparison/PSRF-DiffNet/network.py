@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int):
+    def __init__(self, in_ch: int, out_ch: int, force_projection: bool = False):
         super().__init__()
         self.body = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, 1, 1, bias=False),
@@ -31,7 +31,7 @@ class ResidualBlock(nn.Module):
         )
         self.skip = (
             nn.Identity()
-            if in_ch == out_ch
+            if in_ch == out_ch and not force_projection
             else nn.Sequential(
                 nn.Conv2d(in_ch, out_ch, 1, bias=False),
                 nn.BatchNorm2d(out_ch),
@@ -43,28 +43,28 @@ class ResidualBlock(nn.Module):
 
 
 class CrossAffineAttention(nn.Module):
-    """Estimate one affine transform from LR-HSI/MSI feature tokens."""
+    """Official CRN cross-attention followed by a 2x3 affine localizer.
 
-    def __init__(
-        self,
-        dim: int,
-        token_count: int,
-        num_heads: int = 4,
-    ):
+    The released model forms Q/K/V projections for both modalities, uses HSI
+    queries and values with MSI keys, and regresses one affine matrix per patch.
+    """
+
+    def __init__(self, dim: int, token_count: int, num_heads: int = 4):
         super().__init__()
         if dim % num_heads:
             raise ValueError("dim must be divisible by num_heads")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
-        self.q = nn.Linear(dim, dim, bias=False)
-        self.k = nn.Linear(dim, dim, bias=False)
-        self.v = nn.Linear(dim, dim, bias=False)
+        self.qkv_hsi = nn.Linear(dim, dim * 3, bias=False)
+        self.qkv_msi = nn.Linear(dim, dim * 3, bias=False)
         self.localizer = nn.Sequential(
             nn.Linear(dim * token_count, 32),
             nn.ReLU(inplace=True),
             nn.Linear(32, 6),
         )
+        # Identity initialization is a numerical-stability adaptation; the
+        # learned affine-transform mechanism remains the released CRN design.
         nn.init.zeros_(self.localizer[-1].weight)
         with torch.no_grad():
             self.localizer[-1].bias.copy_(
@@ -73,12 +73,18 @@ class CrossAffineAttention(nn.Module):
 
     def forward(self, hsi: torch.Tensor, msi: torch.Tensor) -> torch.Tensor:
         b, n, c = hsi.shape
-        q = self.q(hsi).view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k(msi).view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v(hsi).view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        qkv_h = self.qkv_hsi(hsi).reshape(
+            b, n, 3, self.num_heads, self.head_dim
+        ).permute(2, 0, 3, 1, 4)
+        q_hsi, _k_hsi, v_hsi = qkv_h.unbind(0)
+        qkv_m = self.qkv_msi(msi).reshape(
+            b, n, 3, self.num_heads, self.head_dim
+        ).permute(2, 0, 3, 1, 4)
+        _q_msi, k_msi, _v_msi = qkv_m.unbind(0)
+
+        attn = torch.matmul(q_hsi, k_msi.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
-        out = torch.matmul(attn, v).transpose(1, 2).reshape(b, n, c)
+        out = torch.matmul(attn, v_hsi).transpose(1, 2).reshape(b, n, c)
         return self.localizer(out.reshape(b, -1)).view(b, 2, 3)
 
 
@@ -101,8 +107,8 @@ class CoarseRegistrationNetwork(nn.Module):
         self.hsi_embed = nn.Conv2d(hsi_channels, dim, 3, 1, 1)
         self.msi_embed = nn.Conv2d(msi_channels, dim, 3, 1, 1)
         self.pos = nn.Parameter(torch.zeros(1, lr_size * lr_size, dim))
-        self.norm_hsi = nn.LayerNorm(dim)
-        self.norm_msi = nn.LayerNorm(dim)
+        # The official CRN shares one LayerNorm across the two modalities.
+        self.norm = nn.LayerNorm(dim)
         self.attn = CrossAffineAttention(dim, lr_size * lr_size, num_heads)
 
     def forward(
@@ -113,7 +119,7 @@ class CoarseRegistrationNetwork(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         h = self.hsi_embed(lr_hsi).flatten(2).transpose(1, 2) + self.pos
         m = self.msi_embed(lr_msi).flatten(2).transpose(1, 2) + self.pos
-        theta = self.attn(self.norm_hsi(h), self.norm_msi(m))
+        theta = self.attn(self.norm(h), self.norm(m))
         grid = F.affine_grid(theta, image_to_warp.shape, align_corners=False)
         warped = F.grid_sample(
             image_to_warp,
@@ -162,13 +168,13 @@ def build_registration_patches(
 
 
 class FineRegistrationAttention(nn.Module):
-    """Select a 3x3 local offset for every HR pixel."""
+    """Official FRN cross-attention over the nine local MSI candidates."""
 
     def __init__(self, dim: int = 256):
         super().__init__()
         self.scale = dim ** -0.5
-        self.q = nn.Linear(dim, dim, bias=False)
-        self.k = nn.Linear(dim, dim, bias=False)
+        self.qkv_hsi = nn.Linear(dim, dim * 3, bias=False)
+        self.qkv_msi = nn.Linear(dim, dim * 3, bias=False)
 
     def forward(
         self,
@@ -176,11 +182,16 @@ class FineRegistrationAttention(nn.Module):
         msi_feat: torch.Tensor,
     ) -> torch.Tensor:
         b, c, h, w = hsi_feat.shape
-        q = self.q(hsi_feat.flatten(2).transpose(1, 2))
-        k = msi_feat.permute(0, 2, 1, 3)
-        k = self.k(k.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
-        score = (q.unsqueeze(-1) * k).sum(dim=2) * self.scale
+        hsi_tokens = hsi_feat.flatten(2).transpose(1, 2)
+        msi_candidates = msi_feat.permute(0, 2, 3, 1)
+        # msi_candidates: B x (H*W) x 9 x C
+        q = self.qkv_hsi(hsi_tokens).reshape(b, h * w, 3, c)[..., 0, :]
+        k = self.qkv_msi(msi_candidates).reshape(b, h * w, 9, 3, c)[..., 1, :]
+        score = (q.unsqueeze(-1) * k.permute(0, 1, 3, 2)).sum(dim=2) * self.scale
         index = score.softmax(dim=-1).argmax(dim=-1)
+        # The released implementation swaps row/column offsets and feeds
+        # pixel offsets directly to grid_sample. Keep the 3x3 hard matching,
+        # but use explicit (dx,dy) ordering and a normalized sampling grid.
         dx = index.remainder(3).float() - 1.0
         dy = torch.div(index, 3, rounding_mode="floor").float() - 1.0
         return torch.stack((dx, dy), dim=-1).view(b, h, w, 2)
@@ -243,7 +254,6 @@ class ConvGuidedFilter(nn.Module):
         super().__init__()
         self.box = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         nn.init.constant_(self.box.weight, 1.0)
-        self.box.weight.requires_grad_(False)
         self.conv_a = nn.Sequential(
             nn.Conv2d(channels * 2, channels, 1, bias=False),
             nn.BatchNorm2d(channels),
@@ -304,7 +314,8 @@ class ComplementaryFusion(nn.Module):
         self.msi_2 = ResidualBlock(128, 64)
 
         self.hsi_in = nn.Conv2d(hsi_channels, 256, 3, 1, 1)
-        self.hsi_1 = ResidualBlock(256, 256)
+        # Official ResBlock_HSI_1 uses same_shape=False, hence a 1x1 skip.
+        self.hsi_1 = ResidualBlock(256, 256, force_projection=True)
         self.channel_attn = nn.Conv1d(patch_size * patch_size, 256, 3, padding=1)
         self.hsi_merge = ResidualBlock(512, 256)
         self.guided = ConvGuidedFilter(256)
