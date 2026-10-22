@@ -127,7 +127,13 @@ class PSRFDiffusion(nn.Module):
             mode="bicubic",
             align_corners=False,
         )
-        lr_reg, theta = self.crn(lr_up, lr_hsi, lr_msi)
+        if warp_lr_up:
+            lr_reg, theta = self.crn(lr_up, lr_hsi, lr_msi)
+        else:
+            # Reverse diffusion computes CRN on x_t itself inside each step.
+            # Avoid a redundant preliminary warp of the upsampled observation.
+            lr_reg = lr_up
+            theta = torch.zeros((lr_hsi.shape[0], 2, 3), device=lr_hsi.device, dtype=lr_hsi.dtype)
         hsi_patch, msi_patch2 = build_registration_patches(lr_up, hr_msi)
         # Keep both LR-scale conditioning images so reverse sampling can apply
         # the same learned affine transform to the *current diffusion state*.
@@ -235,7 +241,7 @@ class PSRFDiffusion(nn.Module):
             dtype=torch.float32,
         ).to(lr_hsi.device, dtype=lr_hsi.dtype)
 
-        prepared = self._prepare_conditions(lr_hsi, hr_msi)
+        prepared = self._prepare_conditions(lr_hsi, hr_msi, warp_lr_up=False)
         times = torch.linspace(
             self.n_timestep - 1,
             0,
