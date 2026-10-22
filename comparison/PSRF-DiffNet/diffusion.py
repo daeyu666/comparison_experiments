@@ -98,7 +98,7 @@ class PSRFDiffusion(nn.Module):
         self,
         lr_hsi: torch.Tensor,
         hr_msi: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if lr_hsi.ndim != 4 or hr_msi.ndim != 4:
             raise ValueError("lr_hsi and hr_msi must be BxCxHxW")
         if lr_hsi.shape[1] != self.hsi_channels:
@@ -129,7 +129,9 @@ class PSRFDiffusion(nn.Module):
         )
         lr_reg, theta = self.crn(lr_up, lr_hsi, lr_msi)
         hsi_patch, msi_patch2 = build_registration_patches(lr_up, hr_msi)
-        return lr_reg, theta, hsi_patch, msi_patch2
+        # Keep both LR-scale conditioning images so reverse sampling can apply
+        # the same learned affine transform to the *current diffusion state*.
+        return lr_reg, theta, hsi_patch, msi_patch2, lr_hsi, lr_msi
 
     def predict_x0(
         self,
@@ -137,13 +139,29 @@ class PSRFDiffusion(nn.Module):
         lr_hsi: torch.Tensor,
         hr_msi: torch.Tensor,
         *,
-        prepared: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        prepared: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        *,
+        warp_state: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if prepared is None:
             prepared = self._prepare_conditions(lr_hsi, hr_msi)
-        lr_reg, theta, hsi_patch, msi_patch2 = prepared
+        lr_reg, theta, hsi_patch, msi_patch2, lr_hsi_cond, lr_msi_cond = prepared
+        # Official training warps the upsampled LR-HSI; official reverse
+        # diffusion warps the current x_t at every reverse step. The affine
+        # parameters are inferred from the same LR-HSI/MSI conditioning pair.
+        coarse_input = x_t if warp_state else F.interpolate(
+            lr_hsi_cond, size=x_t.shape[-2:], mode="bicubic", align_corners=False
+        )
+        coarse_warped, theta_current = self.crn(
+            coarse_input, lr_hsi_cond, lr_msi_cond
+        )
+        if warp_state:
+            theta = theta_current
+        else:
+            # Retain the precomputed LR-upsample warp for the training path.
+            coarse_warped = lr_reg
         pred, fine_offset = self.ccf(
-            torch.cat([lr_reg, x_t], dim=1),
+            torch.cat([coarse_warped, x_t], dim=1),
             hr_msi,
             hsi_patch,
             msi_patch2,
@@ -177,7 +195,9 @@ class PSRFDiffusion(nn.Module):
             device="cpu",
             dtype=torch.float32,
         ).to(gt.device, dtype=gt.dtype)
-        alpha = self._extract(self.alpha_bar, t, gt)
+        # The released implementation indexes sqrt(alpha_bar_{t-1}) for
+        # t in [1, T-1], represented here by alpha_bar_prev[t].
+        alpha = self._extract(self.alpha_bar_prev, t, gt)
         x_t = alpha.sqrt() * gt + (1.0 - alpha).sqrt() * noise
 
         prepared = self._prepare_conditions(lr_hsi, hr_msi)
@@ -235,7 +255,7 @@ class PSRFDiffusion(nn.Module):
         for i, t_scalar in enumerate(times):
             t_value = int(t_scalar.item())
             pred_x0, last_theta, last_offset = self.predict_x0(
-                x, lr_hsi, hr_msi, prepared=prepared
+                x, lr_hsi, hr_msi, prepared=prepared, warp_state=True
             )
             if clamp:
                 pred_x0 = pred_x0.clamp(0.0, 1.0)
