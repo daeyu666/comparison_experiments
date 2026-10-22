@@ -149,16 +149,10 @@ class PSRFDiffusion(nn.Module):
         # Official training warps the upsampled LR-HSI; official reverse
         # diffusion warps the current x_t at every reverse step. The affine
         # parameters are inferred from the same LR-HSI/MSI conditioning pair.
-        coarse_input = x_t if warp_state else F.interpolate(
-            lr_hsi_cond, size=x_t.shape[-2:], mode="bicubic", align_corners=False
-        )
-        coarse_warped, theta_current = self.crn(
-            coarse_input, lr_hsi_cond, lr_msi_cond
-        )
         if warp_state:
-            theta = theta_current
+            coarse_warped, theta = self.crn(x_t, lr_hsi_cond, lr_msi_cond)
         else:
-            # Retain the precomputed LR-upsample warp for the training path.
+            # Training follows the released path: CRN warps the upsampled LR-HSI.
             coarse_warped = lr_reg
         pred, fine_offset = self.ccf(
             torch.cat([coarse_warped, x_t], dim=1),
