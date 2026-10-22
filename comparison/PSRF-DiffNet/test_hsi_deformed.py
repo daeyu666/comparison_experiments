@@ -46,6 +46,9 @@ def parser(argv=None):
     p.add_argument("--test_mode", choices=["registered_only", "registered_and_warp"], default="registered_and_warp")
     p.add_argument("--output_json", default="")
     p.add_argument("--sample_steps", type=int, default=50)
+    p.add_argument("--n_timestep", type=int, default=2000)
+    p.add_argument("--linear_start", type=float, default=1e-4)
+    p.add_argument("--linear_end", type=float, default=2e-3)
     return p.parse_args(argv)
 
 
