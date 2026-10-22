@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -32,7 +33,19 @@ from data_loader import build_datasets  # noqa: E402
 from metrics import MetricAverager, calc_metrics  # noqa: E402
 from autograd_safe import make_autograd_safe  # noqa: E402
 from diffusion import PSRFDiffusion  # noqa: E402
-from train import ARCHITECTURE_ID, load_checkpoint  # noqa: E402
+
+# Load this directory's trainer by exact path. A plain "from train import"
+# could resolve the repository-root launcher when this file is run directly.
+_train_spec = importlib.util.spec_from_file_location(
+    "psrf_diffnet_train_module", THIS_DIR / "train.py"
+)
+if _train_spec is None or _train_spec.loader is None:
+    raise ImportError("Unable to load PSRF-DiffNet train.py")
+_train_module = importlib.util.module_from_spec(_train_spec)
+sys.modules[_train_spec.name] = _train_module
+_train_spec.loader.exec_module(_train_module)
+ARCHITECTURE_ID = _train_module.ARCHITECTURE_ID
+load_checkpoint = _train_module.load_checkpoint
 
 
 def parser(argv=None):
