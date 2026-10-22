@@ -172,8 +172,8 @@ class FineRegistrationAttention(nn.Module):
     def __init__(self, dim: int = 256):
         super().__init__()
         self.scale = dim ** -0.5
-        self.qkv_hsi = nn.Linear(dim, dim * 3)
-        self.qkv_msi = nn.Linear(dim, dim * 3)
+        self.qkv_hsi = nn.Linear(dim, dim * 3, bias=False)
+        self.qkv_msi = nn.Linear(dim, dim * 3, bias=False)
 
     def forward(
         self,
