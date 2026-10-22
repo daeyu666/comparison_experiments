@@ -177,31 +177,43 @@ def load_checkpoint(path, model, args, *, expected_stage, optimizer=None):
 def evaluate(model, loader, device, p0, args):
     model.eval()
     registered, warped = MetricAverager(), MetricAverager()
-    for batch in loader:
-        geometry_gen = make_generator(device, args.seed + 60000)
-        sample_gen = torch.Generator(device="cpu").manual_seed(args.eval_seed)
-        gt = batch["gt"].to(device, non_blocking=True)
-        msi = batch["hr_msi"].to(device, non_blocking=True)
-        lr_registered = p0.degrade(gt)
-        pred, _ = model.sample_tiled(
-            lr_registered, msi, sample_steps=args.val_sample_steps,
-            tile_stride=args.patch_size, generator=sample_gen,
-        )
-        registered.update(calc_metrics(pred, gt, args.scale_ratio))
+    cuda_devices = []
+    if device.type == "cuda":
+        idx = device.index if device.index is not None else torch.cuda.current_device()
+        cuda_devices = [idx]
 
-        if args.stage == "mixed":
-            for _ in range(args.validation_cases):
-                geometry = sample_synthetic_geometry(
-                    *gt.shape[-2:], device=device, dtype=gt.dtype,
-                    generator=geometry_gen, local_strength_min_fraction=0.0,
-                    local_strength_max_fraction=1.0, **geometry_kwargs(args),
-                )
-                lr_warped = make_deformed_lr_hsi(gt, geometry, p0)
-                pred, _ = model.sample_tiled(
-                    lr_warped, msi, sample_steps=args.val_sample_steps,
-                    tile_stride=args.patch_size, generator=sample_gen,
-                )
-                warped.update(calc_metrics(pred, gt, args.scale_ratio))
+    # The guided-filter PCA uses randomized low-rank decomposition. Fork and
+    # reset RNG state so validation predictions are identical across epochs
+    # without perturbing the training RNG stream.
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(args.eval_seed)
+        if cuda_devices:
+            torch.cuda.manual_seed_all(args.eval_seed)
+        for batch in loader:
+            geometry_gen = make_generator(device, args.seed + 60000)
+            sample_gen = torch.Generator(device="cpu").manual_seed(args.eval_seed)
+            gt = batch["gt"].to(device, non_blocking=True)
+            msi = batch["hr_msi"].to(device, non_blocking=True)
+            lr_registered = p0.degrade(gt)
+            pred, _ = model.sample_tiled(
+                lr_registered, msi, sample_steps=args.val_sample_steps,
+                tile_stride=args.patch_size, generator=sample_gen,
+            )
+            registered.update(calc_metrics(pred, gt, args.scale_ratio))
+
+            if args.stage == "mixed":
+                for _ in range(args.validation_cases):
+                    geometry = sample_synthetic_geometry(
+                        *gt.shape[-2:], device=device, dtype=gt.dtype,
+                        generator=geometry_gen, local_strength_min_fraction=0.0,
+                        local_strength_max_fraction=1.0, **geometry_kwargs(args),
+                    )
+                    lr_warped = make_deformed_lr_hsi(gt, geometry, p0)
+                    pred, _ = model.sample_tiled(
+                        lr_warped, msi, sample_steps=args.val_sample_steps,
+                        tile_stride=args.patch_size, generator=sample_gen,
+                    )
+                    warped.update(calc_metrics(pred, gt, args.scale_ratio))
     return registered.average(), warped.average()
 
 
