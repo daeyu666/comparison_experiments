@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
 
 THIS_DIR = Path(__file__).resolve().parent
 ROOT = THIS_DIR.parents[1]
@@ -30,7 +29,7 @@ from comparison.CLSNet.common import (  # noqa: E402
     set_seed,
 )
 from data_loader import build_datasets  # noqa: E402
-from metrics import MetricAverager, calc_metrics  # noqa: E402
+from metrics import calc_metrics  # noqa: E402
 from autograd_safe import make_autograd_safe  # noqa: E402
 from diffusion import PSRFDiffusion  # noqa: E402
 
