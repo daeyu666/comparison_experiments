@@ -47,7 +47,7 @@ from autograd_safe import make_autograd_safe  # noqa: E402
 from diffusion import PSRFDiffusion  # noqa: E402
 
 
-ARCHITECTURE_ID = "PSRF-DiffNet-official-active-path-v3"
+ARCHITECTURE_ID = "PSRF-DiffNet-official-active-path-v4"
 DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
 
 
