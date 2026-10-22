@@ -20,7 +20,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--model", required=True,
-        help=("Mixed-trained model adapter: UAFL, EMR-Diff, CLSNet, or DRTNet; "
+        help=("Mixed-trained model adapter: UAFL, EMR-Diff, CLSNet, DRTNet, or PSRF-DiffNet; "
               "model names are case-insensitive and registered aliases are accepted."),
     )
     p.add_argument("--dataset", required=True, choices=DATASETS)
