@@ -145,6 +145,7 @@ def _psrf(args):
         "architecture_id": state.get("architecture_id"),
         "hsi_channels": state.get("hsi_channels"),
         "msi_channels": state.get("msi_channels"),
+        "sample_steps": getattr(args, "sample_steps", 50),
         "registered_probability": state.get("registered_probability"),
     }
     return test_set, predict, p0.degrade, device, details
