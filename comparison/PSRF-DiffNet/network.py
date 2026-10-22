@@ -291,7 +291,6 @@ class StructureTensor(nn.Module):
         self.register_buffer("sx", sx.view(1, 1, 3, 3).repeat(msi_channels, msi_channels, 1, 1))
         self.register_buffer("sy", sy.view(1, 1, 3, 3).repeat(msi_channels, msi_channels, 1, 1))
         self.norm = nn.BatchNorm2d(1)
-        self.channels = msi_channels
 
     def forward(self, y: torch.Tensor) -> torch.Tensor:
         y = F.pad(self.pre(y), (2, 2, 2, 2), mode="replicate")
