@@ -110,6 +110,17 @@ _ADAPTERS = {
         real_train="comparison/EMR-Diff/train_augsburg2_wald.py",
         real_infer="comparison/EMR-Diff/infer_augsburg2_wald.py",
     ),
+    "psrf-diffnet": ModelAdapter(
+        canonical="PSRF-DiffNet",
+        folder="PSRF-DiffNet",
+        registered_train="comparison/PSRF-DiffNet/train.py",
+        mixed_train="comparison/PSRF-DiffNet/train_hsi_deformed.py",
+        test_script="comparison/PSRF-DiffNet/test_hsi_deformed.py",
+        # This adapter targets the shared synthetic x4 protocol. Real-world
+        # Augsburg Wald training/inference is not implemented for PSRF-DiffNet.
+        real_train="",
+        real_infer="",
+    ),
 }
 _ALIASES = {
     "drt": "drtnet",
@@ -121,6 +132,9 @@ _ALIASES = {
     "emrdiff": "emr-diff",
     "emr_diff": "emr-diff",
     "emr-diff": "emr-diff",
+    "psrf": "psrf-diffnet",
+    "psrf_diffnet": "psrf-diffnet",
+    "psrf-diffnet": "psrf-diffnet",
 }
 
 
@@ -427,6 +441,8 @@ def real_checkpoint_path(adapter: ModelAdapter) -> Path:
 
 
 def build_real_train_command(adapter: ModelAdapter, device: str, batch_size=None):
+    if not adapter.real_train:
+        raise NotImplementedError(f"{adapter.canonical} has no real-world Augsburg Wald training adapter")
     resolved_batch = training_batch_size(adapter, batch_size, real=True)
     cmd = [
         sys.executable,
@@ -457,6 +473,8 @@ def build_real_train_command(adapter: ModelAdapter, device: str, batch_size=None
 
 
 def build_real_reference_test_command(adapter: ModelAdapter, device: str):
+    if not adapter.real_train:
+        raise NotImplementedError(f"{adapter.canonical} has no real-world Augsburg Wald test adapter")
     checkpoint = real_checkpoint_path(adapter)
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Real Augsburg checkpoint not found: {checkpoint}")
@@ -490,6 +508,8 @@ def build_real_reference_test_command(adapter: ModelAdapter, device: str):
 
 
 def build_real_native_test_command(adapter: ModelAdapter, device: str):
+    if not adapter.real_infer:
+        raise NotImplementedError(f"{adapter.canonical} has no native real-world Augsburg Wald inference adapter")
     checkpoint = real_checkpoint_path(adapter)
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Real Augsburg checkpoint not found: {checkpoint}")
