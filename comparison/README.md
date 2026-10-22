@@ -84,15 +84,32 @@ physical:
 
 无论选择 `gaussian_bicubic` 还是 `physical`，上述 MSI 协议都不得改变。
 
-### 非配准退化协议
+### 正式 registered/mixed 非配准训练协议
 
-公共非配准算子统一位于：
+根目录 `experiment_protocol.py` 是正式两阶段训练与主表测试的协议来源；EMR-Diff、CLSNet、DRTNet 及后续接入方法应遵循这一数据流。
 
 ```text
-degradations/misalignment.py
+Stage 1 (registered):
+  GT-HSI X -> physical degradation P0(X) -> LR-HSI Y_H
+  HR-MSI Y_M = R0(X) remains in the reliable coordinate system
+  target = X
+
+Stage 2 (mixed):
+  10%: Y_H = P0(X)                         [exact identity]
+  90%: Y_H = P0(W_phi(X))                  [deformed HSI observation]
+  HR-MSI Y_M = R0(X) remains unchanged
+  target = X
 ```
 
-该实现与 `S2Diff/degradations/misalignment.py` 保持一致，支持：
+统一几何范围为：`dx,dy ~ U(-4,+4)` 个 HR 像素、旋转角 `U(-2,+2)` 度、5x5 B-spline 控制网格、局部位移幅度 `U(0,4)` HR 像素，并要求局部 Jacobian 不低于 0.5。正式混合训练中的形变施加在 GT-HSI 上，再执行公共物理退化形成 LR-HSI；HR-MSI 作为可靠参考保持不变。
+
+正式主表测试对混合训练权重使用 10 个独立 geometry seeds，每个 seed 对每个测试样本生成 10 个形变案例。报告注册结果及形变结果；形变结果按每个 seed 的全测试集均值计算 mean 和 sample std（ddof=1）。
+
+### 独立 HR-MSI 形变敏感性诊断
+
+`degradations/misalignment.py` 仍提供仅作用于 HR-MSI 的独立敏感性诊断，用于 `eval_misalignment.py` 这类配对平移/旋转/局部形变曲线，不替代上述正式 mixed 训练协议。
+
+该诊断支持：
 
 ```text
 registered
@@ -103,9 +120,7 @@ local smooth non-rigid
 global + local
 ```
 
-其中非配准只作用于 **HR-MSI**，HR-HSI GT 与 LR-HSI 保持不变。平移采用连续坐标与双线性采样，支持亚像素位移；正 `dx` 表示图像内容向右移动，正 `dy` 表示向下移动。局部非刚性形变由低分辨率控制网格生成并经 bicubic 插值得到连续位移场。
-
-平移严重度 `d` 统一定义为 **二维欧氏总位移上限**，不再作为 x/y 两个轴的独立上限：
+平移严重度 `d` 定义为二维欧氏总位移上限：
 
 ```text
 r ~ U(0, d)
@@ -117,16 +132,7 @@ sqrt(dx^2 + dy^2) = r <= d
 d = 0 / 0.5 / 1 / 2 / 3 / 4 / 6 px
 ```
 
-旧定义 `dx,dy ~ U(-d,d)` 会使实际二维位移最大达到 `sqrt(2)*d`，现已废弃。同一 trial 在不同 `d` 下复用相同的归一化半径和方向，以形成严格 paired sensitivity curve。
-
-非配准实验的主指标采用 valid-overlap 口径：
-
-```text
-valid = valid_soft >= 0.999
-PSNR_valid / SAM_valid
-```
-
-完整图像 PSNR / SAM / RMSE / ERGAS / SSIM / CC 作为辅助结果保留。
+同一 trial 在不同 `d` 下复用相同的归一化随机半径和方向，形成 paired sensitivity curve。该诊断的主指标采用 `valid_soft >= 0.999` 对应的 valid-overlap PSNR/SAM，完整图像 PSNR/SAM/RMSE/ERGAS/SSIM/CC 作为辅助结果。
 
 ### Train / validation / test 数据划分
 
@@ -198,7 +204,7 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 ## 当前方法
 
 - `EMR-Diff/`：已接入公共 SRF、双退化、独立验证区、dataset-aware validation interval、best checkpoint 与 validation-based early stopping。
-- `UAFL/`：当前首选非配准正式对比方法。按 CVPR 2026 UAFL 的 SVD 解混、CFDA、SCACA、SCMF 和 abundance residual 重建主线复现；仅将原 3-band RGB reference 入口动态适配为 IKONOS/WV2 MSI 通道，并用当前 torchvision 的等价 modulated deform-conv 后端替代旧 `mmcv_full` CUDA 执行层。GT-HSI 与 LR-HSI 固定，仅 HR-MSI 施加共享非配准形变；支持公共 physical/gaussian-bicubic、valid-overlap 指标与 validation-based early stopping。
+- `UAFL/`：按 CVPR 2026 UAFL 的 SVD 解混、CFDA、SCACA、SCMF 和 abundance residual 重建主线复现；将原 3-band RGB reference 入口动态适配为 IKONOS/WV2 MSI 通道，并以当前 torchvision 的等价 modulated deform-conv 后端替代旧 `mmcv_full` CUDA 执行层。正式两阶段对比遵循统一的 LR-HSI 形变协议；仅 HR-MSI 形变的敏感性曲线属于独立诊断。
 - `HSIFN/`：保留此前复现实验用于追溯。其官方多级 FlowNet / QRNN3D 结构在共享 64x64 train patch 下会逐级压缩到极小空间尺度，registered sanity 长期停留在约 31 dB，不作为当前正式对比结果。
 - `PRFCoAM/`：保留此前复现实验用于追溯。已完成 Torch-2.6/cu124 Mamba 后端兼容，但其官方配准方向为 LR-HSI -> HR-MSI，且共享协议下 registered 基础融合能力明显低于 S2Diff（physical 约 36.9 dB；gaussian-bicubic 最佳约 39.1 dB），不作为当前首选正式对比方法。
-- `PSRF-DiffNet/`：保留此前复现实验代码用于追溯，但其官方参考坐标方向与当前“仅 HR-MSI 形变”的统一协议不匹配，不作为当前正式非配准对比结果。
+- `PSRF-DiffNet/`：已将 CRN、FRN、互补融合及扩散 x0 预测的活动执行路径对齐官方实现，并接入统一 registered/mixed 训练、checkpoint、主表多 seed 测试和六个 synthetic 数据集。架构对齐后需重新训练，旧 checkpoint 不兼容；当前尚未实现真实世界 Augsburg Wald adapter。
