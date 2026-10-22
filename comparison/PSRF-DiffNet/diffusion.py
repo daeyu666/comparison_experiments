@@ -98,6 +98,8 @@ class PSRFDiffusion(nn.Module):
         self,
         lr_hsi: torch.Tensor,
         hr_msi: torch.Tensor,
+        *,
+        warp_lr_up: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if lr_hsi.ndim != 4 or hr_msi.ndim != 4:
             raise ValueError("lr_hsi and hr_msi must be BxCxHxW")
