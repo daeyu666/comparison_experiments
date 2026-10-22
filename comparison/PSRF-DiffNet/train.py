@@ -34,10 +34,8 @@ from comparison.CLSNet.common import (  # noqa: E402
     geometry_kwargs,
     make_generator,
     resolve_device,
-    restore_rng,
     sample_synthetic_geometry,
     set_seed,
-    snapshot_rng,
     make_deformed_lr_hsi,
 )
 from data_loader import build_datasets  # noqa: E402
