@@ -119,9 +119,40 @@ def _drtnet(args):
     return test_set, model, p0.degrade, device, details
 
 
+def _psrf(args):
+    evaluator = _load_evaluator("PSRF-DiffNet")
+    cfg = evaluator.build_shared_cfg(args)
+    _, _, test_set, info = evaluator.build_datasets(cfg, include_validation=True)
+    device = evaluator.resolve_device(args.device)
+    model = evaluator.build_model(info, args, device)
+    stage = "registered" if args.mode == "registered" else "mixed"
+    state = evaluator.load_psrf_checkpoint(
+        args.checkpoint, model, args, expected_stage=stage
+    )
+    model.eval()
+    p0 = test_set.degradation_operator.to(device)
+
+    def predict(lr_hsi, hr_msi):
+        return evaluator.predict(
+            model, lr_hsi, hr_msi,
+            sample_steps=getattr(args, "sample_steps", 50),
+            patch_size=args.patch_size,
+        )
+
+    details = {
+        "checkpoint_epoch": state.get("epoch"),
+        "training_stage": state.get("training_stage"),
+        "architecture_id": state.get("architecture_id"),
+        "hsi_channels": state.get("hsi_channels"),
+        "msi_channels": state.get("msi_channels"),
+        "registered_probability": state.get("registered_probability"),
+    }
+    return test_set, predict, p0.degrade, device, details
+
+
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf}
 
 
 def parse_args(argv=None):
