@@ -285,15 +285,18 @@ class StructureTensor(nn.Module):
         sy = torch.tensor(
             [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32
         )
-        self.register_buffer("sx", sx.view(1, 1, 3, 3).repeat(msi_channels, 1, 1, 1))
-        self.register_buffer("sy", sy.view(1, 1, 3, 3).repeat(msi_channels, 1, 1, 1))
+        # The released 4-channel implementation repeats each Sobel kernel
+        # across every input/output channel pair, then sums output channels.
+        # Generalize that exact cross-channel operation to each dataset's MSI.
+        self.register_buffer("sx", sx.view(1, 1, 3, 3).repeat(msi_channels, msi_channels, 1, 1))
+        self.register_buffer("sy", sy.view(1, 1, 3, 3).repeat(msi_channels, msi_channels, 1, 1))
         self.norm = nn.BatchNorm2d(1)
         self.channels = msi_channels
 
     def forward(self, y: torch.Tensor) -> torch.Tensor:
         y = F.pad(self.pre(y), (2, 2, 2, 2), mode="replicate")
-        gx = F.conv2d(y, self.sx, padding=1, groups=self.channels).sum(1, keepdim=True)
-        gy = F.conv2d(y, self.sy, padding=1, groups=self.channels).sum(1, keepdim=True)
+        gx = F.conv2d(y, self.sx, padding=1).sum(1, keepdim=True)
+        gy = F.conv2d(y, self.sy, padding=1).sum(1, keepdim=True)
         a = gx.square() + 0.1
         b = gx * gy + 0.1
         d = gy.square() + 0.1
