@@ -73,7 +73,7 @@ Chikusei:  128 HSI + 8 MSI = 136 channels
 
 Houston13 按实际 HSI 波段数加 8 个 WV2 MSI 通道自动确定。
 
-### Synthetic EMR-Diff: dynamic observation-space IO, fixed hidden width
+### Synthetic EMR-Diff: dynamic observation-space IO, configurable hidden width
 
 The six synthetic x4 experiments use `BAFUNet` directly, without an external
 `EMRStateAdapter`:
@@ -203,10 +203,10 @@ Chikusei:  2 x 5  = 10 epochs
 comparison/EMR-Diff/checkpoints/<degradation_mode>/<Dataset>/best.pth.tar
 ```
 
-每次正常验证仍会保存对应 epoch checkpoint：
+每个epoch覆盖最近状态，不再生成编号checkpoint：
 
 ```text
-model_epoch_<N>.pth.tar
+last.pth.tar
 ```
 
 验证历史写入：
@@ -216,6 +216,21 @@ comparison/EMR-Diff/logs/<degradation_mode>/<Dataset>/validation_history.csv
 ```
 
 正式 `Test.py` 在不指定 `--checkpoint` 时优先加载 `best.pth.tar`。
+
+上面的宽度64及文件名是默认设置。骨干可通过`--hidden_channels 128`设为128；
+对应架构ID为`fixed128_dynamic_io_v2`，在相同目录仅保存
+`best_base128.pth.tar`、`last_base128.pth.tar`。
+配准、混合、续训和测试入口均使用该命名；日志、协议文件也增加`_base128`后缀。
+128模型需重新训练，不能直接恢复64模型的参数或optimizer。
+原有编号checkpoint保留供旧实验续训兼容，不自动删除。
+
+从仓库根目录运行：
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode registered --hidden_channels 128
+python train.py --model EMR-Diff --dataset PaviaU --mode mixed --hidden_channels 128
+python test.py --model EMR-Diff --dataset PaviaU --mode mixed --hidden_channels 128
+```
 
 ### 手动覆盖验证间隔
 

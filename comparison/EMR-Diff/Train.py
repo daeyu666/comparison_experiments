@@ -5,6 +5,7 @@ import torch
 from omegaconf import OmegaConf
 
 from model.ResShift_model import ResShiftTrainer
+from emr_configuration import add_hidden_channels_argument, validate_hidden_channels, variant_suffix
 
 
 DEFAULT_VALIDATION_INTERVALS = {
@@ -35,6 +36,7 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--resume", default="", help="Resume a stage-1 checkpoint including optimizer and completed epochs")
+    add_hidden_channels_argument(parser)
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument("--stride", type=int, default=32)
@@ -92,6 +94,7 @@ if __name__ == "__main__":
     configs.data.psf_truncate = args.psf_truncate
     configs.diffusion.params.sf = args.scale_ratio
     configs.train.device = args.device
+    configs.train.hidden_channels = validate_hidden_channels(args.hidden_channels)
     configs.train.seed = args.seed
     configs.train.batch = [args.batch_size, 1]
     configs.train.num_workers = args.num_workers
@@ -163,7 +166,7 @@ if __name__ == "__main__":
     checkpoint_dir = trainer.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    protocol_path = os.path.join(checkpoint_dir, "run_protocol.txt")
+    protocol_path = os.path.join(checkpoint_dir, f"run_protocol{variant_suffix(trainer.backbone_width)}.txt")
     with open(protocol_path, "w", encoding="utf-8") as f:
         f.write(f"requested_dataset: {args.dataset}\n")
         f.write(f"resolved_dataset: {trainer.dataset}\n")

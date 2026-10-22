@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from emr_configuration import checkpoint_name, validate_hidden_channels, variant_suffix
 
 ROOT = Path(__file__).resolve().parent
 
@@ -134,11 +135,18 @@ def resolve_model(name: str) -> ModelAdapter:
     return _ADAPTERS[key]
 
 
-def checkpoint_path(adapter: ModelAdapter, dataset: str, mode: str) -> Path:
+def checkpoint_path(adapter: ModelAdapter, dataset: str, mode: str, hidden_channels=None) -> Path:
     if mode not in MODES:
         raise ValueError(mode)
     family = "physical" if mode == "registered" else "hsi_warp_final"
-    return ROOT / "comparison" / adapter.folder / "checkpoints" / family / dataset / "best.pth.tar"
+    name = checkpoint_name("best", hidden_channels) if adapter.canonical == "EMR-Diff" else "best.pth.tar"
+    return ROOT / "comparison" / adapter.folder / "checkpoints" / family / dataset / name
+
+
+def model_hidden_channels(adapter, hidden_channels):
+    if hidden_channels is not None and adapter.canonical != "EMR-Diff":
+        raise ValueError("--hidden_channels currently applies only to EMR-Diff")
+    return validate_hidden_channels(hidden_channels)
 
 
 def log_dir(adapter: ModelAdapter, dataset: str, mode: str) -> Path:
@@ -178,14 +186,14 @@ def training_batch_size(adapter: ModelAdapter, override=None, *, real=False):
     return REAL_BATCH_SIZE if real else BATCH_SIZE
 
 
-def resolve_resume_checkpoint(adapter, dataset, mode, resume):
+def resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels=None):
     if not resume:
         return None
     if resume != "auto":
         path = Path(resume).expanduser().resolve()
     else:
         directory = checkpoint_dir(adapter, dataset, mode)
-        candidates = list(directory.glob("model_epoch_*.pth.tar"))
+        candidates = list(directory.glob("model_epoch_*.pth.tar")) if validate_hidden_channels(hidden_channels) == 64 else []
         numbered = []
         for candidate in candidates:
             try:
@@ -194,7 +202,8 @@ def resolve_resume_checkpoint(adapter, dataset, mode, resume):
                 continue
         # Old EMR stage-1 runs saved numbered checkpoints; current adapters
         # also maintain last.pth.tar. Never silently substitute best weights.
-        path = directory / "last.pth.tar"
+        name = checkpoint_name("last", hidden_channels) if adapter.canonical == "EMR-Diff" else "last.pth.tar"
+        path = directory / name
         if not path.is_file() and numbered:
             path = max(numbered, key=lambda pair: pair[0])[1]
     if not path.is_file():
@@ -203,16 +212,17 @@ def resolve_resume_checkpoint(adapter, dataset, mode, resume):
 
 
 def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None,
-                        *, epochs=None, resume=None):
+                        *, epochs=None, resume=None, hidden_channels=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
     resolved_batch = training_batch_size(adapter, batch_size)
+    width = model_hidden_channels(adapter, hidden_channels)
     if epochs is not None and epochs < 1:
         raise ValueError("--epochs must be >=1")
     total_epochs = epochs if epochs is not None else (REGISTERED_EPOCHS if mode == "registered" else MIXED_EPOCHS)
-    resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume)
+    resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels)
 
     script = adapter.registered_train if mode == "registered" else adapter.mixed_train
     cmd = [sys.executable, str(ROOT / script)]
@@ -242,6 +252,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         ]
         if adapter.canonical == "EMR-Diff":
             common += [
+                "--hidden_channels", str(width),
                 "--optimizer", "AdamW",
                 "--eval_seed", str(EVAL_SEED),
                 "--output_dir", str(output_dir(adapter, dataset, mode).relative_to(ROOT)),
@@ -251,7 +262,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             cmd += ["--resume", str(resume_path)]
         return cmd
 
-    stage1 = checkpoint_path(adapter, dataset, "registered")
+    stage1 = (checkpoint_path(adapter, dataset, "registered", hidden_channels)
+              if hidden_channels is not None else checkpoint_path(adapter, dataset, "registered"))
     if not stage1.is_file() and resume_path is None:
         raise FileNotFoundError(
             f"Stage-1 best checkpoint is required before mixed training: {stage1}"
@@ -282,7 +294,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         "--init_checkpoint", str(stage1.relative_to(ROOT)),
     ]
     if adapter.canonical == "EMR-Diff":
-        cmd += ["--eval_seed", str(EVAL_SEED)]
+        cmd += ["--eval_seed", str(EVAL_SEED), "--hidden_channels", str(width)]
     if resume_path:
         cmd += ["--resume", str(resume_path)]
     return cmd
@@ -292,12 +304,16 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
                        geometry_seeds=None, cases=TEST_CASES, eval_seed=EVAL_SEED,
                        data_root="./data/raw", checkpoint_override="", output_override="",
                        max_samples=0, resume_output=False, overwrite_output=False,
-                       legacy_single_seed=False, check_files=True):
+                       legacy_single_seed=False, check_files=True, hidden_channels=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
-    checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else checkpoint_path(adapter, dataset, mode)
+    model_hidden_channels(adapter, hidden_channels)
+    checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else (
+        checkpoint_path(adapter, dataset, mode, hidden_channels) if hidden_channels is not None
+        else checkpoint_path(adapter, dataset, mode)
+    )
     if check_files and not checkpoint.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
 
@@ -317,11 +333,13 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
             cmd.append("--resume_output")
         if overwrite_output:
             cmd.append("--overwrite_output")
+        if hidden_channels is not None:
+            cmd += ["--hidden_channels", str(hidden_channels)]
         return cmd
 
     output = Path(output_override) / "legacy_test.json" if output_override else (
         ROOT / "comparison" / adapter.folder / "outputs" / "unified_two_stage"
-        / dataset / f"{adapter.canonical.replace('-', '')}_{mode}_seed{MIXED_SEED}.json"
+        / dataset / f"{adapter.canonical.replace('-', '')}_{mode}_seed{MIXED_SEED}{variant_suffix(hidden_channels)}.json"
     )
     cmd = [
         sys.executable,
@@ -347,6 +365,8 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
     ]
     if adapter.canonical == "EMR-Diff":
         cmd += ["--eval_seed", str(eval_seed)]
+        if hidden_channels is not None:
+            cmd += ["--hidden_channels", str(hidden_channels)]
     return cmd
 
 
@@ -507,7 +527,7 @@ def real_protocol_summary(adapter=None, batch_size=None) -> str:
     )
 
 
-def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None) -> str:
+def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, hidden_channels=None) -> str:
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
     stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
     stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
@@ -521,4 +541,5 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None) -
         f"rot~U(-{MAX_ROTATION_DEG:g},{MAX_ROTATION_DEG:g}), "
         f"local amplitude~U(0,{MAX_LOCAL_PX:g}), minJac={MIN_JACOBIAN}; "
         f"AdamW lr={LR:g}, wd={WEIGHT_DECAY:g}, batch={resolved_batch}"
+        + (f"; EMR hidden_channels={validate_hidden_channels(hidden_channels)}" if adapter and adapter.canonical == "EMR-Diff" else "")
     )

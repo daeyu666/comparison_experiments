@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import shlex
 import subprocess
+from emr_configuration import add_hidden_channels_argument
 
 from experiment_protocol import (
     DATASETS, MODES, ROOT, build_train_command, protocol_summary, resolve_model,
@@ -25,6 +26,7 @@ def parse_args():
     p.add_argument("--resume", default="",
                    help="Checkpoint path, or 'auto' to use the latest checkpoint of this model/dataset/stage")
     p.add_argument("--dry_run", action="store_true")
+    add_hidden_channels_argument(p)
     return p.parse_args()
 
 
@@ -32,12 +34,12 @@ def main():
     args = parse_args()
     adapter = resolve_model(args.model)
     cmd = build_train_command(adapter, args.dataset, args.mode, args.device, args.batch_size,
-                              epochs=args.epochs, resume=args.resume)
+                              epochs=args.epochs, resume=args.resume, hidden_channels=args.hidden_channels)
     print(
         f"UNIFIED_TRAIN model={adapter.canonical} dataset={args.dataset} "
         f"mode={args.mode}"
     )
-    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode)}")
+    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode, hidden_channels=args.hidden_channels)}")
     print("COMMAND " + shlex.join(cmd))
     if args.dry_run:
         return

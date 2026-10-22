@@ -13,6 +13,10 @@ from arch.BAFUnet import BAFUNet
 from dataset_loader.ufg_adapter import build_ufg_loaders
 from EMRDiff import EMRDIFF, Edge
 from metrics import MetricAverager, calc_metrics
+from emr_configuration import (
+    architecture_id as width_architecture_id, checkpoint_name,
+    validate_hidden_channels, variant_suffix,
+)
 
 
 EMR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,8 +79,8 @@ def save_checkpoint(
     degradation_mode,
     state_channels,
     filename=None,
-    architecture_id=EMR_ARCHITECTURE_ID,
-    backbone_width=EMR_BACKBONE_WIDTH,
+    architecture_id=None,
+    backbone_width=None,
     validation_metrics=None,
     best_metric=None,
     best_score=None,
@@ -89,8 +93,14 @@ def save_checkpoint(
         EMR_ROOT, "checkpoints", degradation_mode, dataset
     )
     os.makedirs(checkpoint_dir, exist_ok=True)
-    if filename is None:
-        filename = f"model_epoch_{epoch}.pth.tar"
+    backbone_width = validate_hidden_channels(
+        backbone_width if backbone_width is not None else getattr(model, "model_channels", EMR_BACKBONE_WIDTH)
+    )
+    architecture_id = architecture_id or width_architecture_id(backbone_width)
+    if filename is None or filename == "last.pth.tar":
+        filename = checkpoint_name("last", backbone_width)
+    elif filename == "best.pth.tar":
+        filename = checkpoint_name("best", backbone_width)
     model_out_path = os.path.join(checkpoint_dir, filename)
 
     payload = {
@@ -125,10 +135,15 @@ def save_checkpoint(
     return model_out_path
 
 
-def latest_checkpoint(dataset, degradation_mode):
+def latest_checkpoint(dataset, degradation_mode, hidden_channels=EMR_BACKBONE_WIDTH):
     checkpoint_dir = os.path.join(
         EMR_ROOT, "checkpoints", degradation_mode, dataset
     )
+    last_path = os.path.join(checkpoint_dir, checkpoint_name("last", hidden_channels))
+    if os.path.isfile(last_path):
+        return last_path
+    if validate_hidden_channels(hidden_channels) != EMR_BACKBONE_WIDTH:
+        raise FileNotFoundError(last_path)
     paths = glob.glob(os.path.join(checkpoint_dir, "model_epoch_*.pth.tar"))
     if not paths:
         raise FileNotFoundError(
@@ -143,17 +158,17 @@ def latest_checkpoint(dataset, degradation_mode):
     return max(paths, key=_epoch)
 
 
-def default_checkpoint(dataset, degradation_mode):
+def default_checkpoint(dataset, degradation_mode, hidden_channels=EMR_BACKBONE_WIDTH):
     best_path = os.path.join(
         EMR_ROOT,
         "checkpoints",
         degradation_mode,
         dataset,
-        "best.pth.tar",
+        checkpoint_name("best", hidden_channels),
     )
     if os.path.exists(best_path):
         return best_path
-    return latest_checkpoint(dataset, degradation_mode)
+    return latest_checkpoint(dataset, degradation_mode, hidden_channels)
 
 
 class ResShiftTrainer:
@@ -286,7 +301,7 @@ class ResShiftTrainer:
     def _apply_dynamic_channel_config(self):
         params = self.configs.model.params
         params.in_channels = self.state_channels
-        params.model_channels = EMR_BACKBONE_WIDTH
+        params.model_channels = validate_hidden_channels(self.configs.train.get("hidden_channels", EMR_BACKBONE_WIDTH))
         params.out_channels = self.state_channels
         params.lqrgb_channels = self.state_channels
         params.rgb_channels = self.msi_channels
@@ -316,11 +331,11 @@ class ResShiftTrainer:
 
     def build_model(self):
         params = dict(self.configs.model.params)
-        # Only internal features use width 64. State input, residual output,
+        # Only internal features use the chosen width. State input, residual output,
         # conditions, losses and all diffusion steps retain HSI+MSI channels.
         self.Net = BAFUNet(**params).to(self.device)
-        self.backbone_width = EMR_BACKBONE_WIDTH
-        self.architecture_id = EMR_ARCHITECTURE_ID
+        self.backbone_width = validate_hidden_channels(params["model_channels"])
+        self.architecture_id = width_architecture_id(self.backbone_width)
 
     def build_diffusion_model(self):
         diffusion_opt = self.configs.get("diffusion", dict)
@@ -333,8 +348,8 @@ class ResShiftTrainer:
             raise ValueError(
                 f"{context} uses incompatible EMR-Diff architecture: "
                 f"architecture_id={architecture_id!r}, backbone_width={backbone_width}. "
-                f"Current formal baseline requires {self.architecture_id!r} "
-                f"with fixed backbone_width={self.backbone_width}. "
+                f"Current model requires {self.architecture_id!r} "
+                f"with backbone_width={self.backbone_width}. "
                 "Old hidden=state_channels and external state-projection "
                 "checkpoints (fixed34/fixed64 v1) must be retrained."
             )
@@ -531,13 +546,14 @@ class ResShiftTrainer:
         start_epoch = getattr(self, "start_epoch", 0)
         if int(epoch) <= start_epoch:
             raise ValueError(f"Total target epochs ({epoch}) must exceed completed epochs ({start_epoch})")
-        history_path = os.path.join(self.log_dir, "train_loss.csv")
+        suffix = variant_suffix(self.backbone_width)
+        history_path = os.path.join(self.log_dir, f"train_loss{suffix}.csv")
         if not os.path.exists(history_path):
             with open(history_path, "w", encoding="utf-8") as f:
                 f.write("epoch,loss\n")
 
         validation_history_path = os.path.join(
-            self.log_dir, "validation_history.csv"
+            self.log_dir, f"validation_history{suffix}.csv"
         )
         if not os.path.exists(validation_history_path):
             with open(validation_history_path, "w", encoding="utf-8") as f:
@@ -557,6 +573,7 @@ class ResShiftTrainer:
                 best_score=best_score, best_epoch=best_epoch, bad_evals=bad_evals,
                 checkpoint_dir=self.checkpoint_dir,
                 training_protocol=self.registered_training_protocol(),
+                architecture_id=self.architecture_id, backbone_width=self.backbone_width,
             )
 
         for epoch_index in range(start_epoch, int(epoch)):
@@ -614,6 +631,7 @@ class ResShiftTrainer:
             )
 
             if current_epoch % int(verbose) != 0 and current_epoch != int(epoch):
+                save_training_checkpoint(current_epoch, filename=checkpoint_name("last", self.backbone_width))
                 continue
 
             validation_metrics = self.evaluate(
@@ -636,7 +654,7 @@ class ResShiftTrainer:
                 bad_evals = 0
                 best_path = save_training_checkpoint(
                     current_epoch,
-                    filename="best.pth.tar",
+                    filename=checkpoint_name("best", self.backbone_width),
                     validation_metrics=validation_metrics,
                 )
                 print(
@@ -652,14 +670,10 @@ class ResShiftTrainer:
                     f"bad_evals={bad_evals}/{self.early_stop_patience}"
                 )
 
-            epoch_path = save_training_checkpoint(
-                current_epoch,
-                validation_metrics=validation_metrics,
+            last_path = save_training_checkpoint(
+                current_epoch, filename=checkpoint_name("last", self.backbone_width), validation_metrics=validation_metrics,
             )
-            print(f"checkpoint={epoch_path}")
-            save_training_checkpoint(
-                current_epoch, filename="last.pth.tar", validation_metrics=validation_metrics,
-            )
+            print(f"checkpoint={last_path}")
 
             with open(validation_history_path, "a", encoding="utf-8") as f:
                 f.write(
@@ -676,13 +690,13 @@ class ResShiftTrainer:
                 print(
                     f"[early-stop] triggered at epoch={current_epoch}; "
                     f"best_epoch={best_epoch}, best_{self.early_stop_metric}="
-                    f"{best_score:.6f}. Use best.pth.tar for final test."
+                    f"{best_score:.6f}. Use {checkpoint_name('best', self.backbone_width)} for final test."
                 )
                 break
 
     def load_checkpoint(self, checkpoint_path=None):
         checkpoint_path = checkpoint_path or default_checkpoint(
-            self.dataset, self.degradation_mode
+            self.dataset, self.degradation_mode, self.backbone_width
         )
         checkpoint = torch.load(
             checkpoint_path,

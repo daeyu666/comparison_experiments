@@ -33,9 +33,10 @@ def single_thread():
     torch.set_num_threads(previous)
 
 
-def trainer_for(hsi, msi):
+def trainer_for(hsi, msi, width=64):
     trainer = ResShiftTrainer.__new__(ResShiftTrainer)
     trainer.configs = OmegaConf.load(EMR / "config" / "5_step_EMRDiff.yaml")
+    trainer.configs.train.hidden_channels = width
     trainer.hsi_channels = hsi
     trainer.msi_channels = msi
     trainer.state_channels = hsi + msi
@@ -47,12 +48,14 @@ def trainer_for(hsi, msi):
 
 
 @pytest.mark.parametrize("hsi,msi", [(31, 3), (103, 4), (128, 8), (144, 8), (145, 8), (242, 4)])
-def test_state_space_forward_multiscale_backward_and_reverse(hsi, msi):
-    trainer = trainer_for(hsi, msi)
+@pytest.mark.parametrize("width", [64, 128])
+def test_state_space_forward_multiscale_backward_and_reverse(hsi, msi, width):
+    trainer = trainer_for(hsi, msi, width)
     net = trainer.Net
     assert isinstance(net, BAFUNet)
     assert net.in_channels == net.out_channels == hsi + msi
-    assert net.model_channels == EMR_BACKBONE_WIDTH == 64
+    assert net.model_channels == width
+    assert trainer.backbone_width == width
     gt = torch.rand(2, hsi, 32, 32)
     lr = torch.rand(2, hsi, 8, 8)
     rgb = torch.rand(2, msi, 32, 32)
@@ -74,7 +77,7 @@ def test_state_space_forward_multiscale_backward_and_reverse(hsi, msi):
     assert torch.isfinite(loss)
     loss.backward()
     assert net.input_blocks_denoise[0][0].weight.grad is not None
-    head = net.residual_heads["64"]
+    head = net.residual_heads[str(width)]
     assert head.weight.grad is not None
     assert all(torch.isfinite(p.grad).all() for p in net.parameters() if p.grad is not None)
     # Exercise the original five-step reverse update in full spectral space.
@@ -115,17 +118,21 @@ def test_internal_head_matches_previous_fixed64_external_head():
             torch.testing.assert_close(actual, head(feature))
 
 
-def test_checkpoint_roundtrip_and_old_architecture_rejection(tmp_path):
-    trainer = trainer_for(103, 4)
+@pytest.mark.parametrize("width", [64, 128])
+def test_checkpoint_roundtrip_and_old_architecture_rejection(tmp_path, width):
+    trainer = trainer_for(103, 4, width)
     optimizer = torch.optim.AdamW(trainer.Net.parameters(), lr=1e-4)
     path = save_checkpoint(
         trainer.Net, optimizer, 1, "PaviaU", "physical", 107,
         checkpoint_dir=str(tmp_path),
     )
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    assert checkpoint["architecture_id"] == EMR_ARCHITECTURE_ID == "fixed64_dynamic_io_v2"
+    assert checkpoint["architecture_id"] == f"fixed{width}_dynamic_io_v2"
+    assert checkpoint["backbone_width"] == width
+    assert Path(path).name == ("last.pth.tar" if width == 64 else "last_base128.pth.tar")
+    assert not list(tmp_path.glob("model_epoch_*.pth.tar"))
     trainer.verify_checkpoint_architecture(checkpoint)
-    restored = trainer_for(103, 4)
+    restored = trainer_for(103, 4, width)
     restored.Net.load_state_dict(checkpoint["model_state_dict"], strict=True)
     for architecture, width in [(None, 107), ("fixed34_state_projection_v1", 34), ("fixed64_state_projection_v1", 64)]:
         old = dict(checkpoint, architecture_id=architecture, backbone_width=width)

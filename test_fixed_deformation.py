@@ -9,7 +9,8 @@ from pathlib import Path
 
 import torch
 
-from experiment_protocol import DATASETS, MODES, ROOT, checkpoint_path, resolve_model
+from experiment_protocol import DATASETS, MODES, ROOT, checkpoint_path, resolve_model, model_hidden_channels
+from emr_configuration import add_hidden_channels_argument, checkpoint_width, variant_suffix
 from fixed_deformation_protocol import STRENGTHS, add_suite_args, run_fixed_suite
 
 
@@ -23,8 +24,9 @@ def _load_evaluator(folder):
 
 def _emr(args):
     evaluator = _load_evaluator("EMR-Diff")
+    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    args.hidden_channels = checkpoint_width(checkpoint, getattr(args, "hidden_channels", None))
     trainer = evaluator.build_trainer(args)
-    checkpoint = torch.load(args.checkpoint, map_location=trainer.device, weights_only=False)
     trainer.verify_checkpoint_architecture(checkpoint, context=f"fixed test {args.checkpoint}")
     if checkpoint.get("dataset") != args.dataset:
         raise ValueError("checkpoint/test dataset mismatch")
@@ -43,6 +45,7 @@ def _emr(args):
     p0 = test_set.degradation_operator.to(trainer.device)
     details = {"checkpoint_epoch": checkpoint.get("epoch"), "training_stage": stage,
                "architecture_id": checkpoint.get("architecture_id"),
+               "backbone_width": checkpoint.get("backbone_width"),
                "registered_probability": checkpoint.get("registered_probability")}
     return test_set, trainer._reconstruct, p0.degrade, trainer.device, details
 
@@ -128,6 +131,7 @@ def parse_args(argv=None):
     p.add_argument("--mode", choices=MODES, default="mixed",
                    help="Checkpoint training stage; both modes are tested at all selected strengths")
     p.add_argument("--checkpoint", default="")
+    add_hidden_channels_argument(p)
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=10)
@@ -141,10 +145,11 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     adapter = resolve_model(args.model)
+    model_hidden_channels(adapter, args.hidden_channels)
     if adapter.canonical not in MODEL_BUILDERS:
         raise ValueError(f"Register a fixed-test model builder for {adapter.canonical}")
     args.checkpoint = str(Path(args.checkpoint).resolve() if args.checkpoint
-                          else checkpoint_path(adapter, args.dataset, args.mode))
+                          else checkpoint_path(adapter, args.dataset, args.mode, args.hidden_channels))
     args.data_root = str(Path(args.data_root).resolve())
     if not args.output_dir:
         deformation_tag = (
@@ -153,7 +158,7 @@ def main(argv=None):
         )
         args.output_dir = str(ROOT / "comparison" / adapter.folder / "outputs" / "fixed_deformation"
                               / args.dataset
-                              / f"{args.mode}_{deformation_tag}_seed{args.seed}_cases{args.cases}_eval{args.eval_seed}")
+                              / f"{args.mode}_{deformation_tag}_seed{args.seed}_cases{args.cases}_eval{args.eval_seed}{variant_suffix(args.hidden_channels)}")
     # The training/sensor protocol remains fixed; test strength never changes
     # network architecture or the geometry-estimator's training-time bounds.
     args.image_size, args.patch_size, args.stride, args.scale_ratio = 128, 64, 32, 4

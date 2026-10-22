@@ -5,6 +5,7 @@ import torch
 from omegaconf import OmegaConf
 
 from model.ResShift_model import ResShiftTrainer
+from emr_configuration import add_hidden_channels_argument, checkpoint_width, validate_hidden_channels
 
 
 def parse_args():
@@ -24,6 +25,7 @@ def parse_args():
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--checkpoint", default=None)
+    add_hidden_channels_argument(parser)
     return parser.parse_args()
 
 
@@ -37,6 +39,11 @@ if __name__ == "__main__":
     configs.data.dataset = args.dataset
     configs.data.degradation_mode = args.degradation_mode
     configs.train.device = args.device
+    if args.checkpoint:
+        state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        configs.train.hidden_channels = checkpoint_width(state, args.hidden_channels)
+    else:
+        configs.train.hidden_channels = validate_hidden_channels(args.hidden_channels)
 
     trainer = ResShiftTrainer(configs=configs)
     trainer.test(checkpoint_path=args.checkpoint)

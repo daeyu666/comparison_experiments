@@ -43,6 +43,7 @@ from hsi_deformation import (  # noqa: E402
     sample_synthetic_geometry,
 )
 from model.ResShift_model import ResShiftTrainer  # noqa: E402
+from emr_configuration import add_hidden_channels_argument, checkpoint_name, checkpoint_width, validate_hidden_channels, variant_suffix  # noqa: E402
 
 
 DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
@@ -69,6 +70,7 @@ def parse_args():
     p.add_argument("--control_grid", type=int, default=5)
     p.add_argument("--min_jacobian", type=float, default=0.5)
     p.add_argument("--checkpoint", default="")
+    add_hidden_channels_argument(p)
     p.add_argument(
         "--test_mode",
         choices=["registered_only", "registered_and_warp"],
@@ -211,6 +213,7 @@ def build_trainer(args):
     configs.data.psf_truncate = args.psf_truncate
     configs.diffusion.params.sf = args.scale_ratio
     configs.train.device = args.device
+    configs.train.hidden_channels = validate_hidden_channels(getattr(args, "hidden_channels", None))
     configs.train.seed = args.seed
     configs.train.eval_seed = args.eval_seed
     return ResShiftTrainer(configs)
@@ -232,6 +235,16 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
+    default_ckpt = (
+        THIS_DIR / "checkpoints"
+        / ("physical" if args.test_mode == "registered_only" else "hsi_warp_final")
+        / args.dataset / checkpoint_name("best", args.hidden_channels)
+    )
+    ckpt_path = Path(args.checkpoint) if args.checkpoint else default_ckpt
+    if not ckpt_path.is_file():
+        raise FileNotFoundError(f"EMR-Diff checkpoint not found: {ckpt_path}")
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    args.hidden_channels = checkpoint_width(checkpoint, args.hidden_channels)
     trainer = build_trainer(args)
     test_set = trainer.test_dataloader.dataset
     if len(test_set) < 1:
@@ -240,17 +253,6 @@ def main():
         raise AttributeError("test dataset does not expose degradation_operator")
     p0 = test_set.degradation_operator.to(trainer.device)
 
-    default_ckpt = (
-        THIS_DIR / "checkpoints"
-        / ("physical" if args.test_mode == "registered_only" else "hsi_warp_final")
-        / args.dataset / "best.pth.tar"
-    )
-    ckpt_path = Path(args.checkpoint) if args.checkpoint else default_ckpt
-    if not ckpt_path.is_file():
-        raise FileNotFoundError(f"EMR-Diff checkpoint not found: {ckpt_path}")
-    checkpoint = torch.load(
-        ckpt_path, map_location=trainer.device, weights_only=False
-    )
     trainer.verify_checkpoint_architecture(
         checkpoint, context=f"final test {ckpt_path}"
     )
@@ -385,6 +387,7 @@ def main():
         "checkpoint_training_stage": checkpoint.get("training_stage"),
         "checkpoint_registered_probability": checkpoint.get("registered_probability"),
         "checkpoint_architecture_id": checkpoint.get("architecture_id"),
+        "checkpoint_backbone_width": checkpoint.get("backbone_width"),
         "test_patch_count": len(test_set),
         "registered_observations": len(registered_rows),
         "warp_observations": len(warp_rows),
@@ -444,7 +447,7 @@ def main():
         tag = "registered" if warp is None else "mixed"
         out = (
             THIS_DIR / "outputs" / "unified_two_stage" / args.dataset
-            / f"EMRDiff_{tag}_seed{args.seed}.json"
+            / f"EMRDiff_{tag}_seed{args.seed}{variant_suffix(args.hidden_channels)}.json"
         )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "comparison" / "EMR-Diff"))
 from model.ResShift_model import EMR_ARCHITECTURE_ID, ResShiftTrainer
+from emr_configuration import architecture_id
 
 
 class TinyNetwork(torch.nn.Module):
@@ -27,7 +28,7 @@ class TinyDiffusion:
         return x_start
 
 
-def trainer_at(path):
+def trainer_at(path, width=64):
     path.mkdir(parents=True, exist_ok=True)
     trainer = ResShiftTrainer.__new__(ResShiftTrainer)
     trainer.Net = TinyNetwork()
@@ -35,8 +36,8 @@ def trainer_at(path):
     trainer.optimizer_name = "adamw"
     trainer.weight_decay = 0.02
     trainer.device = torch.device("cpu")
-    trainer.architecture_id = EMR_ARCHITECTURE_ID
-    trainer.backbone_width = 64
+    trainer.architecture_id = architecture_id(width)
+    trainer.backbone_width = width
     trainer.dataset, trainer.degradation_mode, trainer.state_channels = "PaviaU", "physical", 1
     trainer.diffusion_sf, trainer.num_timesteps = 4, 5
     trainer.checkpoint_dir = trainer.log_dir = str(path)
@@ -118,6 +119,35 @@ def test_old_epoch800_checkpoint_resumes_at801_and_saves_final_epoch(tmp_path):
     assert saved["optimizer_state_dict"]["state"][0]["step"] == 2
     lines = (tmp_path / "resumed" / "train_loss.csv").read_text().splitlines()
     assert lines[1].startswith("801,")
+
+
+@pytest.mark.parametrize("width", [64, 128])
+def test_training_keeps_best_and_last_and_last_tracks_nonvalidation_epoch(tmp_path, monkeypatch, width):
+    from model import ResShift_model as module
+    calls = []
+    original = module.save_checkpoint
+
+    def record(*args, **kwargs):
+        path = original(*args, **kwargs)
+        calls.append((args[2], Path(path).name))
+        return path
+
+    monkeypatch.setattr(module, "save_checkpoint", record)
+    trainer = trainer_at(tmp_path, width)
+    trainer.train(3, 2)
+    tag = "" if width == 64 else "_base128"
+    assert calls == [(1, f"last{tag}.pth.tar"), (2, f"best{tag}.pth.tar"),
+                     (2, f"last{tag}.pth.tar"), (3, f"last{tag}.pth.tar")]
+    assert {p.name for p in tmp_path.glob("*.pth.tar")} == {f"best{tag}.pth.tar", f"last{tag}.pth.tar"}
+    saved = torch.load(tmp_path / f"last{tag}.pth.tar", weights_only=True)
+    assert saved["epoch"] == 3
+    assert saved["architecture_id"] == architecture_id(width)
+    resumed = trainer_at(tmp_path, width)
+    resumed.resume_training(tmp_path / f"last{tag}.pth.tar")
+    assert resumed.start_epoch == 3
+    if width == 128:
+        with pytest.raises(ValueError, match="incompatible EMR-Diff architecture"):
+            trainer_at(tmp_path / "base64").resume_training(tmp_path / "last_base128.pth.tar")
 
 
 @pytest.mark.parametrize("change,expected", [

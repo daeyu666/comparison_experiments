@@ -71,7 +71,7 @@ python test_multiseed_deformation.py --model CLSNet --dataset CAVE --device cuda
 
 ### EMR-Diff synthetic基线的动态输入输出适配
 
-六个synthetic x4数据集统一使用以下网络配置：
+六个synthetic x4数据集默认使用以下网络配置；EMR可通过`--hidden_channels 128`更换骨干宽度：
 
 ```text
 in_channels = out_channels = HSI bands + MSI bands
@@ -80,7 +80,7 @@ architecture_id = fixed64_dynamic_io_v2
 ```
 
 HSI+MSI联合状态、观测条件、多模态残差、加噪与逆扩散均在原始波段空间
-计算。只有BAFUNet内部隐藏特征使用64通道，入口卷积接收完整状态，内部
+计算。只有BAFUNet内部隐藏特征使用所选宽度（默认64），入口卷积接收完整状态，内部
 共享1x1残差输出卷积将主输出和多尺度输出映射回完整状态维度。
 
 这属于显式记录的跨数据集网络宽度适配，不应称为未经修改的原版网络，
@@ -96,6 +96,32 @@ HSI+MSI联合状态、观测条件、多模态残差、加噪与逆扩散均在�
 `dynamic_io_wald_v2`。旧Wald外部head权重需重新训练，不与synthetic权重混用。
 
 ### EMR-Diff在24G显存服务器上的训练设置
+
+EMR可选择骨干隐藏宽度128，checkpoint仍放在原来的数据集目录：
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode registered --hidden_channels 128
+python train.py --model EMR-Diff --dataset PaviaU --mode mixed --hidden_channels 128
+```
+
+配准阶段文件为`comparison/EMR-Diff/checkpoints/physical/PaviaU/best_base128.pth.tar`
+和同目录的`last_base128.pth.tar`；混合阶段使用`checkpoints/hsi_warp_final/PaviaU/`
+内的同名文件。每轮覆盖last，验证改善时覆盖best，不再生成`model_epoch_*.pth.tar`。
+默认64仍使用`best.pth.tar`、`last.pth.tar`。历史编号文件不会被自动删除。
+128对应`fixed128_dynamic_io_v2`，状态输入输出仍为HSI+MSI的原始通道数。
+不同宽度分别记录日志和协议，不能直接把64权重续训成128；128需要新训。
+
+128实验的续训、主表测试和固定强度测试同样传递宽度：
+
+```bash
+python train.py --model EMR-Diff --dataset PaviaU --mode registered --hidden_channels 128 --resume auto --epochs 1600
+python test.py --model EMR-Diff --dataset PaviaU --mode mixed --hidden_channels 128
+python test_fixed_deformation.py --model EMR-Diff --dataset PaviaU --mode mixed --hidden_channels 128
+```
+
+`auto`按所选宽度查找last，mixed初始化按所选宽度查找registered best。
+显式传入`--checkpoint`测试时，也能从checkpoint元数据读取宽度并校验。
+此项宽度选项用于synthetic `train.py`；真实Wald入口仍使用其独立配置。
 
 Synthetic registered/mixed及real Wald默认batch=2，AdamW lr=1e-5。
 其他方法的batch默认值仍为1。单独启动一个EMR训练任务时可以尝试batch=4，
@@ -845,7 +871,7 @@ python train.py --model EMR-Diff --dataset PaviaU --mode registered \
 
 EMR配准续训恢复模型、optimizer、已完成epoch和历史best分数；
 optimizer中的学习率及动量一起恢复。PaviaU仍每20轮验证，best只在验证改善时更新，
-日志继续追加801、802…，并在验证轮及最终轮保存编号checkpoint和last文件。
+日志继续追加801、802…；每轮覆盖last，验证改善时覆盖best，不再生成编号checkpoint。
 新checkpoint还保存早停计数、best epoch、退化配置及随机数状态。
 旧checkpoint没有记录随机数状态和早停计数时，恢复其已有内容；
 旧随机流不能逐步复现，早停计数从0开始，历史best分数保留。

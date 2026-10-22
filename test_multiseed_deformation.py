@@ -8,7 +8,8 @@ from pathlib import Path
 
 import torch
 
-from experiment_protocol import DATASETS, ROOT, checkpoint_path, resolve_model
+from experiment_protocol import DATASETS, ROOT, checkpoint_path, resolve_model, model_hidden_channels
+from emr_configuration import add_hidden_channels_argument, variant_suffix
 from test_fixed_deformation import MODEL_BUILDERS
 from multiseed_deformation_protocol import (
     PROTOCOL_ID, add_multiseed_args, file_sha256, run_multiseed_suite, validate_settings,
@@ -25,6 +26,7 @@ def parse_args(argv=None):
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--mode", choices=["mixed"], default="mixed")
     p.add_argument("--checkpoint", default="")
+    add_hidden_channels_argument(p)
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=10, help="Model/data setup seed; geometry seeds are independent")
@@ -48,14 +50,15 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     adapter = resolve_model(args.model)
+    model_hidden_channels(adapter, args.hidden_channels)
     if adapter.canonical not in MODEL_BUILDERS:
         raise ValueError(f"Register a shared test model builder for {adapter.canonical} in test_fixed_deformation.MODEL_BUILDERS")
     args.checkpoint = str(Path(args.checkpoint).resolve() if args.checkpoint
-                          else checkpoint_path(adapter, args.dataset, "mixed"))
+                          else checkpoint_path(adapter, args.dataset, "mixed", args.hidden_channels))
     args.data_root = str(Path(args.data_root).resolve())
     if not args.output_dir:
         tag = hashlib.sha256(",".join(map(str, args.geometry_seeds)).encode()).hexdigest()[:8]
-        name = f"mixed_{len(args.geometry_seeds)}seeds_{args.cases}cases_{tag}_eval{args.eval_seed}"
+        name = f"mixed_{len(args.geometry_seeds)}seeds_{args.cases}cases_{tag}_eval{args.eval_seed}{variant_suffix(args.hidden_channels)}"
         if args.max_samples:
             name += f"_SMOKE{args.max_samples}"
         args.output_dir = str(ROOT / "comparison" / adapter.folder / "outputs" / "multiseed_deformation" / args.dataset / name)

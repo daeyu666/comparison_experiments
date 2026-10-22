@@ -44,6 +44,7 @@ from hsi_deformation import (  # noqa: E402
 )
 from metrics import MetricAverager, calc_metrics  # noqa: E402
 from model.ResShift_model import ResShiftTrainer  # noqa: E402
+from emr_configuration import add_hidden_channels_argument, checkpoint_name, validate_hidden_channels, variant_suffix  # noqa: E402
 
 
 DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
@@ -57,6 +58,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="EMR-Diff stage-2 registered/deformed HSI training"
     )
+    add_hidden_channels_argument(p)
     p.add_argument("--dataset", default="PaviaU", choices=DATASETS)
     p.add_argument("--image_size", type=int, default=128)
     p.add_argument("--patch_size", type=int, default=64)
@@ -92,7 +94,7 @@ def parse_args():
     p.add_argument("--validation_cases", type=int, default=5)
     p.add_argument("--early_stop_patience", type=int, default=999999)
     p.add_argument("--early_stop_min_delta", type=float, default=0.02)
-    p.add_argument("--save_interval", type=int, default=20)
+    p.add_argument("--save_interval", type=int, default=20, help="Legacy compatibility argument; last is now overwritten every epoch")
     p.add_argument("--eval_seed", type=int, default=1234)
 
     p.add_argument(
@@ -148,6 +150,7 @@ def build_trainer(args):
     configs.diffusion.params.sf = args.scale_ratio
 
     configs.train.device = args.device
+    configs.train.hidden_channels = validate_hidden_channels(args.hidden_channels)
     configs.train.seed = args.seed
     configs.train.batch = [args.batch_size, 1]
     configs.train.num_workers = args.num_workers
@@ -239,7 +242,9 @@ def save_stage2(
         },
         "args": vars(args),
     }
-    torch.save(payload, path)
+    temporary_path = Path(str(path) + ".tmp")
+    torch.save(payload, temporary_path)
+    os.replace(temporary_path, path)
 
 
 def resume_stage2(path, trainer, optimizer):
@@ -412,7 +417,7 @@ def main():
     p0 = train_dataset.degradation_operator.to(trainer.device)
 
     init_checkpoint = args.init_checkpoint or str(
-        THIS_DIR / "checkpoints" / "physical" / args.dataset / "best.pth.tar"
+        THIS_DIR / "checkpoints" / "physical" / args.dataset / checkpoint_name("best", args.hidden_channels)
     )
 
     # Stage 2 always starts a new optimizer unless explicitly resuming stage 2.
@@ -429,11 +434,13 @@ def main():
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-    history_path = log_dir / "history.csv"
+    history_path = log_dir / f"history{variant_suffix(args.hidden_channels)}.csv"
 
     protocol = (
         "EMR-Diff TWO-STAGE HSI-DEFORMED PROTOCOL\n"
         f"dataset={args.dataset}\n"
+        f"backbone_width={trainer.backbone_width}, architecture_id={trainer.architecture_id}\n"
+        f"checkpoints={checkpoint_name('best', args.hidden_channels)}, {checkpoint_name('last', args.hidden_channels)}; last overwritten every epoch\n"
         "stage1=registered physical only\n"
         "stage2=registered + deformed LR-HSI mixture\n"
         f"registered_probability={args.registered_probability}\n"
@@ -456,7 +463,7 @@ def main():
         f"init_checkpoint={init_checkpoint}\n"
         "init_semantics=model weights only; stage2 optimizer reinitialized\n"
     )
-    (checkpoint_dir / "run_protocol.txt").write_text(
+    (checkpoint_dir / f"run_protocol{variant_suffix(args.hidden_channels)}.txt").write_text(
         protocol, encoding="utf-8"
     )
     print(protocol)
@@ -592,7 +599,7 @@ def main():
                 best_psnr = monitor
                 bad_validations = 0
                 save_stage2(
-                    checkpoint_dir / "best.pth.tar",
+                    checkpoint_dir / checkpoint_name("best", args.hidden_channels),
                     trainer,
                     optimizer,
                     epoch,
@@ -612,7 +619,7 @@ def main():
                 )
 
             save_stage2(
-                checkpoint_dir / "last.pth.tar",
+                checkpoint_dir / checkpoint_name("last", args.hidden_channels),
                 trainer,
                 optimizer,
                 epoch,
@@ -627,9 +634,9 @@ def main():
                 )
                 break
 
-        elif current % args.save_interval == 0:
+        else:
             save_stage2(
-                checkpoint_dir / "last.pth.tar",
+                checkpoint_dir / checkpoint_name("last", args.hidden_channels),
                 trainer,
                 optimizer,
                 epoch,
