@@ -1,170 +1,233 @@
-"""Train the PSRF-DiffNet comparison on the shared degradation protocol."""
+"""PSRF-DiffNet training adapter for the shared comparison protocol.
 
+The active released path is CRN -> FRN -> complementary fusion inside an
+x0-prediction diffusion wrapper. Registered and mixed stages intentionally use
+the same data split, physical degradation, optimizer family, and validation
+schedule as EMR-Diff and CLSNet.
+"""
 from __future__ import annotations
 
 import argparse
-import os
+import csv
+import json
+import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 THIS_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = THIS_DIR.parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+ROOT = THIS_DIR.parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
 
-from common import (  # noqa: E402
-    MISALIGNMENT_MODES,
+from comparison.CLSNet.common import (  # noqa: E402
+    add_data_args,
+    add_geometry_args,
     build_shared_cfg,
-    calc_masked_psnr_sam,
-    checkpoint_payload,
+    deformed_observation,
+    geometry_kwargs,
+    make_generator,
     resolve_device,
+    restore_rng,
+    sample_synthetic_geometry,
     set_seed,
-    warp_msi_for_protocol,
+    snapshot_rng,
+    make_deformed_lr_hsi,
 )
 from data_loader import build_datasets  # noqa: E402
-from metrics import calc_metrics  # noqa: E402
-from diffusion import PSRFDiffusion  # noqa: E402
+from experiment_protocol import DATASET_VALIDATION_INTERVAL  # noqa: E402
+from metrics import MetricAverager, calc_metrics  # noqa: E402
 from autograd_safe import make_autograd_safe  # noqa: E402
+from diffusion import PSRFDiffusion  # noqa: E402
 
 
-def parse_args():
-    p = argparse.ArgumentParser(
-        description="PSRF-DiffNet on comparison_experiments shared HSI-MSI degradation"
-    )
-    p.add_argument("--dataset", default="PaviaU", choices=["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"])
-    p.add_argument("--data_root", default="./data/raw")
-    p.add_argument("--image_size", type=int, default=128)
-    p.add_argument("--patch_size", type=int, default=64)
-    p.add_argument("--stride", type=int, default=32)
-    p.add_argument("--scale_ratio", type=int, default=4)
+ARCHITECTURE_ID = "PSRF-DiffNet-official-active-path-v2"
+DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
 
-    p.add_argument("--degradation_mode", default="physical", choices=["physical", "gaussian_bicubic"])
-    p.add_argument("--degradation_sigma", type=float, default=2.0)
-    p.add_argument("--degradation_kernel_size", type=int, default=5)
-    p.add_argument("--mtf_nyquist", type=float, default=0.2)
-    p.add_argument("--psf_truncate", type=float, default=3.0)
 
-    p.add_argument("--msi_mode", default="srf", choices=["srf", "uniform"])
-    p.add_argument("--srf_path", default="")
-    p.add_argument("--wavelength_root", default="./data/wavelengths")
-    p.add_argument("--wavelength_path", default="")
-    p.add_argument("--srf_interp", default="pchip", choices=["pchip", "linear"])
-    p.add_argument(
-        "--srf_band_set",
-        default="auto",
-        choices=["auto", "ikonos4", "wv2_visible5", "wv2_visible6", "wv2_all8"],
-    )
-
-    p.add_argument("--train_misalignment_mode", default="registered", choices=MISALIGNMENT_MODES)
-    p.add_argument("--translation_max_px", type=float, default=0.0)
-    p.add_argument("--rotation_max_deg", type=float, default=0.0)
-    p.add_argument("--local_max_displacement_px", type=float, default=0.0)
-    p.add_argument("--control_grid_size", type=int, default=5)
-    p.add_argument("--valid_threshold", type=float, default=0.999)
-
-    p.add_argument("--epochs", type=int, default=300)
+def parser(stage: str = "registered"):
+    p = argparse.ArgumentParser(description=__doc__)
+    add_data_args(p)
+    add_geometry_args(p)
+    p.set_defaults(stage=stage)
+    # Kept for compatibility with the root unified launcher. The stage selector
+    # controls whether the observation is registered or geometrically deformed.
+    p.add_argument("--train_misalignment_mode", choices=["registered"], default="registered")
+    p.add_argument("--epochs", type=int, default=800 if stage == "registered" else 600)
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--num_workers", type=int, default=0)
-    p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--weight_decay", type=float, default=0.0)
-    p.add_argument("--grad_clip", type=float, default=1.0)
-    p.add_argument("--seed", type=int, default=10)
-    p.add_argument("--device", default="cuda")
-
+    p.add_argument("--lr", type=float, default=1e-5)
+    p.add_argument("--weight_decay", type=float, default=5e-5)
+    p.add_argument("--seed", type=int, default=1001 if stage == "registered" else 10)
+    p.add_argument("--validation_interval", type=int, default=None)
+    p.add_argument("--validation_cases", type=int, default=5)
+    p.add_argument("--early_stop_patience", type=int, default=999999)
+    p.add_argument("--early_stop_min_delta", type=float, default=0.02)
+    p.add_argument("--eval_seed", type=int, default=1234)
+    p.add_argument("--val_sample_steps", type=int, default=50)
     p.add_argument("--n_timestep", type=int, default=2000)
     p.add_argument("--linear_start", type=float, default=1e-4)
     p.add_argument("--linear_end", type=float, default=2e-3)
-    p.add_argument("--val_sample_steps", type=int, default=50)
-    p.add_argument("--validation_interval", type=int, default=0, help="0 uses PaviaU=20, Houston13=10, Chikusei=5")
-    p.add_argument("--early_stop_patience", type=int, default=2)
-    p.add_argument("--early_stop_min_delta", type=float, default=0.02)
-    p.add_argument("--eval_seed", type=int, default=1234)
+    p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--save_interval", type=int, default=20)
-    p.add_argument("--checkpoint_dir", default="", help="Optional override; default isolates by degradation/dataset")
+    p.add_argument("--checkpoint_dir", default="")
+    p.add_argument("--log_dir", default="")
     p.add_argument("--resume", default="")
-    return p.parse_args()
+    p.add_argument("--init_checkpoint", default="")
+    return p
 
 
-def make_loader(dataset, batch_size: int, shuffle: bool, workers: int):
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=workers,
-        pin_memory=True,
-        drop_last=False,
-    )
+def _snapshot_rng(geometry_gen, diffusion_gen):
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "geometry": geometry_gen.get_state(),
+        "diffusion": diffusion_gen.get_state(),
+    }
 
 
-def load_resume(model, optimizer, path: str, device: torch.device):
-    if not path:
-        return 0, float("-inf")
-    ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
-    if isinstance(ckpt, dict) and ckpt.get("optimizer") is not None:
-        optimizer.load_state_dict(ckpt["optimizer"])
-    start = int(ckpt.get("epoch", -1)) + 1 if isinstance(ckpt, dict) else 0
-    best = float(ckpt.get("best_psnr", float("-inf"))) if isinstance(ckpt, dict) else float("-inf")
-    print(f"Resumed {path}: start_epoch={start}, best_valid_PSNR={best:.4f}")
-    return start, best
+def _restore_rng(state, geometry_gen, diffusion_gen):
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu())
+    if state.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([x.cpu() for x in state["cuda"]])
+    if state.get("geometry") is not None:
+        geometry_gen.set_state(state["geometry"].cpu())
+    if state.get("diffusion") is not None:
+        diffusion_gen.set_state(state["diffusion"].cpu())
+
+
+def checkpoint_payload(model, optimizer, epoch, best, bad, args, geometry_gen, diffusion_gen):
+    return {
+        "method": "PSRF-DiffNet",
+        "architecture_id": ARCHITECTURE_ID,
+        "hsi_channels": model.hsi_channels,
+        "msi_channels": model.msi_channels,
+        "patch_size": model.patch_size,
+        "scale_ratio": model.scale_ratio,
+        "n_timestep": model.n_timestep,
+        "training_stage": args.stage,
+        "registered_probability": 1.0 if args.stage == "registered" else args.registered_probability,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": int(epoch),
+        "best_psnr": float(best),
+        "bad_validations": int(bad),
+        "args": vars(args).copy(),
+        "rng": _snapshot_rng(geometry_gen, diffusion_gen),
+    }
+
+
+def load_checkpoint(path, model, args, *, expected_stage, optimizer=None):
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"PSRF-DiffNet checkpoint not found: {path}")
+    state = torch.load(path, map_location=next(model.parameters()).device, weights_only=False)
+    if state.get("method") != "PSRF-DiffNet":
+        raise ValueError("Checkpoint is not a PSRF-DiffNet checkpoint")
+    if state.get("architecture_id") != ARCHITECTURE_ID:
+        raise ValueError(
+            "Checkpoint architecture is stale/incompatible; retrain after the "
+            "official-structure alignment update."
+        )
+    if state.get("training_stage") != expected_stage:
+        raise ValueError(
+            f"Expected {expected_stage} checkpoint, got {state.get('training_stage')!r}"
+        )
+    for key, actual in (
+        ("hsi_channels", model.hsi_channels),
+        ("msi_channels", model.msi_channels),
+        ("patch_size", model.patch_size),
+        ("scale_ratio", model.scale_ratio),
+        ("n_timestep", model.n_timestep),
+    ):
+        if state.get(key) != actual:
+            raise ValueError(f"Checkpoint/model mismatch for {key}: {state.get(key)} != {actual}")
+    recorded = state.get("args", {})
+    for key in (
+        "dataset", "image_size", "patch_size", "stride", "scale_ratio",
+        "degradation_mode", "mtf_nyquist", "psf_truncate",
+    ):
+        if key in recorded and recorded[key] != getattr(args, key):
+            raise ValueError(
+                f"Checkpoint protocol mismatch for {key}: "
+                f"{recorded[key]!r} != {getattr(args, key)!r}"
+            )
+    model.load_state_dict(state["model"], strict=True)
+    if optimizer is not None:
+        if state.get("optimizer") is None or state.get("rng") is None:
+            raise ValueError("Exact resume requires optimizer and RNG states")
+        for key in ("lr", "weight_decay", "batch_size", "seed", "validation_interval"):
+            if recorded.get(key) != getattr(args, key):
+                raise ValueError(f"Resume schedule mismatch for {key}")
+        optimizer.load_state_dict(state["optimizer"])
+    return state
 
 
 @torch.no_grad()
-def validate(model, loader, device, args):
+def evaluate(model, loader, device, p0, args):
     model.eval()
-    warp_gen = torch.Generator(device="cpu").manual_seed(args.eval_seed + 100003)
-    sample_gen = torch.Generator(device="cpu").manual_seed(args.eval_seed + 200003)
-    rows = []
+    registered, warped = MetricAverager(), MetricAverager()
+    geometry_gen = make_generator(device, args.eval_seed + 60000)
     for batch in loader:
         gt = batch["gt"].to(device, non_blocking=True)
-        lr_hsi = batch["lr_hsi"].to(device, non_blocking=True)
-        hr_msi = batch["hr_msi"].to(device, non_blocking=True)
-        warped_msi, valid, _ = warp_msi_for_protocol(
-            hr_msi,
-            mode=args.train_misalignment_mode,
-            translation_max_px=args.translation_max_px,
-            rotation_max_deg=args.rotation_max_deg,
-            local_max_displacement_px=args.local_max_displacement_px,
-            control_grid_size=args.control_grid_size,
-            generator=warp_gen,
-        )
+        msi = batch["hr_msi"].to(device, non_blocking=True)
+        lr_registered = p0.degrade(gt)
         pred, _ = model.sample_tiled(
-            lr_hsi,
-            warped_msi,
-            sample_steps=args.val_sample_steps,
+            lr_registered, msi, sample_steps=args.val_sample_steps,
             tile_stride=args.patch_size,
-            generator=sample_gen,
         )
-        full = calc_metrics(pred, gt, args.scale_ratio)
-        valid_psnr, valid_sam, valid_fraction = calc_masked_psnr_sam(
-            pred, gt, valid, threshold=args.valid_threshold
-        )
-        rows.append((full, valid_psnr, valid_sam, valid_fraction))
+        registered.update(calc_metrics(pred, gt, args.scale_ratio))
 
-    mean_full = {
-        key: sum(row[0][key] for row in rows) / len(rows)
-        for key in rows[0][0]
-    }
-    return {
-        **mean_full,
-        "PSNR_valid": sum(r[1] for r in rows) / len(rows),
-        "SAM_valid": sum(r[2] for r in rows) / len(rows),
-        "valid_fraction": sum(r[3] for r in rows) / len(rows),
-    }
+        if args.stage == "mixed":
+            for _ in range(args.validation_cases):
+                geometry = sample_synthetic_geometry(
+                    *gt.shape[-2:], device=device, dtype=gt.dtype,
+                    generator=geometry_gen, local_strength_min_fraction=0.0,
+                    local_strength_max_fraction=1.0, **geometry_kwargs(args),
+                )
+                lr_warped = make_deformed_lr_hsi(gt, geometry, p0)
+                pred, _ = model.sample_tiled(
+                    lr_warped, msi, sample_steps=args.val_sample_steps,
+                    tile_stride=args.patch_size,
+                )
+                warped.update(calc_metrics(pred, gt, args.scale_ratio))
+    return registered.average(), warped.average()
 
 
-def main():
-    args = parse_args()
+def main(stage: str = "registered"):
+    if stage not in ("registered", "mixed"):
+        raise ValueError(f"Unsupported PSRF stage: {stage}")
+    args = parser(stage).parse_args()
+    args.stage = stage
+    args.validation_interval = args.validation_interval or DATASET_VALIDATION_INTERVAL[args.dataset]
+    if min(args.epochs, args.batch_size, args.validation_interval, args.validation_cases, args.val_sample_steps) < 1:
+        raise ValueError("Epochs, batch size, validation interval/cases and sampling steps must be positive")
+    if stage == "mixed" and args.degradation_mode != "physical":
+        raise ValueError("The unified mixed-stage protocol requires physical degradation")
+    if stage == "registered" and args.init_checkpoint:
+        raise ValueError("Registered training starts from scratch; use --resume to continue")
     set_seed(args.seed)
-    cfg = build_shared_cfg(args)
-    train_set, val_set, _, info = build_datasets(cfg, include_validation=True)
-    train_loader = make_loader(train_set, args.batch_size, True, args.num_workers)
-    val_loader = make_loader(val_set, 1, False, 0)
-
     device = resolve_device(args.device)
+    train_set, val_set, _, info = build_datasets(build_shared_cfg(args), include_validation=True)
+    if len(train_set) == 0 or len(val_set) == 0:
+        raise ValueError("PSRF-DiffNet requires nonempty train and validation splits")
+    train_loader = DataLoader(
+        train_set, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, pin_memory=device.type == "cuda",
+    )
+    val_loader = DataLoader(val_set, batch_size=1, shuffle=False, num_workers=0)
+    p0 = train_set.degradation_operator.to(device)
+
     model = PSRFDiffusion(
         patch_size=args.patch_size,
         scale_ratio=args.scale_ratio,
@@ -175,115 +238,140 @@ def main():
         linear_end=args.linear_end,
     ).to(device)
     make_autograd_safe(model)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
-    if not args.checkpoint_dir:
-        args.checkpoint_dir = str(THIS_DIR / "checkpoints" / args.degradation_mode / args.dataset)
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-    protocol_path = os.path.join(args.checkpoint_dir, "run_protocol.txt")
-    validation_interval = args.validation_interval or {"PaviaU": 20, "Houston13": 10, "Chikusei": 5}[args.dataset]
-    with open(protocol_path, "w", encoding="utf-8") as f:
-        f.write(f"dataset: {args.dataset}\n")
-        f.write(f"degradation_mode: {args.degradation_mode}\n")
-        f.write(f"train_patch: {args.patch_size}\n")
-        f.write(f"train_stride: {args.stride}\n")
-        f.write(f"validation_size: {args.image_size}\n")
-        f.write(f"validation_interval: {validation_interval}\n")
-        f.write("early_stop_metric: PSNR_valid\n")
-        f.write(f"early_stop_min_delta: {args.early_stop_min_delta}\n")
-        f.write(f"early_stop_patience: {args.early_stop_patience}\n")
-        f.write(f"eval_seed: {args.eval_seed}\n")
-        f.write(f"train_misalignment_mode: {args.train_misalignment_mode}\n")
-        f.write(f"translation_max_px: {args.translation_max_px}\n")
-        f.write(f"rotation_max_deg: {args.rotation_max_deg}\n")
-        f.write(f"local_max_displacement_px: {args.local_max_displacement_px}\n")
-    start_epoch, best_psnr = load_resume(model, optimizer, args.resume, device)
-    bad_validations = 0
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    train_warp_gen = torch.Generator(device="cpu").manual_seed(args.seed + 7919)
-    train_diff_gen = torch.Generator(device="cpu").manual_seed(args.seed + 15485863)
+    family = "physical" if stage == "registered" else "hsi_warp_final"
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else THIS_DIR / "checkpoints" / family / args.dataset
+    log_dir = Path(args.log_dir) if args.log_dir else THIS_DIR / "logs" / family / args.dataset
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
+    geometry_gen = make_generator(device, args.seed + 404)
+    diffusion_gen = torch.Generator(device="cpu").manual_seed(args.seed + 15485863)
+    start_epoch, best_psnr, bad_validations = 0, -float("inf"), 0
+
+    if args.resume:
+        state = load_checkpoint(args.resume, model, args, expected_stage=stage, optimizer=optimizer)
+        start_epoch = int(state["epoch"]) + 1
+        best_psnr = float(state["best_psnr"])
+        bad_validations = int(state.get("bad_validations", 0))
+        _restore_rng(state["rng"], geometry_gen, diffusion_gen)
+    elif stage == "mixed":
+        init_path = args.init_checkpoint or str(THIS_DIR / "checkpoints" / "physical" / args.dataset / "best.pth.tar")
+        state = load_checkpoint(init_path, model, args, expected_stage="registered")
+        # Only model weights transfer between stages; AdamW state is new.
+        print(f"Loaded registered PSRF-DiffNet weights; reinitialized AdamW: {init_path}")
+
+    protocol = {
+        "method": "PSRF-DiffNet",
+        "architecture_id": ARCHITECTURE_ID,
+        "dataset": args.dataset,
+        "hsi_channels": model.hsi_channels,
+        "msi_channels": model.msi_channels,
+        "scale_ratio": args.scale_ratio,
+        "degradation_mode": args.degradation_mode,
+        "train_patch": args.patch_size,
+        "train_stride": args.stride,
+        "validation_interval": args.validation_interval,
+        "validation_cases": args.validation_cases,
+        "monitor": "registered_PSNR" if stage == "registered" else "warp_PSNR",
+        "optimizer": "AdamW",
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "stage": stage,
+        "registered_probability": 1.0 if stage == "registered" else args.registered_probability,
+        "arguments": vars(args),
+    }
+    (checkpoint_dir / "run_protocol.txt").write_text(json.dumps(protocol, indent=2), encoding="utf-8")
+    print(json.dumps(protocol, indent=2), flush=True)
+
+    history = log_dir / "validation_history.csv"
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(
-        f"PSRF-DiffNet: dataset={args.dataset}, HSI={info['n_bands']}, "
-        f"MSI={info['n_select_bands']}, scale={args.scale_ratio}x, params={params:,}"
-    )
-    print("autograd-safe ReLU patch: enabled")
-    print(
-        f"degradation={args.degradation_mode}; train misalignment={args.train_misalignment_mode} "
-        f"translation<=±{args.translation_max_px:g}px rotation<=±{args.rotation_max_deg:g}deg "
-        f"local<={args.local_max_displacement_px:g}px"
-    )
+    print(f"PSRF-DiffNet: dataset={args.dataset}, HSI={model.hsi_channels}, MSI={model.msi_channels}, "
+          f"scale=x{args.scale_ratio}, params={params:,}, stage={stage}", flush=True)
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
-        loss_sum = 0.0
-        count = 0
-        shift_sum = 0.0
-        for batch in train_loader:
+        loss_sum, count, identities = 0.0, 0, 0
+        progress = tqdm(
+            train_loader, desc=f"PSRF-DiffNet {stage} {epoch + 1}/{args.epochs}",
+            dynamic_ncols=True, mininterval=1.0,
+        )
+        for batch in progress:
             gt = batch["gt"].to(device, non_blocking=True)
-            lr_hsi = batch["lr_hsi"].to(device, non_blocking=True)
-            hr_msi = batch["hr_msi"].to(device, non_blocking=True)
-            warped_msi, _, mis = warp_msi_for_protocol(
-                hr_msi,
-                mode=args.train_misalignment_mode,
-                translation_max_px=args.translation_max_px,
-                rotation_max_deg=args.rotation_max_deg,
-                local_max_displacement_px=args.local_max_displacement_px,
-                control_grid_size=args.control_grid_size,
-                generator=train_warp_gen,
-            )
+            msi = batch["hr_msi"].to(device, non_blocking=True)
+            with torch.no_grad():
+                lr_hsi, identity_count = deformed_observation(
+                    gt, p0, args, geometry_gen, mixed=(stage == "mixed")
+                )
             optimizer.zero_grad(set_to_none=True)
-            out = model(gt, lr_hsi, warped_msi, generator=train_diff_gen)
+            out = model(gt, lr_hsi, msi, generator=diffusion_gen)
+            if not bool(torch.isfinite(out.loss)):
+                raise FloatingPointError(f"PSRF-DiffNet nonfinite loss at epoch {epoch + 1}")
             out.loss.backward()
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
-
             bs = int(gt.shape[0])
-            loss_sum += float(out.loss.item()) * bs
             count += bs
-            magnitude = torch.sqrt(mis.dx_px.square() + mis.dy_px.square()).mean().item()
-            shift_sum += float(magnitude) * bs
-
-        print(
-            f"Epoch {epoch + 1:03d}/{args.epochs} "
-            f"loss={loss_sum / max(count, 1):.6f} "
-            f"mean_train_shift={shift_sum / max(count, 1):.3f}px"
-        )
-
-        do_eval = (epoch + 1) % validation_interval == 0 or epoch + 1 == args.epochs
-        if do_eval:
-            val = validate(model, val_loader, device, args)
-            print(
-                f"  valid: PSNR={val['PSNR_valid']:.4f} SAM={val['SAM_valid']:.4f} "
-                f"full_PSNR={val['PSNR']:.4f} valid_fraction={val['valid_fraction']:.4f}"
+            identities += identity_count
+            loss_sum += float(out.loss.item()) * bs
+            progress.set_postfix(
+                l1=f"{loss_sum / max(count, 1):.6f}",
+                identity=f"{identities / max(count, 1):.3f}",
+                refresh=False,
             )
-            improved = val["PSNR_valid"] > best_psnr + args.early_stop_min_delta
+
+        mean_loss = loss_sum / max(count, 1)
+        identity_fraction = identities / max(count, 1)
+        print(f"PSRF-DiffNet {stage} {epoch + 1}/{args.epochs} "
+              f"loss={mean_loss:.6f} identity={identity_fraction:.3f}", flush=True)
+
+        do_eval = (epoch + 1) % args.validation_interval == 0 or epoch + 1 == args.epochs
+        if do_eval:
+            reg, warp = evaluate(model, val_loader, device, p0, args)
+            monitored = warp if stage == "mixed" else reg
+            score = float(monitored["PSNR"])
+            improved = score > best_psnr + args.early_stop_min_delta
             if improved:
-                best_psnr = float(val["PSNR_valid"])
-                bad_validations = 0
-                torch.save(
-                    checkpoint_payload(model, optimizer, epoch, best_psnr, args),
-                    os.path.join(args.checkpoint_dir, "best.pth.tar"),
-                )
-                print(f"  saved best checkpoint: PSNR_valid={best_psnr:.4f}")
+                best_psnr, bad_validations = score, 0
             else:
                 bad_validations += 1
-                print(f"  no significant improvement: {bad_validations}/{args.early_stop_patience}")
-                if bad_validations >= args.early_stop_patience:
-                    print("Early stopping triggered by validation PSNR.")
-                    torch.save(
-                        checkpoint_payload(model, optimizer, epoch, best_psnr, args),
-                        os.path.join(args.checkpoint_dir, "last.pth.tar"),
-                    )
-                    break
+            row = {
+                "epoch": epoch + 1,
+                "train_l1": mean_loss,
+                "identity_fraction": identity_fraction,
+                **{f"reg_{k}": v for k, v in reg.items()},
+                **{f"warp_{k}": v for k, v in warp.items()},
+                "monitored_PSNR": score,
+                "best_PSNR": best_psnr,
+            }
+            with history.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(row))
+                if handle.tell() == 0:
+                    writer.writeheader()
+                writer.writerow(row)
+            print(f"VALIDATION {row}", flush=True)
+            if improved:
+                torch.save(
+                    checkpoint_payload(model, optimizer, epoch, best_psnr, bad_validations,
+                                       args, geometry_gen, diffusion_gen),
+                    checkpoint_dir / "best.pth.tar",
+                )
+            if args.early_stop_patience > 0 and bad_validations >= args.early_stop_patience:
+                print("Validation early stopping", flush=True)
+                torch.save(
+                    checkpoint_payload(model, optimizer, epoch, best_psnr, bad_validations,
+                                       args, geometry_gen, diffusion_gen),
+                    checkpoint_dir / "last.pth.tar",
+                )
+                break
 
         if (epoch + 1) % args.save_interval == 0 or epoch + 1 == args.epochs:
             torch.save(
-                checkpoint_payload(model, optimizer, epoch, best_psnr, args),
-                os.path.join(args.checkpoint_dir, "last.pth.tar"),
+                checkpoint_payload(model, optimizer, epoch, best_psnr, bad_validations,
+                                   args, geometry_gen, diffusion_gen),
+                checkpoint_dir / "last.pth.tar",
             )
 
 
