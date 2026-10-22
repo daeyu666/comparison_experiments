@@ -39,8 +39,8 @@ The root `experiment_protocol.py` defines the formal registered/mixed stages sha
 - Validation/test image size: 128x128, using the repository's fixed splits.
 - LR-HSI: shared physical degradation (`mtf_nyquist=0.2`, `psf_truncate=3.0`).
 - HR-MSI: the dataset's configured sensor SRF; this does not change between stages.
-- Stage 1, registered: (Y_H=P_0(X)), (Y_M=R_0(X)), target (X).
-- Stage 2, mixed: 10% exact identity samples and 90% deformed HSI observations (Y_H=P_0(W_\phi(X))); HR-MSI remains in the reliable coordinate system.
+- Stage 1, registered: `Y_H = P0(X)`, `Y_M = R0(X)`, target `X`.
+- Stage 2, mixed: 10% exact identity samples and 90% deformed HSI observations `Y_H = P0(W_phi(X))`; HR-MSI remains in the reliable coordinate system.
 - Geometry: translation bounds ±4 HR pixels per axis, rotation bounds ±2 degrees, 5x5 B-spline control grid, local displacement up to 4 HR pixels, minimum local Jacobian 0.5.
 - Optimizer: AdamW, learning rate 1e-5, weight decay 5e-5, batch size 1.
 - Epoch budget: 800 registered + 600 mixed.
