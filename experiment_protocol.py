@@ -121,6 +121,15 @@ _ADAPTERS = {
         real_train="",
         real_infer="",
     ),
+    "moe-pnp": ModelAdapter(
+        canonical="MoE-PNP",
+        folder="MoE-PNP",
+        registered_train="comparison/MoE-PNP/train.py",
+        mixed_train="comparison/MoE-PNP/train_hsi_deformed.py",
+        test_script="comparison/MoE-PNP/test_hsi_deformed.py",
+        real_train="",
+        real_infer="",
+    ),
 }
 _ALIASES = {
     "drt": "drtnet",
@@ -135,6 +144,8 @@ _ALIASES = {
     "psrf": "psrf-diffnet",
     "psrf_diffnet": "psrf-diffnet",
     "psrf-diffnet": "psrf-diffnet",
+    "moe-pnp": "moe-pnp",
+    "moepnp": "moe-pnp",
 }
 
 
