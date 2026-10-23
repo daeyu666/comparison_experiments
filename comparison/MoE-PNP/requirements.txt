@@ -1,0 +1,6 @@
+# Use the versions installed for the comparison_experiments root environment.
+torch
+torchvision
+numpy
+scipy
+tqdm
