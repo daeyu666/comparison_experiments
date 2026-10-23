@@ -134,7 +134,7 @@ class R_Block(nn.Module):
     """Spectral response operator R: HSI bands -> MSI channels."""
     def __init__(self, in_c, out_c):
         super().__init__()
-        self.conv = nn.Conv2d(in_c, out_c, kernel_size=1, stride=1)
+        self.conv = nn.Sequential(nn.Conv2d(in_c, out_c, kernel_size=1, stride=1))
 
     def forward(self, x):
         return self.conv(x)
@@ -143,7 +143,7 @@ class R_T_Block(nn.Module):
     """Learned spectral lifting operator R^T: MSI channels -> HSI bands."""
     def __init__(self, in_c, out_c):
         super().__init__()
-        self.conv = nn.Conv2d(in_c, out_c, kernel_size=1, stride=1)
+        self.conv = nn.Sequential(nn.Conv2d(in_c, out_c, kernel_size=1, stride=1))
 
     def forward(self, x):
         return self.conv(x)
@@ -736,25 +736,31 @@ class Main(nn.Module):
 
 
 
-class MoEPNP(nn.Module):
+class MoEPNP(Main):
     """Protocol adapter around the original two-stage MoE-PNP core.
 
-    Public benchmark API: model(lr_hsi, hr_msi) -> hr_hsi.
-    The original core keeps its paper order: core(hr_msi, lr_hsi).
+    Inherit Main directly so the upstream parameter/module names remain as close
+    as possible to the official model. Public API: model(lr_hsi, hr_msi)->hr_hsi.
     """
     architecture_id = "moe_pnp_dynamic_io_v1"
     upstream_commit = "c4bb4ca02d3583c929cff0096579b58bb3504e9f"
 
     def __init__(self, hsi_channels, msi_channels, scale_ratio=4, image_size=128, args=None):
-        super().__init__()
         if int(scale_ratio) != 4:
             raise ValueError("MoE-PNP core has two x2 reconstruction stages and supports x4 only")
         if int(hsi_channels) < 1 or int(msi_channels) < 1:
             raise ValueError("HSI/MSI channel counts must be positive")
-        self.hsi_channels = int(hsi_channels)
-        self.msi_channels = int(msi_channels)
+        resolved_hsi_channels = int(hsi_channels)
+        resolved_msi_channels = int(msi_channels)
+        super().__init__(
+            max(1, int(image_size) // 2),
+            resolved_hsi_channels,
+            args,
+            msi_channels=resolved_msi_channels,
+        )
+        self.hsi_channels = resolved_hsi_channels
+        self.msi_channels = resolved_msi_channels
         self.scale_ratio = int(scale_ratio)
-        self.core = Main(max(1, int(image_size) // 2), self.hsi_channels, args, msi_channels=self.msi_channels)
 
     def forward_full(self, lr_hsi, hr_msi):
         if lr_hsi.ndim != 4 or hr_msi.ndim != 4:
@@ -767,7 +773,7 @@ class MoEPNP(nn.Module):
         expected_size = (lr_hsi.shape[-2] * 4, lr_hsi.shape[-1] * 4)
         if hr_msi.shape[-2:] != expected_size:
             raise ValueError(f"MoE-PNP expects a 4x HR-MSI/LR-HSI spatial scale ratio, got {hr_msi.shape[-2:]} vs {expected_size}")
-        return self.core(hr_msi, lr_hsi)
+        return super().forward(hr_msi, lr_hsi)
 
     def forward(self, lr_hsi, hr_msi):
         return self.forward_full(lr_hsi, hr_msi)[0]
