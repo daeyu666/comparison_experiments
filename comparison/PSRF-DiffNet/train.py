@@ -47,7 +47,7 @@ from autograd_safe import make_autograd_safe  # noqa: E402
 from diffusion import PSRFDiffusion  # noqa: E402
 
 
-ARCHITECTURE_ID = "PSRF-DiffNet-official-active-path-v4"
+ARCHITECTURE_ID = "PSRF-DiffNet-official-active-path-v5"
 DATASETS = ["PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"]
 
 
@@ -62,8 +62,8 @@ def parser(stage: str = "registered"):
     p.add_argument("--epochs", type=int, default=800 if stage == "registered" else 600)
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--num_workers", type=int, default=0)
-    p.add_argument("--lr", type=float, default=1e-5)
-    p.add_argument("--weight_decay", type=float, default=5e-5)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=1001 if stage == "registered" else 10)
     p.add_argument("--validation_interval", type=int, default=None)
     p.add_argument("--validation_cases", type=int, default=5)
@@ -258,7 +258,7 @@ def main(stage: str = "registered"):
         require_srf_weights(info).detach().cpu().numpy().tobytes()
     ).hexdigest()
     make_autograd_safe(model)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     family = "physical" if stage == "registered" else "hsi_warp_final"
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else THIS_DIR / "checkpoints" / family / args.dataset
@@ -295,7 +295,7 @@ def main(stage: str = "registered"):
         "validation_interval": args.validation_interval,
         "validation_cases": args.validation_cases,
         "monitor": "registered_PSNR" if stage == "registered" else "warp_PSNR",
-        "optimizer": "AdamW",
+        "optimizer": "Adam",
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "stage": stage,
