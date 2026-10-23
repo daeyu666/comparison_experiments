@@ -7,6 +7,9 @@ The model-driven registration/fusion/denoising sequence is retained. Adaptations
 are limited to dynamic HSI/MSI channel counts, runtime-sized spatial transform
 matrices, device-aware resampling, and the shared (LR-HSI, HR-MSI) API wrapper.
 """
+
+UPSTREAM_COMMIT = "c4bb4ca02d3583c929cff0096579b58bb3504e9f"
+
 import torch
 import torch.nn as nn
 import numpy as np
