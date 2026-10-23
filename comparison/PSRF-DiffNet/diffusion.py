@@ -233,7 +233,11 @@ class PSRFDiffusion(nn.Module):
             raise ValueError("sample_steps must be >= 1")
         sample_steps = min(int(sample_steps), self.n_timestep)
         b = lr_hsi.shape[0]
-        x = torch.rand(
+        # DDIM assumes the terminal state follows the Gaussian noise prior used
+        # by the forward diffusion process. Uniform [0, 1] initialization is
+        # the released script's literal behavior, but is inconsistent with
+        # q(x_t | x_0) and causes a severe train/inference distribution shift.
+        x = torch.randn(
             b,
             self.hsi_channels,
             self.patch_size,
