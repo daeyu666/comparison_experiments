@@ -233,11 +233,19 @@ class PSRFDiffusion(nn.Module):
             raise ValueError("sample_steps must be >= 1")
         sample_steps = min(int(sample_steps), self.n_timestep)
         b = lr_hsi.shape[0]
-        # DDIM assumes the terminal state follows the Gaussian noise prior used
-        # by the forward diffusion process. Uniform [0, 1] initialization is
-        # the released script's literal behavior, but is inconsistent with
-        # q(x_t | x_0) and causes a severe train/inference distribution shift.
-        x = torch.randn(
+        # Match the conditioning path used by training: estimate the affine
+        # transform from LR-HSI/MSI and warp the upsampled LR-HSI condition
+        # once. The released wrapper instead applies CRN to x_t at inference,
+        # although training applies CRN to upsampled LR-HSI.
+        prepared = self._prepare_conditions(lr_hsi, hr_msi, warp_lr_up=True)
+        lr_reg = prepared[0]
+
+        # With the retained official beta schedule (T=2000, beta_end=0.002),
+        # alpha_bar_T is about 0.12 rather than approximately zero. Pure
+        # Gaussian initialization therefore does not match the terminal
+        # forward-process marginal. Use registered LR-HSI as an x0 proxy and
+        # add the corresponding Gaussian noise to approximate q(x_T | x_0).
+        noise = torch.randn(
             b,
             self.hsi_channels,
             self.patch_size,
@@ -246,8 +254,8 @@ class PSRFDiffusion(nn.Module):
             device="cpu",
             dtype=torch.float32,
         ).to(lr_hsi.device, dtype=lr_hsi.dtype)
-
-        prepared = self._prepare_conditions(lr_hsi, hr_msi, warp_lr_up=False)
+        alpha_terminal = self.alpha_bar[-1].to(dtype=lr_hsi.dtype)
+        x = alpha_terminal.sqrt() * lr_reg + (1.0 - alpha_terminal).sqrt() * noise
         times = torch.linspace(
             self.n_timestep - 1,
             0,
@@ -260,7 +268,7 @@ class PSRFDiffusion(nn.Module):
         for i, t_scalar in enumerate(times):
             t_value = int(t_scalar.item())
             pred_x0, last_theta, last_offset = self.predict_x0(
-                x, lr_hsi, hr_msi, prepared=prepared, warp_state=True
+                x, lr_hsi, hr_msi, prepared=prepared, warp_state=False
             )
             if clamp:
                 pred_x0 = pred_x0.clamp(0.0, 1.0)
