@@ -24,12 +24,12 @@ Engineering corrections that intentionally differ from the released script:
 
 - Removes hard-coded `cuda:1`, 102-HSI-band, 4-MSI-band and 160x160 assumptions.
 - Keeps CRN conditioning consistent between training and inference: estimates the affine transform from the LR-HSI/MSI observations, warps the upsampled LR-HSI condition once, and reuses that registered condition throughout reverse diffusion. The released wrapper applies CRN to the current diffusion state at inference even though training applies it to upsampled LR-HSI; this adapter corrects that train/inference mismatch.
-- Converts FRN's discrete local pixel displacement to a normalized sampling grid and uses explicit `(dx,dy)` ordering rather than passing raw offsets as absolute `grid_sample` coordinates.
+- Converts FRN's discrete local pixel displacement to a normalized sampling grid. The FRN patch tensors preserve the source implementation's channel-major 9-neighbour layout, and candidate indices are decoded consistently with its column-major 3x3 candidate order.
 - Uses a deterministic DDIM jump relation for accelerated evaluation and correctly feeds each reconstructed state into the next reverse step.
 - The retained 2000-step linear schedule with `beta_end=0.002` has terminal `alpha_bar` around 0.12, so the terminal state is not close to pure Gaussian noise. Sampling initializes from the registered upsampled LR-HSI mixed with the schedule-consistent Gaussian component, using LR-HSI as an estimate of the unknown clean image.
 - Uses the repository's shared sensor SRFs, physical degradation operators, data splits and metric functions.
 
-These changes mean the model is architecture-aligned for controlled comparison, not bit-for-bit identical to the original implementation. The CRN/FRN QKV projections now use the source implementation's bias-free linear layers; **all earlier PSRF checkpoints must be retrained**. New checkpoints record architecture ID `PSRF-DiffNet-official-active-path-v4`.
+These changes mean the model is architecture-aligned for controlled comparison, not bit-for-bit identical to the original implementation. The CRN/FRN QKV projections use the source implementation's bias-free linear layers. The FRN neighbourhood channel ordering and displacement decoding were corrected to match the source tensor layout; **checkpoints trained before this correction must be retrained from scratch**. New checkpoints record architecture ID `PSRF-DiffNet-official-active-path-v5`.
 
 ## Unified synthetic comparison protocol
 
@@ -43,7 +43,7 @@ The root `experiment_protocol.py` defines the formal registered/mixed stages sha
 - Stage 1, registered: `Y_H = P0(X)`, `Y_M = R0(X)`, target `X`.
 - Stage 2, mixed: 10% exact identity samples and 90% deformed HSI observations `Y_H = P0(W_phi(X))`; HR-MSI remains in the reliable coordinate system.
 - Geometry: translation bounds ±4 HR pixels per axis, rotation bounds ±2 degrees, 5x5 B-spline control grid, local displacement up to 4 HR pixels, minimum local Jacobian 0.5.
-- Optimizer: AdamW, learning rate 1e-5, weight decay 5e-5, batch size 1.
+- Optimizer: Adam, learning rate 1e-4, weight decay 0, batch size 1. The optimizer follows the released PSRF-DiffNet training entry point; data splits, degradations, patch geometry and validation cadence remain shared with the comparison suite.
 - Epoch budget: 800 registered + 600 mixed.
 - Validation interval: dataset-aware values from `DATASET_VALIDATION_INTERVAL`; monitor registered PSNR in stage 1 and deformed-observation PSNR in stage 2.
 - Diffusion: 2000 training timesteps; validation/main-table inference uses 50 DDIM steps by default.
