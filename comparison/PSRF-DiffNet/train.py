@@ -1,9 +1,9 @@
 """PSRF-DiffNet training adapter for the shared comparison protocol.
 
 The active released path is CRN -> FRN -> complementary fusion inside an
-x0-prediction diffusion wrapper. Registered and mixed stages intentionally use
-the same data split, physical degradation, optimizer family, and validation
-schedule as EMR-Diff and CLSNet.
+x0-prediction diffusion wrapper. Registered and mixed stages use the shared
+data split, physical degradation and validation schedule; PSRF optimization
+follows the released training entry point (Adam, learning rate 1e-4).
 """
 from __future__ import annotations
 
