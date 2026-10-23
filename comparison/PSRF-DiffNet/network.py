@@ -135,13 +135,18 @@ def _neighborhood_stack(x: torch.Tensor) -> torch.Tensor:
     if x.ndim != 4:
         raise ValueError("expected BxCxHxW")
     p = F.pad(x, (2, 2, 2, 2))
+    # Preserve the released implementation's channel-major layout:
+    # [band_0's 9 neighbours, band_1's 9 neighbours, ...].
+    # Concatenating each offset across all bands would instead produce an
+    # offset-major layout and silently permute the FRN embedding inputs.
     offsets = (
         (1, 1), (2, 1), (3, 1),
         (1, 2), (2, 2), (3, 2),
         (1, 3), (2, 3), (3, 3),
     )
     h, w = x.shape[-2:]
-    return torch.cat([p[:, :, oy:oy+h, ox:ox+w] for oy, ox in offsets], dim=1)
+    patches = [p[:, :, oy:oy+h, ox:ox+w] for oy, ox in offsets]
+    return torch.stack(patches, dim=2).reshape(x.shape[0], x.shape[1] * 9, h, w)
 
 
 def build_registration_patches(
@@ -188,11 +193,13 @@ class FineRegistrationAttention(nn.Module):
         k = self.qkv_msi(msi_candidates).reshape(b, h * w, 9, 3, c)[..., 1, :]
         score = (q.unsqueeze(-1) * k.permute(0, 1, 3, 2)).sum(dim=2) * self.scale
         index = score.softmax(dim=-1).argmax(dim=-1)
-        # The released implementation swaps row/column offsets and feeds
-        # pixel offsets directly to grid_sample. Keep the 3x3 hard matching,
-        # but use explicit (dx,dy) ordering and a normalized sampling grid.
-        dx = index.remainder(3).float() - 1.0
-        dy = torch.div(index, 3, rounding_mode="floor").float() - 1.0
+        # Candidate tensors are ordered column-major: indices 0..2 are the
+        # three vertical candidates in the left column, 3..5 the middle
+        # column, and 6..8 the right column. Decode x from the group index
+        # and y from the within-group index, then build an explicit (dx,dy)
+        # normalized sampling grid.
+        dx = torch.div(index, 3, rounding_mode="floor").float() - 1.0
+        dy = index.remainder(3).float() - 1.0
         return torch.stack((dx, dy), dim=-1).view(b, h, w, 2)
 
 
