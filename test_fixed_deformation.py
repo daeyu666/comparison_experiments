@@ -152,9 +152,27 @@ def _psrf(args):
     return test_set, predict, p0.degrade, device, details
 
 
+
+def _moepnp(args):
+    evaluator = _load_evaluator("MoE-PNP")
+    test_set, model, degradation, device, checkpoint = evaluator.build_test_components(
+        args, expected_stage=args.mode
+    )
+    details = {
+        "checkpoint_epoch": checkpoint.get("epoch"),
+        "training_stage": checkpoint.get("training_stage"),
+        "architecture_id": checkpoint.get("architecture_id"),
+        "hsi_channels": checkpoint.get("hsi_channels"),
+        "msi_channels": checkpoint.get("msi_channels"),
+        "sensor_fingerprint": checkpoint.get("sensor_fingerprint"),
+        "registered_probability": checkpoint.get("registered_probability"),
+    }
+    return test_set, model, degradation.degrade, device, details
+
+
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "MoE-PNP": _moepnp}
 
 
 def parse_args(argv=None):
