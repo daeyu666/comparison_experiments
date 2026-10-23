@@ -24,12 +24,12 @@ Engineering corrections that intentionally differ from the released script:
 
 - Removes hard-coded `cuda:1`, 102-HSI-band, 4-MSI-band and 160x160 assumptions.
 - Keeps CRN conditioning consistent between training and inference: estimates the affine transform from the LR-HSI/MSI observations, warps the upsampled LR-HSI condition once, and reuses that registered condition throughout reverse diffusion. The released wrapper applies CRN to the current diffusion state at inference even though training applies it to upsampled LR-HSI; this adapter corrects that train/inference mismatch.
-- Converts FRN's discrete local pixel displacement to a normalized sampling grid. The FRN patch tensors preserve the source implementation's channel-major 9-neighbour layout, and candidate indices are decoded consistently with its column-major 3x3 candidate order.
+- Converts FRN's discrete local pixel displacement to a normalized sampling grid. The FRN patch tensors preserve the source implementation's channel-major 9-neighbour layout, and candidate indices are decoded consistently with its column-major 3x3 candidate order. The source uses a hard `argmax` for displacement selection, which blocks gradients to the FRN matching embeddings; this adapter uses a soft-argmax over the same nine candidates so the registration branch can be optimized end-to-end.
 - Uses a deterministic DDIM jump relation for accelerated evaluation and correctly feeds each reconstructed state into the next reverse step.
 - The retained 2000-step linear schedule with `beta_end=0.002` has terminal `alpha_bar` around 0.12, so the terminal state is not close to pure Gaussian noise. Sampling initializes from the registered upsampled LR-HSI mixed with the schedule-consistent Gaussian component, using LR-HSI as an estimate of the unknown clean image.
 - Uses the repository's shared sensor SRFs, physical degradation operators, data splits and metric functions.
 
-These changes mean the model is architecture-aligned for controlled comparison, not bit-for-bit identical to the original implementation. The CRN/FRN QKV projections use the source implementation's bias-free linear layers. The FRN neighbourhood channel ordering and displacement decoding were corrected to match the source tensor layout; **checkpoints trained before this correction must be retrained from scratch**. New checkpoints record architecture ID `PSRF-DiffNet-official-active-path-v5`.
+These changes mean the model is architecture-aligned for controlled comparison, not bit-for-bit identical to the original implementation. The CRN/FRN QKV projections use the source implementation's bias-free linear layers. The FRN neighbourhood channel ordering and displacement decoding were corrected to match the source tensor layout; **checkpoints trained before these corrections must be retrained from scratch**. New checkpoints record architecture ID `PSRF-DiffNet-official-active-path-v6`.
 
 ## Unified synthetic comparison protocol
 
