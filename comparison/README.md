@@ -216,7 +216,7 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 
 ## MoE-PNP adapter
 
-\`MoE-PNP/\` 接入官方 registration-fusion consistency 主干与双尺度 L1、局部 NCC、
+`MoE-PNP/` 接入官方 registration-fusion consistency 主干与双尺度 L1、局部 NCC、
 形变平滑损失；支持共享 synthetic x4 六数据集、registered/mixed 两阶段训练、
 统一主表测试与固定形变测试。输入通道和空间变换矩阵已动态化；暂不支持真实世界
 Augsburg Wald x3 训练/推理。
