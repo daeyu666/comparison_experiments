@@ -192,14 +192,18 @@ class FineRegistrationAttention(nn.Module):
         q = self.qkv_hsi(hsi_tokens).reshape(b, h * w, 3, c)[..., 0, :]
         k = self.qkv_msi(msi_candidates).reshape(b, h * w, 9, 3, c)[..., 1, :]
         score = (q.unsqueeze(-1) * k.permute(0, 1, 3, 2)).sum(dim=2) * self.scale
-        index = score.softmax(dim=-1).argmax(dim=-1)
         # Candidate tensors are ordered column-major: indices 0..2 are the
         # three vertical candidates in the left column, 3..5 the middle
-        # column, and 6..8 the right column. Decode x from the group index
-        # and y from the within-group index, then build an explicit (dx,dy)
-        # normalized sampling grid.
-        dx = torch.div(index, 3, rounding_mode="floor").float() - 1.0
-        dy = index.remainder(3).float() - 1.0
+        # column, and 6..8 the right column. The released implementation uses
+        # argmax here, which disconnects the FRN Q/K embeddings from the fusion
+        # loss. A soft-argmax preserves the same 3x3 candidate set and (dx,dy)
+        # semantics while allowing end-to-end gradients through local matching.
+        prob = score.softmax(dim=-1)
+        candidate_index = torch.arange(9, device=score.device, dtype=score.dtype)
+        candidate_dx = torch.div(candidate_index, 3, rounding_mode="floor") - 1.0
+        candidate_dy = candidate_index.remainder(3) - 1.0
+        dx = torch.sum(prob * candidate_dx.view(1, 1, 9), dim=-1)
+        dy = torch.sum(prob * candidate_dy.view(1, 1, 9), dim=-1)
         return torch.stack((dx, dy), dim=-1).view(b, h, w, 2)
 
 
