@@ -236,6 +236,13 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     if epochs is not None and epochs < 1:
         raise ValueError("--epochs must be >=1")
     total_epochs = epochs if epochs is not None else (REGISTERED_EPOCHS if mode == "registered" else MIXED_EPOCHS)
+    # Preserve method-specific optimization settings where the released paper
+    # differs from the common comparison defaults. PSRF-DiffNet uses Adam at
+    # 1e-4 with no weight decay in its released training entry point.
+    if adapter.canonical == "PSRF-DiffNet":
+        optimizer_lr, optimizer_weight_decay = 1e-4, 0.0
+    else:
+        optimizer_lr, optimizer_weight_decay = LR, WEIGHT_DECAY
     resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels)
 
     script = adapter.registered_train if mode == "registered" else adapter.mixed_train
@@ -254,8 +261,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--train_misalignment_mode", "registered",
             "--epochs", str(total_epochs),
             "--batch_size", str(resolved_batch),
-            "--lr", str(LR),
-            "--weight_decay", str(WEIGHT_DECAY),
+            "--lr", str(optimizer_lr),
+            "--weight_decay", str(optimizer_weight_decay),
             "--seed", str(REGISTERED_SEED),
             "--device", device,
             "--validation_interval", str(DATASET_VALIDATION_INTERVAL[dataset]),
@@ -295,8 +302,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         "--registered_probability", str(IDENTITY_PROBABILITY),
         "--epochs", str(total_epochs),
         "--batch_size", str(resolved_batch),
-        "--lr", str(LR),
-        "--weight_decay", str(WEIGHT_DECAY),
+        "--lr", str(optimizer_lr),
+        "--weight_decay", str(optimizer_weight_decay),
         "--seed", str(MIXED_SEED),
         "--device", device,
         "--validation_interval", str(DATASET_VALIDATION_INTERVAL[dataset]),
