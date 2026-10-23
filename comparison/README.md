@@ -32,6 +32,11 @@ comparison/
 │   ├── checkpoints/
 │   ├── logs/
 │   └── outputs/
+├── MoE-PNP/
+│   ├── ... source code ...
+│   ├── checkpoints/
+│   ├── logs/
+│   └── outputs/
 └── <OtherMethod>/
     ├── ... source code ...
     ├── checkpoints/
@@ -208,3 +213,10 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 - `HSIFN/`：保留此前复现实验用于追溯。其官方多级 FlowNet / QRNN3D 结构在共享 64x64 train patch 下会逐级压缩到极小空间尺度，registered sanity 长期停留在约 31 dB，不作为当前正式对比结果。
 - `PRFCoAM/`：保留此前复现实验用于追溯。已完成 Torch-2.6/cu124 Mamba 后端兼容，但其官方配准方向为 LR-HSI -> HR-MSI，且共享协议下 registered 基础融合能力明显低于 S2Diff（physical 约 36.9 dB；gaussian-bicubic 最佳约 39.1 dB），不作为当前首选正式对比方法。
 - `PSRF-DiffNet/`：已将 CRN、FRN、互补融合及扩散 x0 预测的活动执行路径对齐官方实现，并接入统一 registered/mixed 训练、checkpoint、主表多 seed 测试和六个 synthetic 数据集。架构对齐后需重新训练，旧 checkpoint 不兼容；当前尚未实现真实世界 Augsburg Wald adapter。
+
+## MoE-PNP adapter
+
+\`MoE-PNP/\` 接入官方 registration-fusion consistency 主干与双尺度 L1、局部 NCC、
+形变平滑损失；支持共享 synthetic x4 六数据集、registered/mixed 两阶段训练、
+统一主表测试与固定形变测试。输入通道和空间变换矩阵已动态化；暂不支持真实世界
+Augsburg Wald x3 训练/推理。
