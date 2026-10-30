@@ -37,6 +37,11 @@ comparison/
 │   ├── checkpoints/
 │   ├── logs/
 │   └── outputs/
+├── M2DTN/
+│   ├── ... source code ...
+│   ├── checkpoints/
+│   ├── logs/
+│   └── outputs/
 └── <OtherMethod>/
     ├── ... source code ...
     ├── checkpoints/
@@ -220,3 +225,12 @@ comparison/<Method>/outputs/<degradation_mode>/<Dataset>/
 形变平滑损失；支持共享 synthetic x4 六数据集、registered/mixed 两阶段训练、
 统一主表测试与固定形变测试。输入通道和空间变换矩阵已动态化；暂不支持真实世界
 Augsburg Wald x3 训练/推理。
+
+## M2DTN adapter
+
+`M2DTN/` 基于 AAAI 2024 官方实现接入 MMRD、四尺度 transformer 特征提取与
+CSFA 重建主线；采用统一 synthetic x4 六数据集、registered/mixed 两阶段协议、
+公共 SRF/physical degradation、dataset-aware validation 与主表多 seed 测试。
+官方固定 cuda:0 的重采样已改为运行时设备；官方默认4头与102/31波段不可整除的
+冲突采用不超过4的最大可整除头数修正，并写入checkpoint元数据。
+真实 Augsburg Wald x3 暂不接入，以避免改变其四尺度 x4 拓扑。
