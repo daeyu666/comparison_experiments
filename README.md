@@ -22,6 +22,8 @@ EMR-Diff
 CLSNet
 DRTNet
 PSRF-DiffNet
+MoE-PNP
+M2DTN
 ```
 
 模型名大小写不敏感，并支持 `EMR` / `EMRDiff` 等常用别名。
