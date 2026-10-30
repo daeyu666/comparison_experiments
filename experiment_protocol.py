@@ -130,6 +130,15 @@ _ADAPTERS = {
         real_train="",
         real_infer="",
     ),
+    "m2dtn": ModelAdapter(
+        canonical="M2DTN",
+        folder="M2DTN",
+        registered_train="comparison/M2DTN/train.py",
+        mixed_train="comparison/M2DTN/train_hsi_deformed.py",
+        test_script="comparison/M2DTN/test_hsi_deformed.py",
+        real_train="",
+        real_infer="",
+    ),
 }
 _ALIASES = {
     "drt": "drtnet",
@@ -146,6 +155,8 @@ _ALIASES = {
     "psrf-diffnet": "psrf-diffnet",
     "moe-pnp": "moe-pnp",
     "moepnp": "moe-pnp",
+    "m2dtn": "m2dtn",
+    "m2-dtn": "m2dtn",
 }
 
 
