@@ -252,6 +252,30 @@ class MSVT(nn.Module):
         return self.sample(self.encoder(img))
 
 
+class SafeBatchNorm2d(nn.BatchNorm2d):
+    """BatchNorm2d that safely handles a single value per channel.
+
+    In training mode, standard BatchNorm cannot estimate variance when
+    N*H*W == 1. In that degenerate case only, use the stored running
+    statistics while retaining gradients for affine parameters and inputs.
+    State-dict keys and tensor shapes remain identical to BatchNorm2d.
+    """
+    def forward(self, input):
+        values_per_channel = input.numel() // input.shape[1]
+        if self.training and values_per_channel == 1:
+            return F.batch_norm(
+                input,
+                self.running_mean,
+                self.running_var,
+                self.weight,
+                self.bias,
+                training=False,
+                momentum=0.0,
+                eps=self.eps,
+            )
+        return super().forward(input)
+
+
 class Registration(nn.Module):
     def contracting_block(self, in_channels, out_channels, kernel_size=3):
         """
@@ -259,11 +283,11 @@ class Registration(nn.Module):
         """
         block = torch.nn.Sequential(
             torch.nn.Conv2d(kernel_size=kernel_size, in_channels=in_channels, out_channels=out_channels, padding=1),
-            torch.nn.BatchNorm2d(out_channels),
+            SafeBatchNorm2d(out_channels),
             torch.nn.LeakyReLU(0.2),
             torch.nn.Conv2d(kernel_size=kernel_size, in_channels=out_channels, out_channels=out_channels,
                             padding=1),
-            torch.nn.BatchNorm2d(out_channels),
+            SafeBatchNorm2d(out_channels),
             torch.nn.LeakyReLU(0.2),
         )
         return block
@@ -274,14 +298,14 @@ class Registration(nn.Module):
         """
         block = torch.nn.Sequential(
             torch.nn.Conv2d(kernel_size=kernel_size, in_channels=in_channels, out_channels=mid_channel, padding=1),
-            torch.nn.BatchNorm2d(mid_channel),
+            SafeBatchNorm2d(mid_channel),
             torch.nn.LeakyReLU(0.2),
             torch.nn.Conv2d(kernel_size=kernel_size, in_channels=mid_channel, out_channels=mid_channel, padding=1),
-            torch.nn.BatchNorm2d(mid_channel),
+            SafeBatchNorm2d(mid_channel),
             torch.nn.LeakyReLU(0.2),
             torch.nn.ConvTranspose2d(in_channels=mid_channel, out_channels=out_channels, kernel_size=3, stride=2,
                                      padding=1, output_padding=1),
-            torch.nn.BatchNorm2d(out_channels),
+            SafeBatchNorm2d(out_channels),
             torch.nn.LeakyReLU(0.2),
         )
         return block
@@ -292,10 +316,10 @@ class Registration(nn.Module):
         """
         block = torch.nn.Sequential(
             torch.nn.Conv2d(kernel_size=kernel_size, in_channels=in_channels, out_channels=mid_channel, padding=1),
-            torch.nn.BatchNorm2d(mid_channel),
+            SafeBatchNorm2d(mid_channel),
             torch.nn.LeakyReLU(0.2),
             torch.nn.Conv2d(kernel_size=kernel_size, in_channels=mid_channel, out_channels=out_channels, padding=1),
-            torch.nn.BatchNorm2d(out_channels),
+            SafeBatchNorm2d(out_channels),
             torch.nn.LeakyReLU(0.2),
         )
         return block
@@ -313,14 +337,14 @@ class Registration(nn.Module):
         mid_channel = 128
         self.bottleneck = torch.nn.Sequential(
             torch.nn.Conv2d(kernel_size=3, in_channels=mid_channel, out_channels=mid_channel * 2, padding=1),
-            torch.nn.BatchNorm2d(mid_channel * 2),
+            SafeBatchNorm2d(mid_channel * 2),
             torch.nn.LeakyReLU(0.2),
             torch.nn.Conv2d(kernel_size=3, in_channels=mid_channel * 2, out_channels=mid_channel, padding=1),
-            torch.nn.BatchNorm2d(mid_channel),
+            SafeBatchNorm2d(mid_channel),
             torch.nn.LeakyReLU(0.2),
             torch.nn.ConvTranspose2d(in_channels=mid_channel, out_channels=mid_channel, kernel_size=3, stride=2,
                                      padding=1, output_padding=1),
-            torch.nn.BatchNorm2d(mid_channel),
+            SafeBatchNorm2d(mid_channel),
             torch.nn.LeakyReLU(0.2),
         )
         # Decode
