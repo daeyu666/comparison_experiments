@@ -425,6 +425,7 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
             *_shared_geometry_args(),
             "--registered_probability", str(IDENTITY_PROBABILITY),
             "--seed", str(MIXED_SEED),
+            "--geometry_seeds", *map(str, (TEST_GEOMETRY_SEEDS if geometry_seeds is None else geometry_seeds)),
             "--cases", str(cases),
             "--eval_seed", str(eval_seed),
             "--device", device,
