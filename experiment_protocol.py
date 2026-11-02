@@ -273,6 +273,9 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             raise ValueError("--epochs must be >=1")
         script = adapter.registered_train if mode == "registered" else adapter.mixed_train
         stage1 = checkpoint_path(adapter, dataset, "registered")
+        resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels)
+        if mode == "mixed" and not stage1.is_file() and resume_path is None:
+            raise FileNotFoundError(f"IR&ArF registered checkpoint required before mixed training: {stage1}")
         cmd = [
             sys.executable, str(ROOT / script),
             "--dataset", dataset,
@@ -295,11 +298,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--checkpoint_dir", str(checkpoint_dir(adapter, dataset, mode).relative_to(ROOT)),
             "--log_dir", str(log_dir(adapter, dataset, mode).relative_to(ROOT)),
         ]
-        if mode == "mixed":
-            if not stage1.is_file() and not (resume and resume != "auto"):
-                raise FileNotFoundError(f"IR&ArF registered checkpoint required before mixed training: {stage1}")
+        if mode == "mixed" and stage1.is_file():
             cmd += ["--init_checkpoint", str(stage1.relative_to(ROOT))]
-        resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels)
         if resume_path:
             cmd += ["--resume", str(resume_path)]
         return cmd
