@@ -26,7 +26,7 @@ from common import (  # noqa: E402
 )
 from data_loader import build_datasets  # noqa: E402
 from metrics import MetricAverager, calc_metrics  # noqa: E402
-from model import Main  # noqa: E402
+from model import Main, UPSTREAM_COMMIT  # noqa: E402
 
 
 class NCC:
@@ -158,6 +158,7 @@ def main():
     protocol={
         "method":"IR&ArF",
         "upstream":"https://github.com/Jiahuiqu/IR-ArF",
+        "upstream_commit":UPSTREAM_COMMIT,
         "upstream_paper_doi":"10.1109/TIP.2025.3551531",
         "stage":args.stage,
         "dataset":args.dataset,
