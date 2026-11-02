@@ -52,6 +52,7 @@ def main():
     model.load_state_dict(state["model"])
     model.eval()
     reg_rows,warp_rows,per_case=[],[],[]
+    warp_by_seed={seed:[] for seed in args.geometry_seeds}
     with torch.no_grad():
         for idx in range(len(test_set)):
             item=test_set[idx]
@@ -75,18 +76,25 @@ def main():
                         pred_w=model(msi,warped,gt.shape[-1])[0]
                         met=calc_metrics(pred_w,gt,args.scale_ratio)
                         warp_rows.append(met)
+                        warp_by_seed[geometry_seed].append(met)
                         per_case.append({"sample":idx+1,"geometry_seed":geometry_seed,"case":case+1,
                             "dx_hr_px":float(geometry.dx.item()),"dy_hr_px":float(geometry.dy.item()),
                             "rotation_deg":float(geometry.theta_deg.item()),"metrics":met})
     reg=average_metrics(reg_rows)
-    warp=average_metrics(warp_rows) if warp_rows else None
+    seed_means={seed:average_metrics(rows) for seed,rows in warp_by_seed.items() if rows}
+    warp=average_metrics(list(seed_means.values())) if seed_means else None
+    warp_std=({key:float(np.std([metrics[key] for metrics in seed_means.values()],ddof=1))
+               for key in next(iter(seed_means.values())).keys()} if len(seed_means)>1 else None)
     print("IRARF_FINAL_TEST")
     print("REGISTERED",format_metrics(reg))
-    if warp is not None: print("WARP",format_metrics(warp))
+    if warp is not None:
+        print("WARP_MEAN_OVER_GEOMETRY_SEEDS",format_metrics(warp))
+        print("WARP_STD_OVER_GEOMETRY_SEEDS",warp_std)
     result={
         "method":"IR&ArF","dataset":args.dataset,"checkpoint":str(ckpt),
         "checkpoint_epoch":state.get("epoch"),"test_mode":args.test_mode,
-        "test_patches":len(test_set),"registered_metrics":reg,"warp_metrics":warp,
+        "test_patches":len(test_set),"registered_metrics":reg,"warp_metrics":warp,"warp_seed_std":warp_std,
+        "warp_metrics_by_seed":seed_means,
         "cases_per_patch":args.cases if warp is not None else 0,
         "geometry_seeds":args.geometry_seeds if warp is not None else [],
         "geometry_seed":args.seed+70000,"eval_seed":args.eval_seed,
