@@ -139,6 +139,15 @@ _ADAPTERS = {
         real_train="",
         real_infer="",
     ),
+    "ir-arf": ModelAdapter(
+        canonical="IR&ArF",
+        folder="IR-ArF",
+        registered_train="comparison/IR-ArF/train.py",
+        mixed_train="comparison/IR-ArF/train.py",
+        test_script="comparison/IR-ArF/test_hsi_deformed.py",
+        real_train="",
+        real_infer="",
+    ),
 }
 _ALIASES = {
     "drt": "drtnet",
@@ -157,6 +166,9 @@ _ALIASES = {
     "moepnp": "moe-pnp",
     "m2dtn": "m2dtn",
     "m2-dtn": "m2dtn",
+    "ir-arf": "ir-arf",
+    "irarf": "ir-arf",
+    "ir&arf": "ir-arf",
 }
 
 
@@ -253,6 +265,45 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
+    if adapter.canonical == "IR&ArF":
+        if batch_size is not None and batch_size != BATCH_SIZE:
+            raise ValueError("IR&ArF currently uses the shared batch_size=1 protocol")
+        total_epochs = epochs if epochs is not None else 200
+        if total_epochs < 1:
+            raise ValueError("--epochs must be >=1")
+        script = adapter.registered_train if mode == "registered" else adapter.mixed_train
+        stage1 = checkpoint_path(adapter, dataset, "registered")
+        cmd = [
+            sys.executable, str(ROOT / script),
+            "--dataset", dataset,
+            "--image_size", str(IMAGE_SIZE),
+            "--patch_size", str(PATCH_SIZE),
+            "--stride", str(STRIDE),
+            "--scale_ratio", str(SCALE_RATIO),
+            "--degradation_mode", DEGRADATION_MODE,
+            "--mtf_nyquist", str(MTF_NYQUIX if False else MTF_NYQUIST),
+            "--psf_truncate", str(PSF_TRUNCATE),
+            *_shared_geometry_args(),
+            "--registered_probability", str(IDENTITY_PROBABILITY),
+            "--stage", mode,
+            "--epochs", str(total_epochs),
+            "--batch_size", str(BATCH_SIZE),
+            "--lr", "0.0002",
+            "--seed", str(REGISTERED_SEED if mode == "registered" else MIXED_SEED),
+            "--device", device,
+            "--validation_interval", str(DATASET_VALIDATION_INTERVAL[dataset]),
+            "--checkpoint_dir", str(checkpoint_dir(adapter, dataset, mode).relative_to(ROOT)),
+            "--log_dir", str(log_dir(adapter, dataset, mode).relative_to(ROOT)),
+        ]
+        if mode == "mixed":
+            if not stage1.is_file() and not (resume and resume != "auto"):
+                raise FileNotFoundError(f"IR&ArF registered checkpoint required before mixed training: {stage1}")
+            cmd += ["--init_checkpoint", str(stage1.relative_to(ROOT))]
+        resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels)
+        if resume_path:
+            cmd += ["--resume", str(resume_path)]
+        return cmd
+
     resolved_batch = training_batch_size(adapter, batch_size)
     width = model_hidden_channels(adapter, hidden_channels)
     if epochs is not None and epochs < 1:
@@ -352,6 +403,36 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
+    if adapter.canonical == "IR&ArF":
+        checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else checkpoint_path(adapter, dataset, mode)
+        if check_files and not checkpoint.is_file():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+        output = Path(output_override) if output_override else (
+            ROOT / "comparison" / adapter.folder / "outputs" / "unified_two_stage"
+            / dataset / f"IRArF_{mode}_seed{MIXED_SEED}.json"
+        )
+        return [
+            sys.executable, str(ROOT / adapter.test_script),
+            "--dataset", dataset,
+            "--data_root", str(data_root),
+            "--image_size", str(IMAGE_SIZE),
+            "--patch_size", str(PATCH_SIZE),
+            "--stride", str(STRIDE),
+            "--scale_ratio", str(SCALE_RATIO),
+            "--degradation_mode", DEGRADATION_MODE,
+            "--mtf_nyquist", str(MTF_NYQUIST),
+            "--psf_truncate", str(PSF_TRUNCATE),
+            *_shared_geometry_args(),
+            "--registered_probability", str(IDENTITY_PROBABILITY),
+            "--seed", str(MIXED_SEED),
+            "--cases", str(cases),
+            "--eval_seed", str(eval_seed),
+            "--device", device,
+            "--test_mode", "registered_only" if mode == "registered" else "registered_and_warp",
+            "--checkpoint", str(checkpoint),
+            "--output_json", str(output),
+        ]
+
     model_hidden_channels(adapter, hidden_channels)
     checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else (
         checkpoint_path(adapter, dataset, mode, hidden_channels) if hidden_channels is not None
