@@ -42,6 +42,15 @@ therefore uses the largest valid divisor not exceeding 4 for each modality while
 feature width and q/k/v projections unchanged. This avoids adding external feature projection
 layers. The selected head counts are saved in every checkpoint.
 
+The registration U-Net applies three pooling operations. Under the shared 64x64
+HR training patch and batch size 1, its first cross-scale registration branch can
+reach a 1x1 bottleneck, where ordinary BatchNorm has only one value per channel
+and raises a training-time error. The adapter uses a BatchNorm2d subclass only
+inside the registration U-Net: it uses stored running statistics for this
+single-value case and otherwise follows standard BatchNorm behavior. Parameter,
+buffer, and state-dict names/shapes are unchanged.
+
+
 M2DTN's four-scale topology is intrinsically x4. Synthetic Augsburg x4 is supported; the
 Augsburg-2 real-world Wald x3 path is not exposed because changing it to x3 would alter the
 published cross-scale architecture.
