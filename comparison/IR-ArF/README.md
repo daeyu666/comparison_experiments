@@ -18,3 +18,32 @@ The upstream fixed-shape dataloader is not reused.
 Initial target: PaviaU (103 HSI bands, 4 MSI bands), x4 scale, shared 64x64 HR
 patch and 16x16 LR-HSI. Run `python comparison/IR-ArF/smoke_test.py` before
 training. The adapter is not yet validated on the remaining datasets.
+
+## Unified launcher
+
+After pulling the repository, run a one-epoch PaviaU registered check:
+
+```bash
+conda activate comparison_experiments_py310
+python train.py --model IR-ArF --dataset PaviaU --mode registered --device cuda:0 --epochs 1
+```
+
+For a short data/model integration check without completing the full epoch, call
+the adapter directly:
+
+```bash
+python comparison/IR-ArF/train.py --dataset PaviaU --stage registered --epochs 1 --max_train_batches 1 --device cuda:0
+```
+
+The default official-style training schedule is 200 epochs, Adam with learning
+rate 2e-4, and StepLR(step_size=20, gamma=0.8). This is method-specific rather
+than replacing the optimization settings of other comparison methods.
+
+After registered training, the mixed stage can be launched with:
+
+```bash
+python train.py --model IR-ArF --dataset PaviaU --mode mixed --device cuda:0 --epochs 200
+```
+
+The mixed stage loads the registered best checkpoint and applies the shared
+10% identity / 90% HSI-side deformation protocol.
