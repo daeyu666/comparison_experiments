@@ -281,7 +281,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--stride", str(STRIDE),
             "--scale_ratio", str(SCALE_RATIO),
             "--degradation_mode", DEGRADATION_MODE,
-            "--mtf_nyquist", str(MTF_NYQUIX if False else MTF_NYQUIST),
+            "--mtf_nyquist", str(MTF_NYQUIST),
             "--psf_truncate", str(PSF_TRUNCATE),
             *_shared_geometry_args(),
             "--registered_probability", str(IDENTITY_PROBABILITY),
