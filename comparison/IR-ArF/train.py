@@ -155,7 +155,6 @@ def main():
         print(f"Initialized mixed stage from {init}")
 
     generator=make_generator(device,args.seed+404)
-    val_generator=make_generator(device,args.seed+909)
     protocol={
         "method":"IR&ArF",
         "upstream":"https://github.com/Jiahuiqu/IR-ArF",
@@ -232,7 +231,7 @@ def main():
 
         val_metrics={}
         if (epoch+1)%args.validation_interval==0:
-            val_metrics=run_validation(model,val_loader,p0,args,device,val_generator,ncc)
+            val_metrics=run_validation(model,val_loader,p0,args,device,make_generator(device,args.seed+909),ncc)
             print("VALIDATION",{"epoch":epoch+1,**val_metrics})
             if val_metrics["PSNR"]>best_psnr:
                 best_psnr=val_metrics["PSNR"]
