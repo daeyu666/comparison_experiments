@@ -24,6 +24,7 @@ def parse_args():
     p.add_argument("--checkpoint",default="")
     p.add_argument("--test_mode",choices=["registered_only","registered_and_warp"],default="registered_and_warp")
     p.add_argument("--cases",type=int,default=10)
+    p.add_argument("--geometry_seeds",type=int,nargs="+",default=list(range(10001,10011)))
     p.add_argument("--seed",type=int,default=10)
     p.add_argument("--eval_seed",type=int,default=1234)
     p.add_argument("--output_json",default="")
@@ -51,7 +52,6 @@ def main():
     model.load_state_dict(state["model"])
     model.eval()
     reg_rows,warp_rows,per_case=[],[],[]
-    geom_gen=make_generator(device,args.seed+70000)
     with torch.no_grad():
         for idx in range(len(test_set)):
             item=test_set[idx]
@@ -61,21 +61,23 @@ def main():
             pred=model(msi,lr,gt.shape[-1])[0]
             reg_rows.append(calc_metrics(pred,gt,args.scale_ratio))
             if args.test_mode=="registered_and_warp":
-                for case in range(args.cases):
-                    geometry=sample_synthetic_geometry(
-                        gt.shape[-2],gt.shape[-1],device=device,dtype=gt.dtype,generator=geom_gen,
-                        max_translation=args.max_translation,max_rotation_deg=args.max_rotation_deg,
-                        max_local_px=args.max_local_px,control_grid=args.control_grid,
-                        min_jacobian=args.min_jacobian,local_strength_min_fraction=0.0,
-                        local_strength_max_fraction=1.0,
-                    )
-                    warped=make_deformed_lr_hsi(gt,geometry,p0)
-                    pred_w=model(msi,warped,gt.shape[-1])[0]
-                    met=calc_metrics(pred_w,gt,args.scale_ratio)
-                    warp_rows.append(met)
-                    per_case.append({"sample":idx+1,"case":case+1,
-                        "dx_hr_px":float(geometry.dx.item()),"dy_hr_px":float(geometry.dy.item()),
-                        "rotation_deg":float(geometry.theta_deg.item()),"metrics":met})
+                for geometry_seed in args.geometry_seeds:
+                    geom_gen=make_generator(device,geometry_seed)
+                    for case in range(args.cases):
+                        geometry=sample_synthetic_geometry(
+                            gt.shape[-2],gt.shape[-1],device=device,dtype=gt.dtype,generator=geom_gen,
+                            max_translation=args.max_translation,max_rotation_deg=args.max_rotation_deg,
+                            max_local_px=args.max_local_px,control_grid=args.control_grid,
+                            min_jacobian=args.min_jacobian,local_strength_min_fraction=0.0,
+                            local_strength_max_fraction=1.0,
+                        )
+                        warped=make_deformed_lr_hsi(gt,geometry,p0)
+                        pred_w=model(msi,warped,gt.shape[-1])[0]
+                        met=calc_metrics(pred_w,gt,args.scale_ratio)
+                        warp_rows.append(met)
+                        per_case.append({"sample":idx+1,"geometry_seed":geometry_seed,"case":case+1,
+                            "dx_hr_px":float(geometry.dx.item()),"dy_hr_px":float(geometry.dy.item()),
+                            "rotation_deg":float(geometry.theta_deg.item()),"metrics":met})
     reg=average_metrics(reg_rows)
     warp=average_metrics(warp_rows) if warp_rows else None
     print("IRARF_FINAL_TEST")
@@ -86,6 +88,7 @@ def main():
         "checkpoint_epoch":state.get("epoch"),"test_mode":args.test_mode,
         "test_patches":len(test_set),"registered_metrics":reg,"warp_metrics":warp,
         "cases_per_patch":args.cases if warp is not None else 0,
+        "geometry_seeds":args.geometry_seeds if warp is not None else [],
         "geometry_seed":args.seed+70000,"eval_seed":args.eval_seed,
         "observation":"LR-HSI=P0(W_phi(X)); HR-MSI=R0(X); GT=X",
         "per_case":per_case,
