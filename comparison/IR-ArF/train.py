@@ -29,7 +29,7 @@ from common import (  # noqa: E402
 )
 from data_loader import build_datasets  # noqa: E402
 from metrics import MetricAverager, calc_metrics  # noqa: E402
-from model import Main, UPSTREAM_COMMIT  # noqa: E402
+from model import Main, UPSTREAM_COMMIT, IRARF_ARCHITECTURE_ID  # noqa: E402
 
 
 class NCC:
@@ -77,6 +77,10 @@ def parse_args():
     p.add_argument("--lr",type=float,default=2e-4)
     p.add_argument("--step_size",type=int,default=20)
     p.add_argument("--lr_gamma",type=float,default=0.8)
+    p.add_argument("--grad_clip_norm",type=float,default=1.0,
+                   help="Global gradient norm clipping; 0 disables clipping")
+    p.add_argument("--max_abs_output",type=float,default=20.0,
+                   help="Abort when normalized reconstructed HSI exceeds this magnitude")
     p.add_argument("--validation_interval",type=int,default=None)
     p.add_argument("--validation_cases",type=int,default=5)
     p.add_argument("--seed",type=int,default=1001)
@@ -136,12 +140,15 @@ CHECKPOINT_PROTOCOL_KEYS = (
     "control_grid", "min_jacobian", "registered_probability",
 )
 RESUME_KEYS = ("seed", "batch_size", "lr", "step_size", "lr_gamma",
+               "grad_clip_norm", "max_abs_output",
                "validation_interval", "validation_cases", "max_train_batches")
 
 
 def verify_train_checkpoint(state, args, model_args, sensor_fingerprint, *, stage, resume=False):
     if state.get("method")!="IR-ArF" or state.get("stage")!=stage:
         raise ValueError(f"IR&ArF checkpoint method/stage mismatch: expected {stage}")
+    if state.get("architecture_id")!=IRARF_ARCHITECTURE_ID:
+        raise ValueError("IR&ArF checkpoint architecture version mismatch; start a new run")
     if state.get("upstream_commit")!=UPSTREAM_COMMIT:
         raise ValueError("IR&ArF model-source version mismatch")
     if state.get("sensor_fingerprint")!=sensor_fingerprint:
@@ -162,6 +169,7 @@ def make_checkpoint(args, model_args, sensor_fingerprint, model, optimizer,
                     scheduler, generator, epoch, best_psnr):
     return {
         "method":"IR-ArF", "stage":args.stage, "epoch":epoch,
+        "architecture_id":IRARF_ARCHITECTURE_ID,
         "upstream_commit":UPSTREAM_COMMIT, "sensor_fingerprint":sensor_fingerprint,
         "model":model.state_dict(), "optimizer":optimizer.state_dict(),
         "scheduler":scheduler.state_dict(), "best_psnr":best_psnr,
@@ -176,6 +184,8 @@ def main():
         args.epochs = 800 if args.stage=="registered" else 600
     if args.validation_interval is None:
         args.validation_interval = DATASET_VALIDATION_INTERVAL[args.dataset]
+    if args.grad_clip_norm<0 or args.max_abs_output<=0:
+        raise ValueError("grad_clip_norm must be >=0 and max_abs_output must be positive")
     if args.validation_cases < 1:
         raise ValueError("validation_cases must be >=1")
     if (args.image_size, args.patch_size, args.stride, args.scale_ratio)!=(128,64,32,4):
@@ -242,6 +252,9 @@ def main():
 
     protocol={
         "method":"IR&ArF",
+        "architecture_id":IRARF_ARCHITECTURE_ID,
+        "grad_clip_norm":args.grad_clip_norm,
+        "max_abs_output":args.max_abs_output,
         "upstream":"https://github.com/Jiahuiqu/IR-ArF",
         "upstream_commit":UPSTREAM_COMMIT,
         "sensor_fingerprint":sensor_fingerprint,
@@ -266,12 +279,15 @@ def main():
     if not history.exists() or start_epoch==0:
         with history.open("w",newline="",encoding="utf-8") as f:
             csv.writer(f).writerow(["epoch","train_loss","train_l1","train_ncc","identity_fraction",
-                                    "val_PSNR","val_SAM","val_SSIM","val_ERGAS","val_CC","val_L1"])
+                                    "val_PSNR","val_SAM","val_SSIM","val_ERGAS","val_CC","val_L1",
+                                    "grad_norm_max","prediction_abs_max"])
 
     for epoch in range(start_epoch,args.epochs):
         model.train()
         loss_sum=l1_sum=ncc_sum=0.0
         seen=identity_count=0
+        grad_norm_max=0.0
+        prediction_abs_max=0.0
         bar=tqdm(train_loader,desc=f"IR&ArF {args.stage} {epoch+1}/{args.epochs}",dynamic_ncols=True)
         for step,batch in enumerate(bar):
             if args.max_train_batches and step>=args.max_train_batches:
@@ -283,6 +299,16 @@ def main():
             )
             outputs=model(msi,lr,gt.shape[-1])
             pred,bx1,bx2,bx3,eh1,eh2,eh3=outputs
+            with torch.no_grad():
+                output_amplitude=float(pred.detach().abs().amax().item())
+            prediction_abs_max=max(prediction_abs_max,output_amplitude)
+            if not math.isfinite(output_amplitude) or output_amplitude>args.max_abs_output:
+                stage_levels=[float(t.detach().abs().amax().item()) for t in outputs]
+                raise FloatingPointError(
+                    f"IR&ArF reconstruction explosion at epoch={epoch+1}, batch={step+1}, "
+                    f"pred_abs_max={output_amplitude:.6g}, stage_abs_max={stage_levels}. "
+                    f"Stopping before optimizer step; do not resume from an exploded checkpoint."
+                )
             l1=F.l1_loss(pred,gt)
             lr_gray=lr.mean(dim=1,keepdim=True)
             gt_gray=gt.mean(dim=1,keepdim=True)
@@ -300,6 +326,14 @@ def main():
                 raise FloatingPointError(f"Non-finite IR&ArF loss at epoch={epoch+1}, step={step}")
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            # Shared multi-stage fusion/denoising modules can amplify
+            # gradients: clip the global norm before updating parameters.
+            grad_norm=torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=(args.grad_clip_norm if args.grad_clip_norm>0 else float("inf")),
+                error_if_nonfinite=True,
+            )
+            grad_norm_max=max(grad_norm_max,float(grad_norm.item()))
             optimizer.step()
             bsz=gt.shape[0]
             seen+=bsz
@@ -314,7 +348,8 @@ def main():
         train_l1=l1_sum/max(seen,1)
         train_ncc=ncc_sum/max(seen,1)
         print(f"TRAIN epoch={epoch+1} loss={train_loss:.6f} l1={train_l1:.6f} "
-              f"ncc={train_ncc:.6f} identity_fraction={identity_count/max(seen,1):.3f}")
+              f"ncc={train_ncc:.6f} identity_fraction={identity_count/max(seen,1):.3f} "
+              f"grad_norm_max={grad_norm_max:.4g} pred_abs_max={prediction_abs_max:.4g}")
 
         val_metrics={}
         if (epoch+1)%args.validation_interval==0 or epoch+1==args.epochs:
@@ -331,7 +366,8 @@ def main():
                 csv.writer(f).writerow([
                     epoch+1,train_loss,train_l1,train_ncc,identity_count/max(seen,1),
                     val_metrics.get("PSNR"),val_metrics.get("SAM"),val_metrics.get("SSIM"),
-                    val_metrics.get("ERGAS"),val_metrics.get("CC"),val_metrics.get("L1")
+                    val_metrics.get("ERGAS"),val_metrics.get("CC"),val_metrics.get("L1"),
+                    grad_norm_max,prediction_abs_max
                 ])
         torch.save(
             make_checkpoint(args,model_args,sensor_fingerprint,model,optimizer,
