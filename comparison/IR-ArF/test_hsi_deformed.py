@@ -1,6 +1,6 @@
 """Evaluate IR&ArF on the shared registered and HSI-warped test protocol."""
 from __future__ import annotations
-import argparse, json, random, sys
+import argparse, json, random, sys, hashlib
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -11,11 +11,11 @@ ROOT=HERE.parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 if str(HERE) not in sys.path: sys.path.insert(0,str(HERE))
 
-from common import add_data_args,add_geometry_args,build_shared_cfg,make_generator,resolve_device,set_seed
+from common import add_data_args,add_geometry_args,build_shared_cfg,make_generator,resolve_device,set_seed,require_srf_weights
 from data_loader import build_datasets
 from comparison.CLSNet.common import make_deformed_lr_hsi,sample_synthetic_geometry
 from comparison.CLSNet.final_metrics import average_metrics,calc_metrics,format_metrics
-from model import Main
+from model import Main, UPSTREAM_COMMIT
 
 
 def parse_args():
@@ -49,6 +49,13 @@ def build_test_components(args, *, expected_stage):
     state=torch.load(ckpt,map_location=device,weights_only=False)
     if state.get("method")!="IR-ArF" or state.get("stage")!=expected_stage:
         raise ValueError(f"IR&ArF checkpoint method/stage mismatch: {ckpt}")
+    if state.get("upstream_commit")!=UPSTREAM_COMMIT:
+        raise ValueError("IR&ArF checkpoint model-source version mismatch")
+    expected_srf=hashlib.sha256(
+        torch.as_tensor(require_srf_weights(info),dtype=torch.float32).cpu().numpy().tobytes()
+    ).hexdigest()
+    if state.get("sensor_fingerprint")!=expected_srf:
+        raise ValueError("IR&ArF checkpoint SRF fingerprint mismatch")
     saved_model_args=state.get("model_args",{})
     for name in ("bands","msi_channels"):
         if int(saved_model_args.get(name,-1))!=int(getattr(model_args,name)):
