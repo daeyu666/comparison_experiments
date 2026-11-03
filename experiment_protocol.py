@@ -268,7 +268,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     if adapter.canonical == "IR&ArF":
         if batch_size is not None and batch_size != BATCH_SIZE:
             raise ValueError("IR&ArF currently uses the shared batch_size=1 protocol")
-        total_epochs = epochs if epochs is not None else 200
+        total_epochs = epochs if epochs is not None else (REGISTERED_EPOCHS if mode == "registered" else MIXED_EPOCHS)
         if total_epochs < 1:
             raise ValueError("--epochs must be >=1")
         script = adapter.registered_train if mode == "registered" else adapter.mixed_train
