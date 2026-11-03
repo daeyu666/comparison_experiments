@@ -260,11 +260,16 @@ def resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels=No
 
 
 def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None,
-                        *, epochs=None, resume=None, hidden_channels=None):
+                        *, epochs=None, resume=None, hidden_channels=None, lr_override=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
+    if lr_override is not None:
+        if adapter.canonical != "IR&ArF":
+            raise ValueError("--lr override is supported only by IR&ArF")
+        if not 0 < lr_override <= 0.0002:
+            raise ValueError("--lr must be positive and no larger than the upstream 2e-4")
     if adapter.canonical == "IR&ArF":
         if batch_size is not None and batch_size != BATCH_SIZE:
             raise ValueError("IR&ArF currently uses the shared batch_size=1 protocol")
@@ -291,7 +296,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "--stage", mode,
             "--epochs", str(total_epochs),
             "--batch_size", str(BATCH_SIZE),
-            "--lr", "0.0002",
+            "--lr", str(0.0002 if lr_override is None else lr_override),
             "--seed", str(REGISTERED_SEED if mode == "registered" else MIXED_SEED),
             "--device", device,
             "--validation_interval", str(DATASET_VALIDATION_INTERVAL[dataset]),
