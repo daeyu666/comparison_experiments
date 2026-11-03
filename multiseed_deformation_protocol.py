@@ -210,10 +210,18 @@ def run_multiseed_suite(test_set, predict, degrade, *, device, output_dir, metad
         "max_local_hr_px": max_local_px, "control_grid": control_grid, "min_local_jacobian": min_jacobian,
         "local_amplitude_proposal": "U(0,max_local_hr_px), conditioned on nonfolding; no alpha or Identity mixture",
         "warp_observation": "Y_H=P0(W_phi(X)); HR-MSI and GT remain registered",
-        "reconstruction_eval_seed": eval_seed, "noise_schedule": "SHA256(protocol,eval_seed,patch,case), held fixed across geometry seeds",
+        "reconstruction_eval_seed": eval_seed, "noise_schedule": (
+            "NonRegSRNet private fixed initialization seed from model.fit_config; fresh fit per observation"
+            if metadata.get("training_stage") == "observation_pair_self_supervision"
+            else "SHA256(protocol,eval_seed,patch,case), held fixed across geometry seeds"
+        ),
         "scale_ratio": scale_ratio, "metric_region": "full patch, no border crop",
         "aggregation": "cases within patch -> patches within seed -> mean and sample std over seed means (ddof=1)",
-        "Registered_std": "not reported; evaluated once per patch with same weights",
+        "Registered_std": (
+            "not reported; one independent observation-wise fit per registered patch"
+            if metadata.get("training_stage") == "observation_pair_self_supervision"
+            else "not reported; evaluated once per patch with same weights"
+        ),
         "metric_formulas": "existing S2 final formulas; clamp01 PSNR/SAM/RMSE; raw RMSE; global-statistics SSIM",
         "model": _stable_metadata(metadata), "test_inputs": inputs,
     }

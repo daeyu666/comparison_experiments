@@ -6,6 +6,7 @@ on:
       - 'comparison/NonRegSRNet/**'
       - 'tests/test_nonregsrnet.py'
       - 'experiment_protocol.py'
+      - 'multiseed_deformation_protocol.py'
       - 'test*.py'
       - '.github/workflows/nonregsrnet-smoke.yml'
   workflow_dispatch:

@@ -161,3 +161,36 @@ def test_exact_forward_and_objective_agreement_with_official_source():
     torch.testing.assert_close(out["fused"],fused,rtol=0,atol=0)
     torch.testing.assert_close(out["recovered_a"],recovered,rtol=0,atol=0)
     torch.testing.assert_close(actual,expected,rtol=1e-6,atol=1e-5)
+
+
+@pytest.mark.parametrize("suite",["fixed","multiseed"])
+def test_end_to_end_shared_scoring_fits_observations_without_checkpoint(tmp_path,monkeypatch,suite):
+    from comparison.NonRegSRNet import test_hsi_deformed as evaluator
+    from degradations import build_degradation
+    p0=build_degradation("physical",scale_ratio=4,mtf_nyquist=0.2,truncate=3.0)
+    generator=torch.Generator().manual_seed(9)
+    gt=torch.rand(7,32,32,generator=generator)*0.6+0.1
+    srf=torch.rand(3,7,generator=generator);srf=srf/srf.sum(1,keepdim=True)
+
+    class Data:
+        degradation_operator=p0
+        def __len__(self): return 1
+        def __getitem__(self,index):
+            return dict(gt=gt.clone(),hr_msi=torch.einsum("mc,chw->mhw",srf,gt))
+
+    fixture=(Data(),Data(),Data(),dict(n_bands=7,n_select_bands=3,srf_weights=srf))
+    monkeypatch.setattr(evaluator,"build_datasets",lambda *a,**k:fixture)
+    common=["--model","NonRegSRNet","--dataset","CAVE","--device","cpu",
+            "--output_dir",str(tmp_path),"--cases","1",
+            "--nonreg_iterations","2","--nonreg_num_rho","8"]
+    if suite=="fixed":
+        import test_fixed_deformation as entry
+        entry.main([*common,"--levels","1"])
+    else:
+        import test_multiseed_deformation as entry
+        entry.main([*common,"--geometry_seeds","10001","--max_samples","1"])
+    import json
+    report=json.loads((tmp_path/"summary.json").read_text())
+    assert "NonRegSRNet" in json.dumps(report)
+    assert "observation_pair_self_supervision" in json.dumps(report)
+    assert list(tmp_path.glob("*.json"))

@@ -1,4 +1,4 @@
-"""Shared main-table mixed-checkpoint test, selectable by --model and --dataset."""
+"""Shared main-table test for pretrained or observation-wise methods, selectable by model/dataset."""
 from __future__ import annotations
 
 import argparse
