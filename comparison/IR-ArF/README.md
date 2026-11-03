@@ -112,6 +112,44 @@ For a new formal run, archive the old `checkpoints/physical/PaviaU` directory
 and start from epoch 1 without `--resume`. The architecture/version check
 rejects old optimizer/checkpoint formats.
 
+## Epoch-5 divergence investigation
+
+With the official-effective fixed step coefficient eta=4 and Adam(lr=2e-4),
+a PaviaU registered run still hit an output-amplitude guard at epoch 5,
+batch 14: final HR-HSI max absolute value 55.16, while the observed
+LR-HSI branch intermediates remained below ~0.33. This does **not**
+prove which recurrent branch is unstable. The model now records automatic
+per-stage traces (F1/F2/F3, R, R_T, B_T, and the shared U-Net denoiser)
+when the reconstructed absolute amplitude first exceeds 2.0 in an epoch,
+and when it exceeds the hard guard 20.0.
+
+Traces live under
+`comparison/IR-ArF/logs/physical/PaviaU/instability_*_epoch*_batch*.json`.
+Each file includes ordered hook events and per-module input/output
+amplitudes so it is possible to distinguish R_T amplification from
+the three denoiser passes. A no-grad replay runs **only** on a
+warning/failure; it does not alter the training objective.
+
+Adam's adaptive normalization means clipping gradients to norm 1 does
+**not** guarantee small parameter updates. Therefore the unified launcher
+supports a **method-specific explicit LR override** without changing the
+other comparison methods. A cautious 15-epoch LR sensitivity run uses:
+
+```bash
+python train.py --model IR-ArF --dataset PaviaU --mode registered \
+  --device cuda:0 --epochs 15 --lr 5e-5
+
+# Only after 15 epochs remain stable:
+python train.py --model IR-ArF --dataset PaviaU --mode registered \
+  --device cuda:0 --epochs 800 --lr 5e-5 --resume auto
+```
+
+This LR sensitivity run **deviates from the released learning rate 2e-4**
+and is logged as such in `run_protocol.txt`. Keep 2e-4 divergence logs
+in an archived directory and start the sensitivity test without `--resume`.
+If the network remains unstable at a lower LR, inspect the saved per-stage
+trace before modifying the official iterative architecture.
+
 ## Verification status
 
 Static source-level integration and repository registration have been inspected.
