@@ -42,7 +42,7 @@ def main():
         f"UNIFIED_TRAIN model={adapter.canonical} dataset={args.dataset} "
         f"mode={args.mode}"
     )
-    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode, hidden_channels=args.hidden_channels)}")
+    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode, hidden_channels=args.hidden_channels, lr_override=args.lr)}")
     print("COMMAND " + shlex.join(cmd))
     if args.dry_run:
         return
