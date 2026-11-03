@@ -317,7 +317,7 @@ def main():
               f"ncc={train_ncc:.6f} identity_fraction={identity_count/max(seen,1):.3f}")
 
         val_metrics={}
-        if (epoch+1)%args.validation_interval==0:
+        if (epoch+1)%args.validation_interval==0 or epoch+1==args.epochs:
             val_metrics=run_validation(model,val_loader,p0,args,device)
             print("VALIDATION",{"epoch":epoch+1,**val_metrics})
             if val_metrics["PSNR"]>best_psnr:
