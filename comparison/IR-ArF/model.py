@@ -530,7 +530,10 @@ class FusionM(nn.Module):
         self.B = B
         self.B_T = B_T
         self.args = args
-        self.eta = 2*torch.nn.Parameter(torch.tensor(2.))
+        # Upstream uses 2*Parameter(2), which is a persistent non-leaf Tensor:
+        # it is not registered as a parameter and reuses a freed autograd graph
+        # on the second training batch. Preserve initial scalar=4 as a leaf.
+        self.eta = nn.Parameter(torch.tensor(4.0))
 
 
     def forward(self, PAN, HS, Xpk, h):
