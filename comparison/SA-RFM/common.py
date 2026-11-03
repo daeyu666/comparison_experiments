@@ -1,7 +1,7 @@
 # Shared synthetic benchmark helpers; copied from the existing PSRF-DiffNet adapter.
 # Stage geometry, SRF and data configuration remain identical to comparison methods.
 
-"""Shared experiment helpers for the PSRF-DiffNet comparison."""
+"""Shared experiment helpers for the SA-RFM comparison."""
 
 from __future__ import annotations
 
