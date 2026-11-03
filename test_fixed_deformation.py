@@ -191,9 +191,28 @@ def _m2dtn(args):
     return test_set, model, p0.degrade, device, details
 
 
+def _irarf(args):
+    evaluator = _load_evaluator("IR-ArF")
+    test_set, model, p0, device, state = evaluator.build_test_components(
+        args, expected_stage=args.mode
+    )
+
+    def predict(lr_hsi, hr_msi):
+        return model(hr_msi, lr_hsi, hr_msi.shape[-1])[0]
+
+    details = {
+        "checkpoint_epoch": state.get("epoch"),
+        "training_stage": state.get("stage"),
+        "hsi_channels": state.get("model_args", {}).get("bands"),
+        "msi_channels": state.get("model_args", {}).get("msi_channels"),
+        "registered_probability": state.get("args", {}).get("registered_probability"),
+    }
+    return test_set, predict, p0.degrade, device, details
+
+
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "MoE-PNP": _moepnp, "M2DTN": _m2dtn}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf}
 
 
 def parse_args(argv=None):
