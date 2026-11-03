@@ -110,6 +110,16 @@ _ADAPTERS = {
         real_train="comparison/EMR-Diff/train_augsburg2_wald.py",
         real_infer="comparison/EMR-Diff/infer_augsburg2_wald.py",
     ),
+    "sa-rfm": ModelAdapter(
+        canonical="SA-RFM",
+        folder="SA-RFM",
+        registered_train="comparison/SA-RFM/train.py",
+        mixed_train="comparison/SA-RFM/train_hsi_deformed.py",
+        test_script="comparison/SA-RFM/test_hsi_deformed.py",
+        # Only the common synthetic x4 protocol is currently implemented.
+        real_train="",
+        real_infer="",
+    ),
     "psrf-diffnet": ModelAdapter(
         canonical="PSRF-DiffNet",
         folder="PSRF-DiffNet",
@@ -159,6 +169,10 @@ _ALIASES = {
     "emrdiff": "emr-diff",
     "emr_diff": "emr-diff",
     "emr-diff": "emr-diff",
+    "sa-rfm": "sa-rfm",
+    "sarfm": "sa-rfm",
+    "safm": "sa-rfm",
+    "sa_rfm": "sa-rfm",
     "psrf": "psrf-diffnet",
     "psrf_diffnet": "psrf-diffnet",
     "psrf-diffnet": "psrf-diffnet",
@@ -319,6 +333,9 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     # 1e-4 with no weight decay in its released training entry point.
     if adapter.canonical == "PSRF-DiffNet":
         optimizer_lr, optimizer_weight_decay = 1e-4, 0.0
+    elif adapter.canonical == "SA-RFM":
+        # Released SA-RFM training uses AdamW(lr=1e-4, weight_decay=1e-4).
+        optimizer_lr, optimizer_weight_decay = 1e-4, 1e-4
     else:
         optimizer_lr, optimizer_weight_decay = LR, WEIGHT_DECAY
     resume_path = resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels)
