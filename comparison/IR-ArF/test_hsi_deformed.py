@@ -15,7 +15,7 @@ from common import add_data_args,add_geometry_args,build_shared_cfg,make_generat
 from data_loader import build_datasets
 from comparison.CLSNet.common import make_deformed_lr_hsi,sample_synthetic_geometry
 from comparison.CLSNet.final_metrics import average_metrics,calc_metrics,format_metrics
-from model import Main, UPSTREAM_COMMIT
+from model import Main, UPSTREAM_COMMIT, IRARF_ARCHITECTURE_ID
 
 
 def parse_args():
@@ -49,6 +49,8 @@ def build_test_components(args, *, expected_stage):
     state=torch.load(ckpt,map_location=device,weights_only=False)
     if state.get("method")!="IR-ArF" or state.get("stage")!=expected_stage:
         raise ValueError(f"IR&ArF checkpoint method/stage mismatch: {ckpt}")
+    if state.get("architecture_id")!=IRARF_ARCHITECTURE_ID:
+        raise ValueError("IR&ArF checkpoint architecture version mismatch")
     if state.get("upstream_commit")!=UPSTREAM_COMMIT:
         raise ValueError("IR&ArF checkpoint model-source version mismatch")
     expected_srf=hashlib.sha256(
