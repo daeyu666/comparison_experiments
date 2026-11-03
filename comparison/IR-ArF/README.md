@@ -76,22 +76,41 @@ runner and supports `--max_samples`, `--resume_output`, `--overwrite_output`
 and `--geometry_seeds`. Do not compare the single-batch debug weights against
 full-budget methods.
 
-## Autograd fix (upstream source issue)
+## Autograd and divergence safeguards
 
-In upstream `FusionM.__init__`, `self.eta = 2*nn.Parameter(torch.tensor(2.))`
-creates a persistent non-leaf tensor. It is not registered by `nn.Module` and
-causes a second-backward error on training batch 2. We use the equivalent
-initial scalar `nn.Parameter(torch.tensor(4.0))` instead, making each of the
-three fusion step sizes a leaf trainable parameter. The smoke test now runs
-**two complete optimizer steps**, rather than a single backward pass.
+The upstream `FusionM.__init__` declares
+`self.eta = 2*nn.Parameter(torch.tensor(2.))`. This creates a persistent
+unregistered non-leaf tensor which is never updated by Adam and fails on the
+second training backward pass. The first adapter attempted to correct it with
+a trainable `nn.Parameter(4.0)`, but this unintentionally introduced three
+new learnable step sizes. The corrected adapter uses
+`self.register_buffer("eta", torch.tensor(4.0))`: it preserves the official
+*effective* coefficient 4.0 without introducing learnable degrees of freedom
+or reusing an autograd graph. This change is checkpoint-incompatible with the
+previous adapter's optimizer; old unstable checkpoints must not be resumed.
 
-To verify the full NCC training path over two batches without touching formal
-checkpoints:
+A registered run has reported NCC ~-0.45 (expected for a negative correlation
+loss) but L1 exploding from ~0.02 to ~3.35e10 around epoch 9. The exact trigger
+is not proven. To prevent runaway training, the adapter adds:
+- `--grad_clip_norm 1.0`: global gradient-norm clipping (a documented
+  training stability deviation; set to 0 to disable).
+- `--max_abs_output 20.0`: fail-fast guard for extreme model outputs
+  given normalized [0,1] radiometry (a validation check, not output clipping).
+- Per-epoch logging of `grad_norm_max` and `pred_abs_max`.
+
+The smoke test checks that all three step sizes are non-trainable buffers and
+runs two complete optimizer steps. Also verify the full L1 + NCC training path
+on two real batches, in isolated debug checkpoint directories:
 
 ```bash
-python comparison/IR-ArF/train.py --dataset PaviaU --stage registered \\
+python comparison/IR-ArF/smoke_test.py --device cuda:0
+python comparison/IR-ArF/train.py --dataset PaviaU --stage registered \
   --device cuda:0 --epochs 1 --max_train_batches 2
 ```
+
+For a new formal run, archive the old `checkpoints/physical/PaviaU` directory
+and start from epoch 1 without `--resume`. The architecture/version check
+rejects old optimizer/checkpoint formats.
 
 ## Verification status
 
