@@ -234,3 +234,12 @@ CSFA 重建主线；采用统一 synthetic x4 六数据集、registered/mixed �
 官方固定 cuda:0 的重采样已改为运行时设备；官方默认4头与102/31波段不可整除的
 冲突采用不超过4的最大可整除头数修正，并写入checkpoint元数据。
 真实 Augsburg Wald x3 暂不接入，以避免改变其四尺度 x4 拓扑。
+
+## IR&ArF adapter
+
+`IR-ArF/` 接入 TIP 2025 官方三次可解释融合/去噪主干，保留 Adam(2e-4)、
+StepLR 与 L1+0.1NCC 原始训练损失。HSI/MSI 光谱通道数均根据传感器动态创建，
+LR 尺寸通过实际观测计算，采用统一 P0/SRF、64×64 训练 patch、
+registered 800 / mixed 600 epoch 预算以及 HSI-side 非配准形变。
+正式 mixed 测试已接入公共 10 seeds×10 cases 多随机协议，并支持固定形变测试。
+代码已完成静态接入检查，需在目标 GPU 环境完成 smoke test 与 1 epoch 验证。
