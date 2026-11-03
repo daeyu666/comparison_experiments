@@ -960,3 +960,22 @@ EMR-Diff逐patch评价信息通过`tqdm.write`输出，避免打断活动状态�
 ```bash
 python -m pytest -q tests/test_training_progress.py tests/test_emr_training_protocol.py
 ```
+
+
+## NonRegSRNet逐观测对自监督对比
+
+已接入官方NonRegSRNet（TGRS 2022），说明与命令见
+[comparison/NonRegSRNet](comparison/NonRegSRNet/README.md)。
+该方法保留官方逐HSI/MSI观测对优化机制，无需Registered→Mixed数据集预训练checkpoint。
+测试时仅用观测进行固定预算自监督优化，GT只评分；每个形变case独立拟合。
+共享6数据集划分、SRF、physical x4退化、固定强度和多seed主表评价。
+
+```bash
+python test.py --model NonRegSRNet --dataset PaviaU --mode registered
+python test.py --model NonRegSRNet --dataset PaviaU --mode mixed
+python test_fixed_deformation.py --model NonRegSRNet --dataset PaviaU --mode mixed
+```
+
+默认每观测对10000次Adam更新。环境检查可用
+`python comparison/NonRegSRNet/smoke_test.py --device cpu`；
+缩短预算的`--nonreg_iterations 2`只用于smoke，不作为正式结果。

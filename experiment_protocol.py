@@ -75,6 +75,13 @@ class ModelAdapter:
 
 
 _ADAPTERS = {
+    "nonregsrnet": ModelAdapter(
+        canonical="NonRegSRNet", folder="NonRegSRNet",
+        registered_train="comparison/NonRegSRNet/train.py",
+        mixed_train="comparison/NonRegSRNet/train.py",
+        test_script="comparison/NonRegSRNet/test_hsi_deformed.py",
+        real_train="", real_infer="",
+    ),
     "drtnet": ModelAdapter(
         canonical="DRTNet", folder="DRTNet",
         registered_train="comparison/DRTNet/train.py",
@@ -160,6 +167,10 @@ _ADAPTERS = {
     ),
 }
 _ALIASES = {
+    "nonregsrnet": "nonregsrnet",
+    "nonreg": "nonregsrnet",
+    "nonreg-srnet": "nonregsrnet",
+    "nonreg_srnet": "nonregsrnet",
     "drt": "drtnet",
     "drt-net": "drtnet",
     "drtnet": "drtnet",
@@ -279,6 +290,14 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
+    if adapter.canonical == "NonRegSRNet":
+        raise NotImplementedError(
+            "NonRegSRNet uses fresh self-supervised optimization per observation pair. "
+            "No registered/mixed dataset pretraining is required. Use "
+            "python test.py --model NonRegSRNet --dataset <Dataset> --mode <registered|mixed>, "
+            "or comparison/NonRegSRNet/train.py --pair observed.npz --srf_weights weights.npy "
+            "--output_dir <directory> for one pair."
+        )
     if lr_override is not None:
         if adapter.canonical != "IR&ArF":
             raise ValueError("--lr override is supported only by IR&ArF")
@@ -420,12 +439,24 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
                        geometry_seeds=None, cases=TEST_CASES, eval_seed=EVAL_SEED,
                        data_root="./data/raw", checkpoint_override="", output_override="",
                        max_samples=0, resume_output=False, overwrite_output=False,
-                       legacy_single_seed=False, check_files=True, hidden_channels=None):
+                       legacy_single_seed=False, check_files=True, hidden_channels=None, nonreg_options=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
     model_hidden_channels(adapter, hidden_channels)
+    if adapter.canonical == "NonRegSRNet":
+        if checkpoint_override:
+            raise ValueError("NonRegSRNet uses independent pairwise fits; pretrained checkpoint is not accepted")
+        from comparison.NonRegSRNet.options import benchmark_command
+        return benchmark_command(
+            ROOT, dataset, mode, device,
+            geometry_seeds=TEST_GEOMETRY_SEEDS if geometry_seeds is None else geometry_seeds,
+            cases=cases, eval_seed=eval_seed, data_root=data_root,
+            output_override=output_override, max_samples=max_samples,
+            resume_output=resume_output, overwrite_output=overwrite_output,
+            legacy_single_seed=legacy_single_seed, fit_options=nonreg_options,
+        )
     checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else (
         checkpoint_path(adapter, dataset, mode, hidden_channels) if hidden_channels is not None
         else checkpoint_path(adapter, dataset, mode)

@@ -12,6 +12,7 @@ import torch
 from experiment_protocol import DATASETS, MODES, ROOT, checkpoint_path, resolve_model, model_hidden_channels
 from emr_configuration import add_hidden_channels_argument, checkpoint_width, variant_suffix
 from fixed_deformation_protocol import STRENGTHS, add_suite_args, run_fixed_suite
+from comparison.NonRegSRNet.options import add_fit_args
 
 
 def _load_evaluator(folder):
@@ -230,9 +231,15 @@ def _irarf(args):
     return test_set, predict, p0.degrade, device, details
 
 
+def _nonregsrnet(args):
+    from comparison.NonRegSRNet.test_hsi_deformed import build_test_components
+    test_set, predict, p0, device, details = build_test_components(args)
+    return test_set, predict, p0.degrade, device, details
+
+
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "SA-RFM": _sarfm, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "SA-RFM": _sarfm, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf, "NonRegSRNet": _nonregsrnet}
 
 
 def parse_args(argv=None):
@@ -243,6 +250,7 @@ def parse_args(argv=None):
                    help="Checkpoint training stage; both modes are tested at all selected strengths")
     p.add_argument("--checkpoint", default="")
     add_hidden_channels_argument(p)
+    add_fit_args(p)
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=10)
@@ -259,7 +267,10 @@ def main(argv=None):
     model_hidden_channels(adapter, args.hidden_channels)
     if adapter.canonical not in MODEL_BUILDERS:
         raise ValueError(f"Register a fixed-test model builder for {adapter.canonical}")
-    args.checkpoint = str(Path(args.checkpoint).resolve() if args.checkpoint
+    pairwise = adapter.canonical == "NonRegSRNet"
+    if pairwise and args.checkpoint:
+        raise ValueError("NonRegSRNet does not use a pretrained checkpoint; use --nonreg_cache_dir")
+    args.checkpoint = "" if pairwise else str(Path(args.checkpoint).resolve() if args.checkpoint
                           else checkpoint_path(adapter, args.dataset, args.mode, args.hidden_channels))
     args.data_root = str(Path(args.data_root).resolve())
     if not args.output_dir:
@@ -281,7 +292,7 @@ def main(argv=None):
         raise ValueError("cases must be >=1 and levels must be distinct")
     if args.dry_run:
         return
-    if not Path(args.checkpoint).is_file():
+    if not pairwise and not Path(args.checkpoint).is_file():
         raise FileNotFoundError(args.checkpoint)
     if str(args.device).startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable; pass --device cpu for CPU testing")

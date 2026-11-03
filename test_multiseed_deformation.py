@@ -11,6 +11,7 @@ import torch
 from experiment_protocol import DATASETS, ROOT, checkpoint_path, resolve_model, model_hidden_channels
 from emr_configuration import add_hidden_channels_argument, variant_suffix
 from test_fixed_deformation import MODEL_BUILDERS
+from comparison.NonRegSRNet.options import add_fit_args
 from multiseed_deformation_protocol import (
     PROTOCOL_ID, add_multiseed_args, file_sha256, run_multiseed_suite, validate_settings,
 )
@@ -20,13 +21,14 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--model", required=True,
-        help=("Mixed-trained model adapter: UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, SA-RFM, MoE-PNP, or M2DTN; "
+        help=("Model adapter: UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, SA-RFM, MoE-PNP, M2DTN, or NonRegSRNet (pairwise self-supervised); "
               "model names are case-insensitive and registered aliases are accepted."),
     )
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--mode", choices=["mixed"], default="mixed")
     p.add_argument("--checkpoint", default="")
     add_hidden_channels_argument(p)
+    add_fit_args(p)
     p.add_argument("--data_root", default="./data/raw")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=10, help="Model/data setup seed; geometry seeds are independent")
@@ -53,7 +55,10 @@ def main(argv=None):
     model_hidden_channels(adapter, args.hidden_channels)
     if adapter.canonical not in MODEL_BUILDERS:
         raise ValueError(f"Register a shared test model builder for {adapter.canonical} in test_fixed_deformation.MODEL_BUILDERS")
-    args.checkpoint = str(Path(args.checkpoint).resolve() if args.checkpoint
+    pairwise = adapter.canonical == "NonRegSRNet"
+    if pairwise and args.checkpoint:
+        raise ValueError("NonRegSRNet fits observations from scratch; use --nonreg_cache_dir")
+    args.checkpoint = "" if pairwise else str(Path(args.checkpoint).resolve() if args.checkpoint
                           else checkpoint_path(adapter, args.dataset, "mixed", args.hidden_channels))
     args.data_root = str(Path(args.data_root).resolve())
     if not args.output_dir:
@@ -65,7 +70,7 @@ def main(argv=None):
     print(json.dumps({"method": adapter.canonical, "protocol": PROTOCOL_ID, **vars(args)}, indent=2), flush=True)
     if args.dry_run:
         return
-    if not Path(args.checkpoint).is_file():
+    if not pairwise and not Path(args.checkpoint).is_file():
         raise FileNotFoundError(args.checkpoint)
     if str(args.device).startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA unavailable; pass --device cpu explicitly")
@@ -74,7 +79,7 @@ def main(argv=None):
     return run_multiseed_suite(
         test_set, predict, degrade, device=device, output_dir=args.output_dir,
         metadata={"method": adapter.canonical, "dataset": args.dataset, "mode": "mixed",
-                  "checkpoint": args.checkpoint, "checkpoint_sha256": file_sha256(args.checkpoint),
+                  "checkpoint": args.checkpoint, "checkpoint_sha256": (None if pairwise else file_sha256(args.checkpoint)),
                   "data_root": args.data_root, "degradation": "physical", "mtf_nyquist": 0.2,
                   "psf_truncate": 3.0, **details},
         geometry_seeds=args.geometry_seeds, cases=args.cases, eval_seed=args.eval_seed,
