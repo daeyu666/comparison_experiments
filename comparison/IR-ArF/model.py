@@ -530,10 +530,12 @@ class FusionM(nn.Module):
         self.B = B
         self.B_T = B_T
         self.args = args
-        # Upstream uses 2*Parameter(2), which is a persistent non-leaf Tensor:
-        # it is not registered as a parameter and reuses a freed autograd graph
-        # on the second training batch. Preserve initial scalar=4 as a leaf.
-        self.eta = nn.Parameter(torch.tensor(4.0))
+        # Upstream: 2 * Parameter(tensor(2.)) evaluates to constant initial
+        # value 4, but stores an unregistered non-leaf tensor; it is neither
+        # optimizer-updated nor reusable across consecutive backward passes.
+        # Preserve the actually executed fixed step size as a device-safe buffer
+        # (without introducing an additional trainable parameter).
+        self.register_buffer("eta", torch.tensor(4.0))
 
 
     def forward(self, PAN, HS, Xpk, h):
