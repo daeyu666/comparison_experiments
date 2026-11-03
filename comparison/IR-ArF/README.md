@@ -76,6 +76,23 @@ runner and supports `--max_samples`, `--resume_output`, `--overwrite_output`
 and `--geometry_seeds`. Do not compare the single-batch debug weights against
 full-budget methods.
 
+## Autograd fix (upstream source issue)
+
+In upstream `FusionM.__init__`, `self.eta = 2*nn.Parameter(torch.tensor(2.))`
+creates a persistent non-leaf tensor. It is not registered by `nn.Module` and
+causes a second-backward error on training batch 2. We use the equivalent
+initial scalar `nn.Parameter(torch.tensor(4.0))` instead, making each of the
+three fusion step sizes a leaf trainable parameter. The smoke test now runs
+**two complete optimizer steps**, rather than a single backward pass.
+
+To verify the full NCC training path over two batches without touching formal
+checkpoints:
+
+```bash
+python comparison/IR-ArF/train.py --dataset PaviaU --stage registered \\
+  --device cuda:0 --epochs 1 --max_train_batches 2
+```
+
 ## Verification status
 
 Static source-level integration and repository registration have been inspected.
