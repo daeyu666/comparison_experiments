@@ -119,6 +119,26 @@ def _drtnet(args):
     return test_set, model, p0.degrade, device, details
 
 
+def _sarfm(args):
+    evaluator = _load_evaluator("SA-RFM")
+    test_set, model, p0, device, state = evaluator.build_test_components(
+        args, expected_stage=args.mode
+    )
+    details = {
+        "checkpoint_epoch": int(state["epoch"]),
+        "training_stage": state["training_stage"],
+        "architecture_id": state["architecture_id"],
+        "upstream_blob_sha": state.get("upstream_blob_sha"),
+        "hsi_channels": state["hsi_channels"],
+        "msi_channels": state["msi_channels"],
+        "sensor_fingerprint": state["sensor_fingerprint"],
+        "registered_probability": state.get("registered_probability"),
+        "ode_steps": model.ode_steps,
+        "lambda_otd": state.get("args", {}).get("lambda_otd"),
+    }
+    return test_set, model, p0.degrade, device, details
+
+
 def _psrf(args):
     evaluator = _load_evaluator("PSRF-DiffNet")
     cfg = evaluator.build_shared_cfg(args)
@@ -212,7 +232,7 @@ def _irarf(args):
 
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "SA-RFM": _sarfm, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf}
 
 
 def parse_args(argv=None):
