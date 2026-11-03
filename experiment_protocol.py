@@ -669,6 +669,12 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
     stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
     stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
+    if adapter and adapter.canonical == "SA-RFM":
+        optimizer_summary = "SA-RFM AdamW lr=0.0001, wd=0.0001, L_RFM+1.0*L_OTD, ODE=1"
+    elif adapter and adapter.canonical == "PSRF-DiffNet":
+        optimizer_summary = "PSRF-DiffNet Adam lr=0.0001, wd=0"
+    else:
+        optimizer_summary = f"AdamW lr={LR:g}, wd={WEIGHT_DECAY:g}"
     return (
         f"x{SCALE_RATIO}, physical MTF={MTF_NYQUIST}, truncate={PSF_TRUNCATE}; "
         f"train={PATCH_SIZE}/stride{STRIDE}, eval={IMAGE_SIZE}; "
@@ -678,6 +684,6 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
         f"dx/dy~U(-{MAX_TRANSLATION:g},{MAX_TRANSLATION:g}), "
         f"rot~U(-{MAX_ROTATION_DEG:g},{MAX_ROTATION_DEG:g}), "
         f"local amplitude~U(0,{MAX_LOCAL_PX:g}), minJac={MIN_JACOBIAN}; "
-        f"AdamW lr={LR:g}, wd={WEIGHT_DECAY:g}, batch={resolved_batch}"
+        f"{optimizer_summary}, batch={resolved_batch}"
         + (f"; EMR hidden_channels={validate_hidden_channels(hidden_channels)}" if adapter and adapter.canonical == "EMR-Diff" else "")
     )
