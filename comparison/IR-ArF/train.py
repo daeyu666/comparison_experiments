@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import hashlib
 import math
 import sys
 from pathlib import Path
@@ -22,7 +23,9 @@ if str(ROOT) not in sys.path:
 
 from common import (  # noqa: E402
     add_data_args, add_geometry_args, build_shared_cfg, deformed_observation,
-    make_generator, resolve_device, set_seed,
+    make_generator, resolve_device, set_seed, snapshot_rng, restore_rng,
+    sample_synthetic_geometry, make_deformed_lr_hsi, geometry_kwargs,
+    require_srf_weights, DATASET_VALIDATION_INTERVAL,
 )
 from data_loader import build_datasets  # noqa: E402
 from metrics import MetricAverager, calc_metrics  # noqa: E402
@@ -68,13 +71,14 @@ def parse_args():
     add_data_args(p)
     add_geometry_args(p)
     p.add_argument("--stage",choices=["registered","mixed"],default="registered")
-    p.add_argument("--epochs",type=int,default=200)
+    p.add_argument("--epochs",type=int,default=None)
     p.add_argument("--batch_size",type=int,default=1)
     p.add_argument("--num_workers",type=int,default=0)
     p.add_argument("--lr",type=float,default=2e-4)
     p.add_argument("--step_size",type=int,default=20)
     p.add_argument("--lr_gamma",type=float,default=0.8)
-    p.add_argument("--validation_interval",type=int,default=1)
+    p.add_argument("--validation_interval",type=int,default=None)
+    p.add_argument("--validation_cases",type=int,default=5)
     p.add_argument("--seed",type=int,default=1001)
     p.add_argument("--checkpoint_dir",default="")
     p.add_argument("--log_dir",default="")
@@ -85,25 +89,54 @@ def parse_args():
     return p.parse_args()
 
 
-def run_validation(model, loader, p0, args, device, generator, ncc):
+def run_validation(model, loader, p0, args, device):
+    """Select registered PSNR for stage 1 and deterministic warp PSNR for stage 2."""
     model.eval()
-    metrics=MetricAverager()
-    l1_values=[]
+    reg, warp = MetricAverager(), MetricAverager()
+    generator = make_generator(device, args.seed + 60000)
+    l1_values = []
     with torch.no_grad():
         for batch in loader:
             gt=batch["gt"].to(device,non_blocking=True)
             msi=batch["hr_msi"].to(device,non_blocking=True)
-            lr,_=deformed_observation(gt,p0,args,generator,mixed=args.stage=="mixed")
-            pred=model(msi,lr,gt.shape[-1])[0]
+            registered_lr=p0.degrade(gt)
+            pred=model(msi,registered_lr,gt.shape[-1])[0]
+            reg.update(calc_metrics(pred,gt,args.scale_ratio))
             l1_values.append(float(F.l1_loss(pred,gt).item()))
-            metrics.update(calc_metrics(pred,gt,args.scale_ratio))
-    result=metrics.average()
+            if args.stage=="mixed":
+                for _ in range(args.validation_cases):
+                    geometry=sample_synthetic_geometry(
+                        *gt.shape[-2:], device=device, dtype=gt.dtype,
+                        generator=generator,
+                        local_strength_min_fraction=0.0,
+                        local_strength_max_fraction=1.0,
+                        **geometry_kwargs(args),
+                    )
+                    warped_lr=make_deformed_lr_hsi(gt,geometry,p0)
+                    warp_pred=model(msi,warped_lr,gt.shape[-1])[0]
+                    warp.update(calc_metrics(warp_pred,gt,args.scale_ratio))
+    reg_scores=reg.average()
+    chosen=warp.average() if args.stage=="mixed" else reg_scores
+    result=dict(chosen)
+    result["reg_PSNR"]=reg_scores["PSNR"]
+    result["reg_SAM"]=reg_scores["SAM"]
+    if args.stage=="mixed":
+        result["warp_PSNR"]=chosen["PSNR"]
+        result["warp_SAM"]=chosen["SAM"]
     result["L1"]=float(np.mean(l1_values)) if l1_values else float("nan")
     return result
 
 
 def main():
     args=parse_args()
+    if args.epochs is None:
+        args.epochs = 800 if args.stage=="registered" else 600
+    if args.validation_interval is None:
+        args.validation_interval = DATASET_VALIDATION_INTERVAL[args.dataset]
+    if args.validation_cases < 1:
+        raise ValueError("validation_cases must be >=1")
+    if (args.image_size, args.patch_size, args.stride, args.scale_ratio)!=(128,64,32,4):
+        raise ValueError("IR&ArF shared protocol requires 128/64/32/x4")
     if args.epochs<1 or args.batch_size<1 or args.validation_interval<1:
         raise ValueError("epochs, batch_size and validation_interval must be positive")
     set_seed(args.seed)
@@ -115,6 +148,9 @@ def main():
                             drop_last=True)
     val_loader=DataLoader(val_set,batch_size=1,shuffle=False,num_workers=0)
     p0=train_set.degradation_operator.to(device)
+    sensor_fingerprint=hashlib.sha256(
+        torch.as_tensor(require_srf_weights(info),dtype=torch.float32).cpu().numpy().tobytes()
+    ).hexdigest()
 
     model_args=SimpleNamespace(
         bands=int(info["n_bands"]),
@@ -127,6 +163,7 @@ def main():
         optimizer,step_size=args.step_size,gamma=args.lr_gamma
     )
     ncc=NCC()
+    generator=make_generator(device,args.seed+404)
 
     family="physical" if args.stage=="registered" else "hsi_warp_final"
     ckpt_dir=Path(args.checkpoint_dir or HERE/"checkpoints"/family/args.dataset)
@@ -154,11 +191,11 @@ def main():
         model.load_state_dict(state["model"])
         print(f"Initialized mixed stage from {init}")
 
-    generator=make_generator(device,args.seed+404)
     protocol={
         "method":"IR&ArF",
         "upstream":"https://github.com/Jiahuiqu/IR-ArF",
         "upstream_commit":UPSTREAM_COMMIT,
+        "sensor_fingerprint":sensor_fingerprint,
         "upstream_paper_doi":"10.1109/TIP.2025.3551531",
         "stage":args.stage,
         "dataset":args.dataset,
@@ -232,7 +269,7 @@ def main():
 
         val_metrics={}
         if (epoch+1)%args.validation_interval==0:
-            val_metrics=run_validation(model,val_loader,p0,args,device,make_generator(device,args.seed+909),ncc)
+            val_metrics=run_validation(model,val_loader,p0,args,device)
             print("VALIDATION",{"epoch":epoch+1,**val_metrics})
             if val_metrics["PSNR"]>best_psnr:
                 best_psnr=val_metrics["PSNR"]
