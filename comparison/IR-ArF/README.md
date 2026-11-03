@@ -19,31 +19,66 @@ Initial target: PaviaU (103 HSI bands, 4 MSI bands), x4 scale, shared 64x64 HR
 patch and 16x16 LR-HSI. Run `python comparison/IR-ArF/smoke_test.py` before
 training. The adapter is not yet validated on the remaining datasets.
 
-## Unified launcher
+## Completed integration
 
-After pulling the repository, run a one-epoch PaviaU registered check:
+- Official three-iteration fusion/denoising architecture and L1 + 0.1 NCC loss.
+- Dynamic HSI channels (103/128/144/145/31/242) and MSI channels (3/4/8).
+- Shared synthetic x4 SRF / MTF-PSF degradation and HSI-side deformation.
+- Shared patch 64, stride 32, image 128; registered/mixed 800/600 epochs.
+- Method-specific Adam lr=2e-4 and StepLR(20, gamma=0.8), not AdamW.
+- Mixed validation uses deterministic nonregistered deformation cases; best checkpoint
+  is selected on warp PSNR, while registered training uses registered PSNR.
+- Checkpoint source, sensor fingerprint, architecture, training protocol, optimizer,
+  scheduler, and RNG state; formal outputs remain separate from debug runs.
+- Shared fixed-deformation suite and 10-seed x 10-case main-table evaluation.
 
-```bash
-conda activate comparison_experiments_py310
-python train.py --model IR-ArF --dataset PaviaU --mode registered --device cuda:0 --epochs 1
-```
+## Environment
 
-For a short data/model integration check without completing the full epoch, call
-the adapter directly:
-
-```bash
-python comparison/IR-ArF/train.py --dataset PaviaU --stage registered --epochs 1 --max_train_batches 1 --device cuda:0
-```
-
-The default official-style training schedule is 200 epochs, Adam with learning
-rate 2e-4, and StepLR(step_size=20, gamma=0.8). This is method-specific rather
-than replacing the optimization settings of other comparison methods.
-
-After registered training, the mixed stage can be launched with:
+The comparison adapter uses standard PyTorch, scipy, numpy, matplotlib and tqdm,
+without compiling any IR&ArF-specific CUDA extension. Install dependencies into
+the existing comparison environment without changing its PyTorch/CUDA version:
 
 ```bash
-python train.py --model IR-ArF --dataset PaviaU --mode mixed --device cuda:0 --epochs 200
+python -m pip install "numpy<2" scipy matplotlib tqdm
 ```
 
-The mixed stage loads the registered best checkpoint and applies the shared
-10% identity / 90% HSI-side deformation protocol.
+## Commands (from repository root)
+
+```bash
+git pull origin main
+
+python comparison/IR-ArF/smoke_test.py
+
+# Debug: only one train batch, isolated in checkpoints/physical_smoke
+python comparison/IR-ArF/train.py --dataset PaviaU --stage registered \
+  --device cuda:0 --epochs 1 --max_train_batches 1
+
+# Full-data one-epoch sanity check; writes the formal registered checkpoint
+python train.py --model IR-ArF --dataset PaviaU --mode registered \
+  --device cuda:0 --epochs 1
+
+# Continue to the common 800-epoch budget
+python train.py --model IR-ArF --dataset PaviaU --mode registered \
+  --device cuda:0 --epochs 800 --resume auto
+
+# Stage-2: reads the best registered checkpoint, then trains 600 epochs
+python train.py --model IR-ArF --dataset PaviaU --mode mixed --device cuda:0
+
+# Final tests
+python test.py --model IR-ArF --dataset PaviaU --mode registered --device cuda:0
+python test.py --model IR-ArF --dataset PaviaU --mode mixed --device cuda:0
+python test_fixed_deformation.py --model IR-ArF --dataset PaviaU \
+  --mode mixed --device cuda:0
+```
+
+The mixed main-table test uses the central `test_multiseed_deformation.py`
+runner and supports `--max_samples`, `--resume_output`, `--overwrite_output`
+and `--geometry_seeds`. Do not compare the single-batch debug weights against
+full-budget methods.
+
+## Verification status
+
+Static source-level integration and repository registration have been inspected.
+A runtime forward/backward smoke test, full-data one-epoch training run, and
+GPU-memory check on the target server remain necessary. Do not treat this
+adapter as a validated reproduction until those checks pass.
