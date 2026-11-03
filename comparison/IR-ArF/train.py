@@ -127,6 +127,49 @@ def run_validation(model, loader, p0, args, device):
     return result
 
 
+CHECKPOINT_PROTOCOL_KEYS = (
+    "dataset", "image_size", "patch_size", "stride", "scale_ratio",
+    "degradation_mode", "degradation_sigma", "degradation_kernel_size",
+    "mtf_nyquist", "psf_truncate", "msi_mode", "srf_path",
+    "wavelength_root", "wavelength_path", "srf_interp", "srf_band_set",
+    "max_translation", "max_rotation_deg", "max_local_px",
+    "control_grid", "min_jacobian", "registered_probability",
+)
+RESUME_KEYS = ("seed", "batch_size", "lr", "step_size", "lr_gamma",
+               "validation_interval", "validation_cases", "max_train_batches")
+
+
+def verify_train_checkpoint(state, args, model_args, sensor_fingerprint, *, stage, resume=False):
+    if state.get("method")!="IR-ArF" or state.get("stage")!=stage:
+        raise ValueError(f"IR&ArF checkpoint method/stage mismatch: expected {stage}")
+    if state.get("upstream_commit")!=UPSTREAM_COMMIT:
+        raise ValueError("IR&ArF model-source version mismatch")
+    if state.get("sensor_fingerprint")!=sensor_fingerprint:
+        raise ValueError("IR&ArF sensor SRF mismatch")
+    saved_model=state.get("model_args",{})
+    for key in ("bands","msi_channels"):
+        if saved_model.get(key)!=getattr(model_args,key):
+            raise ValueError(f"IR&ArF checkpoint architecture mismatch: {key}")
+    recorded=state.get("args")
+    if not isinstance(recorded,dict):
+        raise ValueError("IR&ArF checkpoint is missing protocol arguments")
+    for key in CHECKPOINT_PROTOCOL_KEYS + (RESUME_KEYS if resume else ()):
+        if key in recorded and recorded[key]!=getattr(args,key):
+            raise ValueError(f"IR&ArF checkpoint protocol mismatch: {key}")
+
+
+def make_checkpoint(args, model_args, sensor_fingerprint, model, optimizer,
+                    scheduler, generator, epoch, best_psnr):
+    return {
+        "method":"IR-ArF", "stage":args.stage, "epoch":epoch,
+        "upstream_commit":UPSTREAM_COMMIT, "sensor_fingerprint":sensor_fingerprint,
+        "model":model.state_dict(), "optimizer":optimizer.state_dict(),
+        "scheduler":scheduler.state_dict(), "best_psnr":best_psnr,
+        "args":vars(args).copy(), "model_args":vars(model_args).copy(),
+        "rng":snapshot_rng(generator),
+    }
+
+
 def main():
     args=parse_args()
     if args.epochs is None:
@@ -166,6 +209,9 @@ def main():
     generator=make_generator(device,args.seed+404)
 
     family="physical" if args.stage=="registered" else "hsi_warp_final"
+    if args.max_train_batches:
+        family += "_smoke"
+        print("DEBUG RUN: limited batches; checkpoint/logs isolated from formal training")
     ckpt_dir=Path(args.checkpoint_dir or HERE/"checkpoints"/family/args.dataset)
     log_dir=Path(args.log_dir or HERE/"logs"/family/args.dataset)
     ckpt_dir.mkdir(parents=True,exist_ok=True)
@@ -175,20 +221,23 @@ def main():
     best_psnr=-float("inf")
     if args.resume:
         state=torch.load(args.resume,map_location=device,weights_only=False)
-        if state.get("method")!="IR-ArF" or state.get("stage")!=args.stage:
-            raise ValueError("Checkpoint method/stage mismatch")
-        model.load_state_dict(state["model"])
+        verify_train_checkpoint(state,args,model_args,sensor_fingerprint,
+                                stage=args.stage,resume=True)
+        model.load_state_dict(state["model"],strict=True)
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         start_epoch=int(state["epoch"])+1
         best_psnr=float(state.get("best_psnr",-float("inf")))
+        if "rng" not in state:
+            raise ValueError("IR&ArF resume checkpoint is missing RNG state")
+        restore_rng(state["rng"],generator)
         print(f"Resumed {args.resume} at epoch {start_epoch+1}")
     elif args.stage=="mixed":
         init=args.init_checkpoint or str(HERE/"checkpoints"/"physical"/args.dataset/"best.pth.tar")
         state=torch.load(init,map_location=device,weights_only=False)
-        if state.get("method")!="IR-ArF" or state.get("stage")!="registered":
-            raise ValueError("Mixed training requires an IR&ArF registered checkpoint")
-        model.load_state_dict(state["model"])
+        verify_train_checkpoint(state,args,model_args,sensor_fingerprint,
+                                stage="registered")
+        model.load_state_dict(state["model"],strict=True)
         print(f"Initialized mixed stage from {init}")
 
     protocol={
@@ -273,24 +322,22 @@ def main():
             print("VALIDATION",{"epoch":epoch+1,**val_metrics})
             if val_metrics["PSNR"]>best_psnr:
                 best_psnr=val_metrics["PSNR"]
-                torch.save({
-                    "method":"IR-ArF","stage":args.stage,"epoch":epoch,
-                    "model":model.state_dict(),"optimizer":optimizer.state_dict(),
-                    "scheduler":scheduler.state_dict(),"best_psnr":best_psnr,
-                    "args":vars(args),"model_args":vars(model_args),
-                },ckpt_dir/"best.pth.tar")
+                torch.save(
+                    make_checkpoint(args,model_args,sensor_fingerprint,model,optimizer,
+                                    scheduler,generator,epoch,best_psnr),
+                    ckpt_dir/"best.pth.tar",
+                )
             with history.open("a",newline="",encoding="utf-8") as f:
                 csv.writer(f).writerow([
                     epoch+1,train_loss,train_l1,train_ncc,identity_count/max(seen,1),
                     val_metrics.get("PSNR"),val_metrics.get("SAM"),val_metrics.get("SSIM"),
                     val_metrics.get("ERGAS"),val_metrics.get("CC"),val_metrics.get("L1")
                 ])
-        torch.save({
-            "method":"IR-ArF","stage":args.stage,"epoch":epoch,
-            "model":model.state_dict(),"optimizer":optimizer.state_dict(),
-            "scheduler":scheduler.state_dict(),"best_psnr":best_psnr,
-            "args":vars(args),"model_args":vars(model_args),
-        },ckpt_dir/"last.pth.tar")
+        torch.save(
+            make_checkpoint(args,model_args,sensor_fingerprint,model,optimizer,
+                            scheduler,generator,epoch,best_psnr),
+            ckpt_dir/"last.pth.tar",
+        )
     print(f"Training finished. best_PSNR={best_psnr:.4f}; checkpoints={ckpt_dir}")
 
 
