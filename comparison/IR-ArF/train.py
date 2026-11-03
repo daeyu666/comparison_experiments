@@ -81,6 +81,8 @@ def parse_args():
                    help="Global gradient norm clipping; 0 disables clipping")
     p.add_argument("--max_abs_output",type=float,default=20.0,
                    help="Abort when normalized reconstructed HSI exceeds this magnitude")
+    p.add_argument("--warn_abs_output",type=float,default=2.0,
+                   help="Create one detailed recurrent-stage warning trace per epoch when exceeded")
     p.add_argument("--validation_interval",type=int,default=None)
     p.add_argument("--validation_cases",type=int,default=5)
     p.add_argument("--seed",type=int,default=1001)
@@ -140,7 +142,7 @@ CHECKPOINT_PROTOCOL_KEYS = (
     "control_grid", "min_jacobian", "registered_probability",
 )
 RESUME_KEYS = ("seed", "batch_size", "lr", "step_size", "lr_gamma",
-               "grad_clip_norm", "max_abs_output",
+               "grad_clip_norm", "max_abs_output", "warn_abs_output",
                "validation_interval", "validation_cases", "max_train_batches")
 
 
@@ -178,12 +180,72 @@ def make_checkpoint(args, model_args, sensor_fingerprint, model, optimizer,
     }
 
 
+
+def trace_reconstruction(model, msi, lr, spatial_size, log_dir, *, epoch, batch, kind, threshold):
+    """Capture recurrent updates and shared branch amplitudes on a problematic batch.
+
+    It performs a no-grad replay only on warning/failure and does not alter
+    model weights, gradients, or the training loss.
+    """
+    def tensor_stats(value):
+        if isinstance(value, torch.Tensor):
+            x=value.detach()
+            return {
+                "shape":list(x.shape),
+                "finite":bool(torch.isfinite(x).all().item()),
+                "abs_max":float(x.abs().amax().item()),
+                "mean":float(x.float().mean().item()),
+            }
+        if isinstance(value,(tuple,list)):
+            return [tensor_stats(v) for v in value]
+        return str(type(value).__name__)
+
+    events=[]
+    def collect(name):
+        def hook(_module, inputs, outputs):
+            important_inputs=inputs if name.startswith("F") else inputs[:1]
+            events.append({
+                "name":name,
+                "inputs":tensor_stats(important_inputs),
+                "outputs":tensor_stats(outputs),
+            })
+        return hook
+
+    net=model.FandD
+    modules=(
+        ("B_T",net.F1.B_T), ("R",net.F1.R), ("R_T",net.F1.R_T),
+        ("F1",net.F1), ("F2",net.F2), ("F3",net.F3),
+        ("Denoiser_shared",net.D1),
+    )
+    handles=[module.register_forward_hook(collect(name)) for name,module in modules]
+    replay_error=None
+    try:
+        with torch.no_grad():
+            model(msi,lr,spatial_size)
+    except Exception as exc:
+        replay_error=f"{type(exc).__name__}: {exc}"
+    finally:
+        for handle in handles:
+            handle.remove()
+    diagnostic={
+        "epoch":epoch,"batch":batch,"kind":kind,"threshold":threshold,
+        "input_lr_hsi":tensor_stats(lr),"input_hr_msi":tensor_stats(msi),
+        "eta":[float(net.F1.eta.item()),float(net.F2.eta.item()),float(net.F3.eta.item())],
+        "events":events,"replay_error":replay_error,
+    }
+    out=log_dir/f"instability_{kind}_epoch{epoch:04d}_batch{batch:05d}.json"
+    out.write_text(json.dumps(diagnostic,indent=2,ensure_ascii=False),encoding="utf-8")
+    return out
+
+
 def main():
     args=parse_args()
     if args.epochs is None:
         args.epochs = 800 if args.stage=="registered" else 600
     if args.validation_interval is None:
         args.validation_interval = DATASET_VALIDATION_INTERVAL[args.dataset]
+    if args.warn_abs_output<0 or args.warn_abs_output>=args.max_abs_output:
+        raise ValueError("warn_abs_output must satisfy 0 <= warn < max_abs_output")
     if args.grad_clip_norm<0 or args.max_abs_output<=0:
         raise ValueError("grad_clip_norm must be >=0 and max_abs_output must be positive")
     if args.validation_cases < 1:
@@ -255,6 +317,7 @@ def main():
         "architecture_id":IRARF_ARCHITECTURE_ID,
         "grad_clip_norm":args.grad_clip_norm,
         "max_abs_output":args.max_abs_output,
+        "warn_abs_output":args.warn_abs_output,
         "upstream":"https://github.com/Jiahuiqu/IR-ArF",
         "upstream_commit":UPSTREAM_COMMIT,
         "sensor_fingerprint":sensor_fingerprint,
@@ -288,6 +351,7 @@ def main():
         seen=identity_count=0
         grad_norm_max=0.0
         prediction_abs_max=0.0
+        warned_this_epoch=False
         bar=tqdm(train_loader,desc=f"IR&ArF {args.stage} {epoch+1}/{args.epochs}",dynamic_ncols=True)
         for step,batch in enumerate(bar):
             if args.max_train_batches and step>=args.max_train_batches:
@@ -304,11 +368,27 @@ def main():
             prediction_abs_max=max(prediction_abs_max,output_amplitude)
             if not math.isfinite(output_amplitude) or output_amplitude>args.max_abs_output:
                 stage_levels=[float(t.detach().abs().amax().item()) for t in outputs]
+                diagnostic=trace_reconstruction(
+                    model,msi,lr,gt.shape[-1],log_dir,
+                    epoch=epoch+1,batch=step+1,kind="failure",
+                    threshold=args.max_abs_output,
+                )
                 raise FloatingPointError(
                     f"IR&ArF reconstruction explosion at epoch={epoch+1}, batch={step+1}, "
                     f"pred_abs_max={output_amplitude:.6g}, stage_abs_max={stage_levels}. "
-                    f"Stopping before optimizer step; do not resume from an exploded checkpoint."
+                    f"Per-stage diagnostic: {diagnostic}. Stop training; do not resume "
+                    f"the exploding run."
                 )
+            if (args.warn_abs_output>0 and output_amplitude>args.warn_abs_output
+                    and not warned_this_epoch):
+                diagnostic=trace_reconstruction(
+                    model,msi,lr,gt.shape[-1],log_dir,
+                    epoch=epoch+1,batch=step+1,kind="warning",
+                    threshold=args.warn_abs_output,
+                )
+                print(f"IR&ArF high-amplitude warning pred_abs_max="
+                      f"{output_amplitude:.5g}; per-stage trace: {diagnostic}")
+                warned_this_epoch=True
             l1=F.l1_loss(pred,gt)
             lr_gray=lr.mean(dim=1,keepdim=True)
             gt_gray=gt.mean(dim=1,keepdim=True)
