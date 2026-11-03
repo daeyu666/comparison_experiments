@@ -22,6 +22,7 @@ EMR-Diff
 CLSNet
 DRTNet
 PSRF-DiffNet
+SA-RFM
 MoE-PNP
 M2DTN
 ```
@@ -57,9 +58,10 @@ python test_multiseed_deformation.py --model DRTNet --dataset Botswana --device 
 python test_multiseed_deformation.py --model EMR-Diff --dataset Augsburg --device cuda:0
 python test_multiseed_deformation.py --model CLSNet --dataset CAVE --device cuda:0
 python test_multiseed_deformation.py --model PSRF-DiffNet --dataset PaviaU --device cuda:0
+python test_multiseed_deformation.py --model SA-RFM --dataset PaviaU --device cuda:0
 ```
 
-当前多seed模型适配器为 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`、`PSRF-DiffNet`；
+当前多seed模型适配器包括 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`、`PSRF-DiffNet`、`SA-RFM`；
 数据集支持 `PaviaU`、`Houston13`、`Chikusei`、`CAVE`、`Botswana`、
 `Augsburg`。该入口使用各方法的 mixed checkpoint，默认形变seed为
 `10001..10010`、每seed每patch 10 cases、重建随机数seed为 `1234`，
@@ -72,6 +74,25 @@ python test_multiseed_deformation.py --model PSRF-DiffNet --dataset PaviaU --dev
 `per_seed.csv` 为逐seed结果，`summary.json` 保存完整协议和明细。支持
 `--resume_output` 续跑已完成的seed，以及 `--overwrite_output` 清除同一输出目录
 中的旧seed标记后重跑。
+
+### SA-RFM（ICML 2026）结构感知流匹配适配
+
+SA-RFM 已加入统一 registered/mixed 流程，并提供 64x64 前向/反向
+smoke test。官方核心模型位于
+`comparison/SA-RFM/upstream_sb.py`，独立适配器、实验参数和源码差异
+详见 [SA-RFM README](comparison/SA-RFM/README.md)。
+
+```bash
+python comparison/SA-RFM/smoke_test.py --device cuda:0 --full
+python train.py --model SA-RFM --dataset PaviaU --mode registered --device cuda:0
+python train.py --model SA-RFM --dataset PaviaU --mode mixed --device cuda:0
+python test.py --model SA-RFM --dataset PaviaU --mode registered --device cuda:0
+python test.py --model SA-RFM --dataset PaviaU --mode mixed --device cuda:0
+```
+
+该适配器按官方实际生效的 `L_RFM + λ_otd L_OTD` 优化目标、AdamW
+(1e-4, 1e-4) 和默认 1 步 Euler ODE 工作。数据划分、SRF/PSF 和形变
+协议与其他模型一致。真实 Augsburg Wald x3 尚未接入。
 
 ### EMR-Diff synthetic基线的动态输入输出适配
 
