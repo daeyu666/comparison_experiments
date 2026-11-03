@@ -25,12 +25,16 @@ def main():
     msi=torch.rand(1,args.msi_channels,args.hr_size,args.hr_size,device=device)
     # A single backward pass can hide an autograd graph retained by a
     # persistent non-leaf attribute (as in the upstream FusionM.eta).
-    eta_names=[name for name,_ in model.named_parameters() if name.endswith(".eta")]
-    if len(eta_names)!=3:
-        raise AssertionError(f"Expected three registered trainable fusion step sizes, found {eta_names}")
-    for name, parameter in model.named_parameters():
-        if name.endswith(".eta") and (not parameter.is_leaf or parameter.grad_fn is not None):
-            raise AssertionError(f"{name} must be a registered leaf Parameter")
+    eta_parameters=[name for name,_ in model.named_parameters() if name.endswith(".eta")]
+    eta_buffers=[(name, value) for name,value in model.named_buffers() if name.endswith(".eta")]
+    if eta_parameters or len(eta_buffers)!=3:
+        raise AssertionError(
+            f"Official effective step sizes must be three fixed buffers; "
+            f"parameters={eta_parameters}, buffers={[n for n,_ in eta_buffers]}"
+        )
+    for name, value in eta_buffers:
+        if value.requires_grad or value.grad_fn is not None or value.item()!=4.0:
+            raise AssertionError(f"{name} must be a detached scalar buffer equal to 4")
     optimizer=torch.optim.Adam(model.parameters(), lr=1e-5)
     for step in range(2):
         optimizer.zero_grad(set_to_none=True)
@@ -48,7 +52,7 @@ def main():
     print("IR&ArF smoke test passed")
     print("device:",device,"input:",tuple(lr.shape),tuple(msi.shape),
           "output:",tuple(pred.shape))
-    print("registered fusion step sizes:",eta_names)
+    print("fixed fusion step sizes:",[n for n,_ in eta_buffers])
     print("parameters:",sum(p.numel() for p in model.parameters()))
 
 
