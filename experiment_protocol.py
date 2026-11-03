@@ -403,37 +403,6 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
-    if adapter.canonical == "IR&ArF":
-        checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else checkpoint_path(adapter, dataset, mode)
-        if check_files and not checkpoint.is_file():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
-        output = Path(output_override) if output_override else (
-            ROOT / "comparison" / adapter.folder / "outputs" / "unified_two_stage"
-            / dataset / f"IRArF_{mode}_seed{MIXED_SEED}.json"
-        )
-        return [
-            sys.executable, str(ROOT / adapter.test_script),
-            "--dataset", dataset,
-            "--data_root", str(data_root),
-            "--image_size", str(IMAGE_SIZE),
-            "--patch_size", str(PATCH_SIZE),
-            "--stride", str(STRIDE),
-            "--scale_ratio", str(SCALE_RATIO),
-            "--degradation_mode", DEGRADATION_MODE,
-            "--mtf_nyquist", str(MTF_NYQUIST),
-            "--psf_truncate", str(PSF_TRUNCATE),
-            *_shared_geometry_args(),
-            "--registered_probability", str(IDENTITY_PROBABILITY),
-            "--seed", str(MIXED_SEED),
-            "--geometry_seeds", *map(str, (TEST_GEOMETRY_SEEDS if geometry_seeds is None else geometry_seeds)),
-            "--cases", str(cases),
-            "--eval_seed", str(eval_seed),
-            "--device", device,
-            "--test_mode", "registered_only" if mode == "registered" else "registered_and_warp",
-            "--checkpoint", str(checkpoint),
-            "--output_json", str(output),
-        ]
-
     model_hidden_channels(adapter, hidden_channels)
     checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else (
         checkpoint_path(adapter, dataset, mode, hidden_channels) if hidden_channels is not None
