@@ -8,6 +8,7 @@ from scipy.io import savemat
 UPSTREAM_SOURCE = 'https://github.com/Jiahuiqu/IR-ArF'
 UPSTREAM_COMMIT = '68d0924208c72ba1b129970b7ef3980dddc6a76c'
 UPSTREAM_MODEL_ADAPTATION = 'dynamic HSI/MSI channels, dynamic LR spatial size, input-device coordinate tensors'
+IRARF_ARCHITECTURE_ID = 'IRArF-x4-sensor-dynamic-fixed-eta-v2'
 
 def make_coord(shape, ranges=None, flatten=True):
     """ Make coordinates at grid centers.
