@@ -632,10 +632,10 @@ def real_protocol_summary(adapter=None, batch_size=None) -> str:
     )
 
 
-def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, hidden_channels=None) -> str:
+def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, hidden_channels=None, lr_override=None) -> str:
     if adapter and adapter.canonical == "IR&ArF":
-        stage1_epochs = epochs if epochs is not None and mode == "registered" else 200
-        stage2_epochs = epochs if epochs is not None and mode == "mixed" else 200
+        stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
+        stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
         return (
             f"x{SCALE_RATIO}, physical MTF={MTF_NYQUIST}, truncate={PSF_TRUNCATE}; "
             f"train={PATCH_SIZE}/stride{STRIDE}, eval={IMAGE_SIZE}; "
@@ -645,7 +645,8 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
             f"dx/dy~U(-{MAX_TRANSLATION:g},{MAX_TRANSLATION:g}), "
             f"rot~U(-{MAX_ROTATION_DEG:g},{MAX_ROTATION_DEG:g}), "
             f"local amplitude~U(0,{MAX_LOCAL_PX:g}), minJac={MIN_JACOBIAN}; "
-            f"official IR&ArF optimizer=Adam lr=2e-4, StepLR(20,0.8), batch={BATCH_SIZE}; "
+            f"IR&ArF optimizer=Adam lr={(0.0002 if lr_override is None else lr_override):g}, "
+            f"StepLR(20,0.8), batch={BATCH_SIZE}; "
             f"loss=L1+0.1*NCC"
         )
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
