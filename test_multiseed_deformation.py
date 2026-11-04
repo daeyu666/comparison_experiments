@@ -21,7 +21,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--model", required=True,
-        help=("Model adapter: UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, SA-RFM, MoE-PNP, M2DTN, or NonRegSRNet (pairwise self-supervised); "
+        help=("Model adapter: UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, SA-RFM, MoE-PNP, M2DTN, PMI-RFCoNet, or NonRegSRNet (pairwise self-supervised); "
               "model names are case-insensitive and registered aliases are accepted."),
     )
     p.add_argument("--dataset", required=True, choices=DATASETS)

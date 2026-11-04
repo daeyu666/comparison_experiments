@@ -117,6 +117,13 @@ _ADAPTERS = {
         real_train="comparison/EMR-Diff/train_augsburg2_wald.py",
         real_infer="comparison/EMR-Diff/infer_augsburg2_wald.py",
     ),
+    "pmi-rfconet": ModelAdapter(
+        canonical="PMI-RFCoNet", folder="PMI-RFCoNet",
+        registered_train="comparison/PMI-RFCoNet/train.py",
+        mixed_train="comparison/PMI-RFCoNet/train_hsi_deformed.py",
+        test_script="comparison/PMI-RFCoNet/test_hsi_deformed.py",
+        real_train="", real_infer="",
+    ),
     "sa-rfm": ModelAdapter(
         canonical="SA-RFM",
         folder="SA-RFM",
@@ -189,6 +196,9 @@ _ALIASES = {
     "psrf-diffnet": "psrf-diffnet",
     "moe-pnp": "moe-pnp",
     "moepnp": "moe-pnp",
+    "pmirfconet": "pmi-rfconet",
+    "pmi_rfconet": "pmi-rfconet",
+    "pmi-rfco": "pmi-rfconet",
     "m2dtn": "m2dtn",
     "m2-dtn": "m2dtn",
     "ir-arf": "ir-arf",
@@ -352,6 +362,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     # 1e-4 with no weight decay in its released training entry point.
     if adapter.canonical == "PSRF-DiffNet":
         optimizer_lr, optimizer_weight_decay = 1e-4, 0.0
+    elif adapter.canonical == "PMI-RFCoNet":
+        optimizer_lr, optimizer_weight_decay = 1e-3, 0.0
     elif adapter.canonical == "SA-RFM":
         # Released SA-RFM training uses AdamW(lr=1e-4, weight_decay=1e-4).
         optimizer_lr, optimizer_weight_decay = 1e-4, 1e-4
@@ -510,6 +522,8 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
         "--data_root", str(data_root),
         "--output_json", str(output),
     ]
+    if adapter.canonical == "PMI-RFCoNet":
+        cmd += ["--eval_seed", str(eval_seed), "--max_samples", str(max_samples)]
     if adapter.canonical == "EMR-Diff":
         cmd += ["--eval_seed", str(eval_seed)]
         if hidden_channels is not None:
@@ -700,7 +714,9 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
     stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
     stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
-    if adapter and adapter.canonical == "SA-RFM":
+    if adapter and adapter.canonical == "PMI-RFCoNet":
+        optimizer_summary = "PMI-RFCoNet width=64, Adam lr=0.001 wd=0, L1, MultiStepLR(50,150,300; gamma=0.1)"
+    elif adapter and adapter.canonical == "SA-RFM":
         optimizer_summary = "SA-RFM AdamW lr=0.0001, wd=0.0001, L_RFM+1.0*L_OTD, ODE=1"
     elif adapter and adapter.canonical == "PSRF-DiffNet":
         optimizer_summary = "PSRF-DiffNet Adam lr=0.0001, wd=0"

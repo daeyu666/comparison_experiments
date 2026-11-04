@@ -979,3 +979,27 @@ python test_fixed_deformation.py --model NonRegSRNet --dataset PaviaU --mode mix
 默认每观测对10000次Adam更新。环境检查可用
 `python comparison/NonRegSRNet/smoke_test.py --device cpu`；
 缩短预算的`--nonreg_iterations 2`只用于smoke，不作为正式结果。
+
+## PMI-RFCoNet (TGRS 2024)
+
+Added the released three-level registration/fusion network under
+[comparison/PMI-RFCoNet](comparison/PMI-RFCoNet/README.md).
+It uses dataset-level supervised training and fixed-checkpoint forward inference;
+there is no observation-wise test-time optimization. All six synthetic x4 datasets
+share the existing split, physical degradation, SRF and geometry protocol.
+The released train configuration is retained: mid_channels=64, num_fc=4,
+Adam lr=1e-3, mean L1 and MultiStepLR milestones 50/150/300 (gamma=0.1).
+
+```bash
+python comparison/PMI-RFCoNet/smoke_test.py --device cuda:0 --full
+python train.py --model PMI-RFCoNet --dataset PaviaU --mode registered
+python train.py --model PMI-RFCoNet --dataset PaviaU --mode mixed
+python test.py --model PMI-RFCoNet --dataset PaviaU --mode registered
+python test.py --model PMI-RFCoNet --dataset PaviaU --mode mixed
+```
+
+The common 800/600 stage budgets and batch1/patch64 replace the upstream
+single-stage 500 epochs and batch4/patch160. Mixed initializes from Registered best;
+testing restores architecture from checkpoint metadata. Official test/demo width128
+conflicts with its train width64, so the adapter consistently follows train width64.
+Real Augsburg Wald x3 is outside this fixed-x4 implementation.

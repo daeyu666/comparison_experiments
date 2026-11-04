@@ -1,0 +1,28 @@
+name: PMI-RFCoNet smoke
+on:
+  push:
+    branches: [main, codex/pmi-rfconet-reproduction]
+    paths:
+      - 'comparison/PMI-RFCoNet/**'
+      - 'tests/test_pmi_rfconet.py'
+      - 'experiment_protocol.py'
+      - 'test_fixed_deformation.py'
+      - 'test_multiseed_deformation.py'
+      - '.github/workflows/pmi-rfconet-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install 'numpy<2' scipy pandas h5py pillow tifffile pytest tqdm
+      - run: PMI_TEST_OFFICIAL=1 python -m pytest -q tests/test_pmi_rfconet.py
+      - run: python comparison/PMI-RFCoNet/smoke_test.py --device cpu --full
+

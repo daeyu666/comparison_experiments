@@ -140,6 +140,20 @@ def _sarfm(args):
     return test_set, model, p0.degrade, device, details
 
 
+def _pmi_rfconet(args):
+    from importlib import import_module
+    evaluator = import_module("comparison.PMI-RFCoNet.test_hsi_deformed")
+    test_set, model, p0, device, state = evaluator.build_test_components(
+        args, expected_stage=args.mode
+    )
+    details = {name: state.get(name) for name in (
+        "architecture_id", "upstream_blob_sha", "upstream_commit", "training_stage",
+        "hsi_channels", "msi_channels", "model_args", "sensor_fingerprint", "registered_probability",
+    )}
+    details["checkpoint_epoch"] = int(state["epoch"])
+    return test_set, model, p0.degrade, device, details
+
+
 def _psrf(args):
     evaluator = _load_evaluator("PSRF-DiffNet")
     cfg = evaluator.build_shared_cfg(args)
@@ -239,7 +253,7 @@ def _nonregsrnet(args):
 
 # Future comparison methods supply the same five values; the entire strength
 # schedule, full-split traversal, local-field RNG and metrics stay shared.
-MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "SA-RFM": _sarfm, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf, "NonRegSRNet": _nonregsrnet}
+MODEL_BUILDERS = {"EMR-Diff": _emr, "UAFL": _uafl, "CLSNet": _clsnet, "DRTNet": _drtnet, "PSRF-DiffNet": _psrf, "SA-RFM": _sarfm, "PMI-RFCoNet": _pmi_rfconet, "MoE-PNP": _moepnp, "M2DTN": _m2dtn, "IR&ArF": _irarf, "NonRegSRNet": _nonregsrnet}
 
 
 def parse_args(argv=None):
