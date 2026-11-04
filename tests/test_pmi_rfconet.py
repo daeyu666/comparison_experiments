@@ -7,6 +7,7 @@ from pathlib import Path
 import urllib.request
 import pytest
 import torch
+import torch.utils._python_dispatch
 
 model_module = importlib.import_module("comparison.PMI-RFCoNet.model")
 trainer = importlib.import_module("comparison.PMI-RFCoNet.train")
@@ -171,3 +172,41 @@ def test_actual_shared_evaluation_builds_checkpoint_and_scores(trained_stages,tm
         assert "PMI-RFCoNet" in json.dumps(summary)
         assert (output/"summary.csv").exists()
 
+class _RejectIntegerMatmul(torch.utils._python_dispatch.TorchDispatchMode):
+    """Emulate CUDA's integer-matmul restriction while running on CPU."""
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if func in (torch.ops.aten.mm.default, torch.ops.aten.addmm.default,
+                    torch.ops.aten.bmm.default):
+            if any(isinstance(value, torch.Tensor) and value.dtype == torch.long for value in args):
+                raise RuntimeError("Integer matrix multiplication is unsupported by CUDA")
+        return func(*args, **(kwargs or {}))
+
+
+@pytest.mark.parametrize("device", [
+    "cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="CUDA unavailable")),
+])
+def test_stn_batch_offsets_warp_and_backward_without_integer_matmul(device):
+    core=importlib.import_module("comparison.PMI-RFCoNet.upstream_model")
+    moving=torch.arange(2*9*12*3,device=device,dtype=torch.float32).reshape(2,9,12,3)
+    moving.requires_grad_()
+    flow=torch.zeros(2,9,12,2,device=device)
+    flow[1,:,:,0]=1
+    flow.requires_grad_()
+    expected=moving.detach().clone()
+    expected[1,:,:-1,:]=moving.detach()[1,:,1:,:]
+    expected[1,:,-1,:]=0
+    with _RejectIntegerMatmul():
+        actual=core.SpatialTransformation()(flow,moving)
+        torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+        actual.square().mean().backward()
+    assert moving.grad is not None and torch.isfinite(moving.grad).all()
+    assert flow.grad is not None and torch.isfinite(flow.grad).all()
+
+
+def test_full_forward_backward_has_no_cuda_unsupported_integer_matmul():
+    model=PMIRFCoNet(7,3,mid_channels=8,num_fc=1).train()
+    with _RejectIntegerMatmul():
+        result=model(torch.rand(1,7,16,16),torch.rand(1,3,64,64))
+        result.square().mean().backward()
+    assert torch.isfinite(result).all()

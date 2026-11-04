@@ -43,6 +43,7 @@ MIT 许可见 LICENSE.upstream。
 对官方核心仅做两类兼容适配：
 1. 把硬编码的 4 个 MSI 输入通道改为传感器的实际通道数；4 通道时结构不变。
 2. STN 的网格、索引与辅助张量使用输入 device，支持 CPU 和任意 CUDA 设备；
+   索引重复使用 repeat_interleave，避免 CUDA 不支持的 Long 矩阵乘法；
    保留作者插值公式、零边界处理及梯度。
 
 没有已知 PSF/SRF 损失模块被替换：这是端到端监督模型，使用公共生成观测和 HR-HSI 标签训练。
@@ -117,6 +118,8 @@ PMI_TEST_OFFICIAL=1 python -m pytest -q tests/test_pmi_rfconet.py
 双输入依赖、固定参数推理、原版完整网络相同权重下的输出与梯度、
 Registered→Mixed实际训练、scheduler恢复后与连续训练一致，
 以及 Registered、固定强度、多seed三个评分入口。
+STN 回归检查在 CPU 模拟 CUDA 不支持的整数矩阵乘法，验证批量索引、采样和反向；
+CUDA 可用时还会运行实际 CUDA STN 检查。
 smoke_test.py 默认使用正式 mid_channels=64，覆盖六组传感器；
 --full 额外测试128×128前向并输出本机计时。
 

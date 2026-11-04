@@ -1,7 +1,8 @@
 """Released PMI-RFCoNet core; MIT, Jiahuiqu (2024).
 Source commit b52e0c84291b917574034da9081c3fac404d34e5, model.py blob
 53258b0de2089a788bde134e715114e3291a37e1.
-Compatibility edits: configurable MSI input channels and device-aware STN tensors.
+Compatibility edits: configurable MSI channels, device-aware STN tensors and
+CUDA-compatible integer-index repetition.
 All active layers, attention, interpolation and three-level forward are retained.
 """
 import torch
@@ -284,10 +285,9 @@ class SpatialTransformation(nn.Module):
         return x_t, y_t
 
     def repeat(self, x, n_repeats):
-        rep = torch.transpose(torch.unsqueeze(torch.ones(n_repeats, device=x.device), 1), 1, 0)
-        rep = rep.long()
-        x = torch.matmul(torch.reshape(x, (-1, 1)), rep)
-        return torch.squeeze(torch.reshape(x, (-1, 1)))
+        # CUDA has no Long addmm kernel. Repeat flattened batch offsets directly;
+        # this preserves their order, integer dtype and device without a matmul.
+        return x.reshape(-1).repeat_interleave(n_repeats)
 
     def interpolate(self, im, x, y):
         im = F.pad(im, (0, 0, 1, 1, 1, 1, 0, 0))
