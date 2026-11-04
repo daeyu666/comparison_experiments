@@ -117,6 +117,10 @@ _ADAPTERS = {
         real_train="comparison/EMR-Diff/train_augsburg2_wald.py",
         real_infer="comparison/EMR-Diff/infer_augsburg2_wald.py",
     ),
+    "cnmf": ModelAdapter(canonical="CNMF", folder="CNMF", registered_train="", mixed_train="",
+                         test_script="comparison/CNMF/test.py", real_train="", real_infer=""),
+    "hysure": ModelAdapter(canonical="HySure", folder="HySure", registered_train="", mixed_train="",
+                           test_script="comparison/HySure/test.py", real_train="", real_infer=""),
     "pmi-rfconet": ModelAdapter(
         canonical="PMI-RFCoNet", folder="PMI-RFCoNet",
         registered_train="comparison/PMI-RFCoNet/train.py",
@@ -300,6 +304,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
+    if adapter.canonical in ("CNMF", "HySure"):
+        raise NotImplementedError(f"{adapter.canonical} has no dataset pretraining. Run test.py --model {adapter.canonical} --dataset {dataset} --mode registered")
     if adapter.canonical == "NonRegSRNet":
         raise NotImplementedError(
             "NonRegSRNet uses fresh self-supervised optimization per observation pair. "
@@ -451,12 +457,23 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
                        geometry_seeds=None, cases=TEST_CASES, eval_seed=EVAL_SEED,
                        data_root="./data/raw", checkpoint_override="", output_override="",
                        max_samples=0, resume_output=False, overwrite_output=False,
-                       legacy_single_seed=False, check_files=True, hidden_channels=None, nonreg_options=None):
+                       legacy_single_seed=False, check_files=True, hidden_channels=None, nonreg_options=None, classical_options=None):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
         raise ValueError(f"Unsupported mode={mode!r}")
     model_hidden_channels(adapter, hidden_channels)
+    if adapter.canonical in ("CNMF", "HySure"):
+        if mode != "registered":
+            raise ValueError(f"{adapter.canonical} is Registered-only; mixed/warp tests are disabled")
+        if checkpoint_override:
+            raise ValueError(f"{adapter.canonical} does not use a pretrained checkpoint")
+        if resume_output or overwrite_output:
+            raise ValueError("Classical Registered evaluation does not use multiseed output controls")
+        from comparison.traditional.options import benchmark_command
+        return benchmark_command(ROOT, adapter.canonical, dataset, device, data_root=data_root,
+            output_override=output_override,max_samples=max_samples,eval_seed=eval_seed,
+            options=classical_options)
     if adapter.canonical == "NonRegSRNet":
         if checkpoint_override:
             raise ValueError("NonRegSRNet uses independent pairwise fits; pretrained checkpoint is not accepted")
@@ -711,6 +728,8 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
             f"StepLR(20,0.8), batch={BATCH_SIZE}; "
             f"loss=L1+0.1*NCC"
         )
+    if adapter and adapter.canonical in ("CNMF", "HySure"):
+        return "Registered only; no pretraining/checkpoint; CPU numerical solver per pair; known shared P0/SRF; public split and metrics"
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
     stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
     stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS

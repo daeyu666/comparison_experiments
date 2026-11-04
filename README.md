@@ -1003,3 +1003,25 @@ single-stage 500 epochs and batch4/patch160. Mixed initializes from Registered b
 testing restores architecture from checkpoint metadata. Official test/demo width128
 conflicts with its train width64, so the adapter consistently follows train width64.
 Real Augsburg Wald x3 is outside this fixed-x4 implementation.
+
+## CNMF / HySure — Registered-only classical baselines
+
+Two CPU numerical fusion methods are available without pretrained checkpoints:
+[CNMF](comparison/CNMF/README.md) ports the author's released update routines;
+[HySure](comparison/HySure/README.md) implements the original subspace/VTV objective
+with an SVD basis and SALSA/ADMM. Both use the known common sensor SRF and exact
+physical operator, including its nonperiodic boundary handling. HySure's spatial
+normal equation uses conjugate gradients to match that common operator.
+
+```bash
+python -m pip install -r comparison/CNMF/requirements.txt
+python test.py --model CNMF --dataset PaviaU --mode registered --device cpu
+python test.py --model HySure --dataset PaviaU --mode registered --device cpu
+```
+
+Use the same commands for all six synthetic datasets by changing --dataset.
+No train.py stage or Mixed/Warp evaluation is required or enabled for these methods.
+Each registered patch is solved once; output under comparison/<method>/outputs/registered/<Dataset>
+contains summary.json, summary.csv and per_sample_metrics.csv, including numerical
+settings and solve times. HySure is explicitly the known-operator SVD variant;
+it does not silently use the blind/VCA demo or a mismatched FFT blur model.

@@ -52,6 +52,8 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     adapter = resolve_model(args.model)
+    if adapter.canonical in ("CNMF", "HySure"):
+        raise ValueError(f"{adapter.canonical} is Registered-only; use test.py --mode registered")
     model_hidden_channels(adapter, args.hidden_channels)
     if adapter.canonical not in MODEL_BUILDERS:
         raise ValueError(f"Register a shared test model builder for {adapter.canonical} in test_fixed_deformation.MODEL_BUILDERS")

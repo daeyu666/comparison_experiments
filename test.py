@@ -6,6 +6,7 @@ import shlex
 import subprocess
 from emr_configuration import add_hidden_channels_argument
 from comparison.NonRegSRNet.options import add_fit_args
+from comparison.traditional.options import add_classical_args, DEFAULTS as CLASSICAL_DEFAULTS
 
 from experiment_protocol import (
     DATASETS, MODES, ROOT, TEST_GEOMETRY_SEEDS, build_test_command, protocol_summary, resolve_model,
@@ -16,7 +17,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Unified two-stage comparison final-test launcher"
     )
-    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, SA-RFM, PMI-RFCoNet, MoE-PNP, M2DTN or NonRegSRNet")
+    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, SA-RFM, PMI-RFCoNet, CNMF, HySure, MoE-PNP, M2DTN or NonRegSRNet")
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--mode", required=True, choices=MODES)
     p.add_argument("--device", default="cuda:0")
@@ -24,6 +25,7 @@ def parse_args(argv=None):
     p.add_argument("--checkpoint", default="")
     add_hidden_channels_argument(p)
     add_fit_args(p)
+    add_classical_args(p)
     p.add_argument("--geometry_seeds", type=int, nargs="+", default=list(TEST_GEOMETRY_SEEDS))
     p.add_argument("--cases", type=int, default=10)
     p.add_argument("--eval_seed", type=int, default=1234)
@@ -36,7 +38,7 @@ def parse_args(argv=None):
     args = p.parse_args(argv)
     if args.resume_output and args.overwrite_output:
         p.error("Choose resume_output OR overwrite_output")
-    if (args.mode == "registered" or args.legacy_single_seed) and (args.resume_output or args.overwrite_output or args.max_samples):
+    if (args.mode == "registered" or args.legacy_single_seed) and (args.resume_output or args.overwrite_output or (args.max_samples and args.model.lower() not in ("cnmf","hysure"))):
         p.error("resume_output/overwrite_output/max_samples apply only to the mixed multiseed test")
     return args
 
@@ -50,7 +52,8 @@ def main(argv=None):
         max_samples=args.max_samples, resume_output=args.resume_output,
         overwrite_output=args.overwrite_output, legacy_single_seed=args.legacy_single_seed,
         check_files=not args.dry_run, hidden_channels=args.hidden_channels,
-        nonreg_options={k:v for k,v in vars(args).items() if k.startswith("nonreg_")})
+        nonreg_options={k:v for k,v in vars(args).items() if k.startswith("nonreg_")},
+        classical_options={k:v for k,v in vars(args).items() if k in CLASSICAL_DEFAULTS or k=="classical_save_predictions"})
     print(
         f"UNIFIED_TEST model={adapter.canonical} dataset={args.dataset} "
         f"mode={args.mode}"
