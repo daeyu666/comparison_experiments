@@ -79,7 +79,7 @@ python test_multiseed_deformation.py --model PSRT --dataset PaviaU --device cuda
 
 ### PSRT（TGRS 2023）Pyramid Shuffle-and-Reshuffle Transformer
 
-官方参考结构的 2 个外层 Block、3 个 Pyramid Block、8/4/2 三尺度
+官方参考结构的 2 组 Pyramid、每组 3 个 W2W Block、8/4/2 三尺度
 窗口 Shuffle/Reshuffle 注意力已适配动态 HSI/MSI 通道，支持统一
 64x64 训练和 128x128 推理。沿用官方 L1、AdamW 1e-4/1e-4、梯度裁剪10。
 详见 [PSRT README](comparison/PSRT/README.md)。
