@@ -22,7 +22,9 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=None,
                    help="EMR-Diff training batch override; default=2. Learning rate is unchanged.")
     p.add_argument("--lr", type=float, default=None,
-                   help="IR&ArF only: explicitly override the upstream Adam learning rate 2e-4")
+                   help="Explicit Adam learning-rate override for IR&ArF or PMI-RFCoNet")
+    p.add_argument("--grad_clip",type=float,default=None,help="PMI-RFCoNet only: gradient norm limit; 0 disables clipping")
+    p.add_argument("--resume_optimizer_override",action="store_true",help="PMI-RFCoNet only: explicitly change lr/grad_clip on resume")
     p.add_argument("--epochs", type=int, default=None,
                    help="Total target epochs, including completed epochs when resuming")
     p.add_argument("--resume", default="",
@@ -37,12 +39,13 @@ def main():
     adapter = resolve_model(args.model)
     cmd = build_train_command(adapter, args.dataset, args.mode, args.device, args.batch_size,
                               epochs=args.epochs, resume=args.resume,
-                              hidden_channels=args.hidden_channels, lr_override=args.lr)
+                              hidden_channels=args.hidden_channels, lr_override=args.lr,
+                              grad_clip_override=args.grad_clip,resume_optimizer_override=args.resume_optimizer_override)
     print(
         f"UNIFIED_TRAIN model={adapter.canonical} dataset={args.dataset} "
         f"mode={args.mode}"
     )
-    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode, hidden_channels=args.hidden_channels, lr_override=args.lr)}")
+    print(f"PROTOCOL {protocol_summary(adapter, args.batch_size, epochs=args.epochs, mode=args.mode, hidden_channels=args.hidden_channels, lr_override=args.lr, grad_clip_override=args.grad_clip)}")
     print("COMMAND " + shlex.join(cmd))
     if args.dry_run:
         return

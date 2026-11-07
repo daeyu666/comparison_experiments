@@ -30,6 +30,7 @@ from data_loader import build_datasets  # noqa: E402
 from metrics import MetricAverager, calc_metrics  # noqa: E402
 from experiment_protocol import DATASET_VALIDATION_INTERVAL  # noqa: E402
 from .model import ARCHITECTURE_ID, UPSTREAM_COMMIT, UPSTREAM_BLOB_SHA, build_model  # noqa: E402
+from .stability import fail_training, ensure_finite_checkpoint, reconfigure_learning_rate
 
 
 def parser(stage="registered", argv=None):
@@ -52,6 +53,8 @@ def parser(stage="registered", argv=None):
     p.add_argument("--log_dir", default="")
     p.add_argument("--resume", default="")
     p.add_argument("--init_checkpoint", default="")
+    p.add_argument("--resume_optimizer_override", action="store_true",
+                   help="Explicitly change lr/grad_clip when resuming; retain Adam moments, schedule phase and RNG")
     p.add_argument("--mid_channels", type=int, default=64)
     p.add_argument("--num_fc", type=int, default=4)
     p.add_argument("--drop", type=float, default=0.0)
@@ -90,7 +93,7 @@ def restore_rng(rng, geometry_gen):
 
 def checkpoint_payload(model, optimizer, scheduler, args, epoch, best_psnr, bad_validations,
                        fingerprint, geometry_gen):
-    return {
+    payload = {
         "method": "PMI-RFCoNet",
         "architecture_id": ARCHITECTURE_ID,
         "upstream_blob_sha": UPSTREAM_BLOB_SHA,
@@ -110,10 +113,13 @@ def checkpoint_payload(model, optimizer, scheduler, args, epoch, best_psnr, bad_
         "bad_validations": int(bad_validations),
         "rng": snapshot_rng(geometry_gen),
     }
+    ensure_finite_checkpoint(payload)
+    return payload
 
 
 def load_checkpoint(path, model, args, *, expected_stage, fingerprint, optimizer=None, scheduler=None):
     state = torch.load(path, map_location="cpu", weights_only=False)
+    ensure_finite_checkpoint(state)
     if state.get("method") != "PMI-RFCoNet" or state.get("architecture_id") != ARCHITECTURE_ID:
         raise ValueError("Checkpoint is not compatible with this PMI-RFCoNet architecture")
     if state.get("upstream_blob_sha") != UPSTREAM_BLOB_SHA:
@@ -139,13 +145,19 @@ def load_checkpoint(path, model, args, *, expected_stage, fingerprint, optimizer
                      "lr_milestones", "lr_gamma", "grad_clip", "registered_probability",
                      "max_translation", "max_rotation_deg", "max_local_px", "control_grid", "min_jacobian"):
             if name in recorded and getattr(args, name, None) != recorded[name]:
-                raise ValueError(f"Exact resume mismatch: {name}")
+                if name not in ("lr", "grad_clip") or not getattr(args,"resume_optimizer_override",False):
+                    raise ValueError(f"Exact resume mismatch: {name}; use --resume_optimizer_override only to change lr/grad_clip")
         if "optimizer" not in state or "rng" not in state or "scheduler" not in state:
             raise ValueError("Exact resume requires optimizer, scheduler and RNG state")
         optimizer.load_state_dict(state["optimizer"])
         if scheduler is None:
             raise ValueError("Exact resume requires a scheduler")
         scheduler.load_state_dict(state["scheduler"])
+        if getattr(args,"resume_optimizer_override",False):
+            reconfigure_learning_rate(optimizer,scheduler,args.lr)
+            print(f"RESUME_OPTIMIZER_OVERRIDE old_base_lr={recorded.get('lr')} new_base_lr={args.lr} "
+                  f"grad_clip={args.grad_clip} effective_lr={[g['lr'] for g in optimizer.param_groups]}; "
+                  "Adam moments, completed epochs and scheduler phase retained",flush=True)
     return state
 
 
@@ -159,7 +171,10 @@ def evaluate(model, loader, device, p0, args):
         gt = batch["gt"].to(device, non_blocking=True)
         msi = batch["hr_msi"].to(device, non_blocking=True)
         registered_lr = p0.degrade(gt)
-        reg.update(calc_metrics(model(registered_lr, msi), gt, args.scale_ratio))
+        prediction=model(registered_lr,msi)
+        if not bool(torch.isfinite(prediction).all()):
+            raise FloatingPointError("PMI-RFCoNet validation prediction is nonfinite; best/last checkpoint not updated")
+        reg.update(calc_metrics(prediction, gt, args.scale_ratio))
         if args.stage == "mixed":
             for _ in range(args.validation_cases):
                 geometry = sample_synthetic_geometry(
@@ -170,7 +185,10 @@ def evaluate(model, loader, device, p0, args):
                     **geometry_kwargs(args),
                 )
                 lr_deformed = make_deformed_lr_hsi(gt, geometry, p0)
-                warp.update(calc_metrics(model(lr_deformed, msi), gt, args.scale_ratio))
+                prediction=model(lr_deformed,msi)
+                if not bool(torch.isfinite(prediction).all()):
+                    raise FloatingPointError("PMI-RFCoNet warped validation prediction is nonfinite; checkpoint not updated")
+                warp.update(calc_metrics(prediction, gt, args.scale_ratio))
     return reg.average(), warp.average()
 
 
@@ -204,6 +222,8 @@ def main(stage="registered", argv=None):
         raise ValueError("--max_train_batches must be >= 0")
     if args.degradation_mode != "physical":
         raise ValueError("PMI-RFCoNet unified stages require the shared physical degradation")
+    if args.resume_optimizer_override and not args.resume:
+        raise ValueError("--resume_optimizer_override requires --resume")
     if stage == "registered" and args.init_checkpoint:
         raise ValueError("Registered stage starts from scratch; use --resume to continue")
 
@@ -277,15 +297,25 @@ def main(stage="registered", argv=None):
                     gt, p0, args, geometry_gen, mixed=(stage == "mixed")
                 )
             optimizer.zero_grad(set_to_none=True)
+            if not all(bool(torch.isfinite(value).all()) for value in (lr_hsi,msi,gt)):
+                fail_training(model,optimizer,lr_hsi,msi,gt,directory=ckpt_dir/"failure",args=args,
+                    epoch=epoch+1,batch_idx=batch_idx,reason="nonfinite observation/target",replay=False)
             prediction = model(lr_hsi, msi)
             loss = torch.nn.functional.l1_loss(prediction, gt)
             if not torch.isfinite(loss):
-                raise FloatingPointError(f"PMI-RFCoNet nonfinite loss at epoch={epoch+1} batch={batch_idx}")
+                fail_training(model,optimizer,lr_hsi,msi,gt,directory=ckpt_dir/"failure",args=args,
+                    epoch=epoch+1,batch_idx=batch_idx,reason="nonfinite prediction/loss")
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), args.grad_clip if args.grad_clip > 0 else float("inf"),
-                error_if_nonfinite=True,
-            )
+            try:
+                grad_norm=torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), args.grad_clip if args.grad_clip > 0 else float("inf"),
+                    error_if_nonfinite=True,
+                )
+            except RuntimeError as exc:
+                if "non-finite" not in str(exc):
+                    raise
+                fail_training(model,optimizer,lr_hsi,msi,gt,directory=ckpt_dir/"failure",args=args,
+                    epoch=epoch+1,batch_idx=batch_idx,reason="nonfinite gradient norm",replay=False)
             optimizer.step()
             b = int(gt.shape[0])
             count += b

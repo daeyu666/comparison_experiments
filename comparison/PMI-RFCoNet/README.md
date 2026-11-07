@@ -126,3 +126,34 @@ smoke_test.py 默认使用正式 mid_channels=64，覆盖六组传感器；
 上述检查验证代码接入和源码行为；尚未在真实数据集上完成全程训练，
 不将随机张量或短训练分数视为论文复现精度。
 
+
+## 非有限损失排查与显式稳定恢复
+
+默认仍保留官方 lr=1e-3、grad_clip=0。公共 batch1 训练遇到非有限损失时，
+可以显式降低学习率并开启梯度裁剪，不修改网络、注意力或插值公式。
+以下以 CAVE Registered 为例（其他数据集替换 --dataset）：
+
+```bash
+python train.py --model PMI-RFCoNet --dataset CAVE --mode registered \
+  --resume auto --lr 1e-4 --grad_clip 1.0 --resume_optimizer_override
+```
+
+--resume_optimizer_override 仅允许修改恢复时的 lr/grad_clip；保留模型、Adam
+一阶/二阶矩、scheduler 已完成阶段、epoch 和 RNG。实际 lr 为新基础 lr 乘以
+检查点已经执行的衰减倍率。后续恢复这次调整后的 checkpoint 时继续传相同
+--lr/--grad_clip 即可，无需再次覆盖。其他配置仍按精确恢复规则校验。
+此选项会打印 RESUME_OPTIMIZER_OVERRIDE 并记录到新的 checkpoint/run_protocol。
+没有 --resume 时禁止使用；这属于明确记录的优化设置变更，不是原官方默认轨迹。
+
+训练会在更新前检查观测、损失及梯度。失败时停止，不跳过样本或用 nan_to_num
+掩盖异常；在当前 checkpoint 目录的 failure/ 下保存：
+
+- failure_report.json：epoch、batch、输入范围、非有限数量、首个观测到异常输出的模块及梯度统计。
+- failure_snapshot.pth.tar：失败时模型和 LR-HSI/HR-MSI/GT 批次，仅用于排查，不作为恢复 checkpoint。
+
+异常定位仅在失败后额外前向，恢复 BN buffer 和外部 RNG，不增加正常迭代的逐层检查。
+checkpoint 保存与加载会拒绝非有限模型/Adam张量；验证预测出现非有限值也会停止。
+best.pth.tar/last.pth.tar 不会被失败快照覆盖。
+
+仅有 nonfinite loss 日志不能确定首次溢出位置；诊断文件用于区分异常输入、
+前向激活及梯度问题。降低 lr/裁剪属于稳定性措施，不能替代失败数据上的复验。

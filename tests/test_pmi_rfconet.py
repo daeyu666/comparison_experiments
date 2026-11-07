@@ -210,3 +210,80 @@ def test_full_forward_backward_has_no_cuda_unsupported_integer_matmul():
         result=model(torch.rand(1,7,16,16),torch.rand(1,3,64,64))
         result.square().mean().backward()
     assert torch.isfinite(result).all()
+
+
+def test_explicit_resume_lr_clip_override_preserves_adam_and_scheduler_phase(trained_stages):
+    _,common,_,mixed=trained_stages
+    source=torch.load(mixed/"last.pth.tar",weights_only=False)
+    args=trainer.parser("mixed",common)
+    args.lr=1e-4;args.grad_clip=1.0
+    model=PMIRFCoNet(7,3,mid_channels=8,num_fc=1)
+    optimizer=torch.optim.Adam(model.parameters(),lr=args.lr)
+    scheduler=torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[1,2],gamma=.1)
+    fingerprint=source["sensor_fingerprint"]
+    with pytest.raises(ValueError,match="Exact resume mismatch: lr"):
+        trainer.load_checkpoint(mixed/"last.pth.tar",model,args,expected_stage="mixed",
+            fingerprint=fingerprint,optimizer=optimizer,scheduler=scheduler)
+    args.resume_optimizer_override=True
+    trainer.load_checkpoint(mixed/"last.pth.tar",model,args,expected_stage="mixed",
+        fingerprint=fingerprint,optimizer=optimizer,scheduler=scheduler)
+    assert scheduler.last_epoch==1
+    assert scheduler.base_lrs==[1e-4]
+    assert optimizer.param_groups[0]["lr"]==pytest.approx(1e-5)
+    loaded=optimizer.state_dict()["state"]
+    for key,value in source["optimizer"]["state"].items():
+        for name in ("exp_avg","exp_avg_sq","step"):
+            torch.testing.assert_close(loaded[key][name],value[name],rtol=0,atol=0)
+    for param in model.parameters():
+        param.grad=torch.zeros_like(param)
+    optimizer.step();scheduler.step()
+    assert optimizer.param_groups[0]["lr"]==pytest.approx(1e-6)
+
+
+def test_failure_snapshot_locates_layer_and_preserves_buffers_rng_and_last_checkpoint(tmp_path):
+    from types import SimpleNamespace
+    stability=importlib.import_module("comparison.PMI-RFCoNet.stability")
+    class BadLeaf(torch.nn.Module):
+        def forward(self,x):return x*float("nan")
+    class Broken(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm=torch.nn.BatchNorm2d(2)
+            self.dropout=torch.nn.Dropout(.1)
+            self.bad=BadLeaf()
+        def forward(self,lr,msi):
+            return self.bad(self.dropout(self.norm(lr)))
+    model=Broken().train()
+    optimizer=torch.optim.Adam(model.parameters(),lr=.001)
+    x=torch.rand(1,2,4,4);gt=torch.rand_like(x)
+    saved={key:value.clone() for key,value in model.named_buffers()}
+    rng=torch.get_rng_state().clone()
+    last=tmp_path/"last.pth.tar";last.write_bytes(b"previous good checkpoint")
+    with pytest.raises(FloatingPointError,match="first_nonfinite_module=bad"):
+        stability.fail_training(model,optimizer,x,x,gt,directory=tmp_path/"failure",
+            args=SimpleNamespace(dataset="CAVE"),epoch=26,batch_idx=2011,reason="nonfinite prediction/loss")
+    report=json.loads((tmp_path/"failure/failure_report.json").read_text())
+    assert report["first_nonfinite_module"]=="bad" and report["inputs"]["lr_hsi"]["nonfinite"]==0
+    assert last.read_bytes()==b"previous good checkpoint"
+    assert (tmp_path/"failure/failure_snapshot.pth.tar").is_file()
+    torch.testing.assert_close(rng,torch.get_rng_state(),rtol=0,atol=0)
+    for key,value in model.named_buffers():
+        torch.testing.assert_close(value,saved[key],rtol=0,atol=0)
+    with pytest.raises(ValueError,match="nonfinite checkpoint"):
+        stability.ensure_finite_checkpoint({"model":{"bad":torch.tensor(float("nan"))}})
+
+
+def test_root_stability_resume_options_are_explicit_and_do_not_change_other_models(monkeypatch,tmp_path):
+    import experiment_protocol as protocol
+    monkeypatch.setattr(protocol,"ROOT",tmp_path)
+    adapter=protocol.resolve_model("PMI-RFCoNet")
+    checkpoint=protocol.checkpoint_dir(adapter,"CAVE","registered")/"last.pth.tar"
+    checkpoint.parent.mkdir(parents=True);checkpoint.touch()
+    cmd=protocol.build_train_command(adapter,"CAVE","registered","cpu",resume="auto",
+        lr_override=1e-4,grad_clip_override=1.,resume_optimizer_override=True)
+    assert cmd[cmd.index("--lr")+1]=="0.0001" and cmd[cmd.index("--grad_clip")+1]=="1.0"
+    assert "--resume_optimizer_override" in cmd and "--resume" in cmd
+    summary=protocol.protocol_summary(adapter,lr_override=1e-4,grad_clip_override=1.)
+    assert "lr=0.0001" in summary and "grad_clip=1" in summary
+    with pytest.raises(ValueError,match="only to PMI-RFCoNet"):
+        protocol.build_train_command(protocol.resolve_model("CLSNet"),"CAVE","registered","cpu",grad_clip_override=1.)

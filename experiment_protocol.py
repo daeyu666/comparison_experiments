@@ -299,7 +299,8 @@ def resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels=No
 
 
 def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None,
-                        *, epochs=None, resume=None, hidden_channels=None, lr_override=None):
+                        *, epochs=None, resume=None, hidden_channels=None, lr_override=None,
+                        grad_clip_override=None, resume_optimizer_override=False):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
@@ -314,11 +315,19 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "or comparison/NonRegSRNet/train.py --pair observed.npz --srf_weights weights.npy "
             "--output_dir <directory> for one pair."
         )
+    if grad_clip_override is not None or resume_optimizer_override:
+        if adapter.canonical != "PMI-RFCoNet":
+            raise ValueError("--grad_clip/--resume_optimizer_override apply only to PMI-RFCoNet")
+        if grad_clip_override is not None and grad_clip_override < 0:
+            raise ValueError("--grad_clip must be nonnegative")
+        if resume_optimizer_override and not resume:
+            raise ValueError("--resume_optimizer_override requires --resume")
     if lr_override is not None:
-        if adapter.canonical != "IR&ArF":
-            raise ValueError("--lr override is supported only by IR&ArF")
-        if not 0 < lr_override <= 0.0002:
-            raise ValueError("--lr must be positive and no larger than the upstream 2e-4")
+        if adapter.canonical not in ("IR&ArF","PMI-RFCoNet"):
+            raise ValueError("--lr override is supported only by IR&ArF and PMI-RFCoNet")
+        maximum=0.001 if adapter.canonical=="PMI-RFCoNet" else 0.0002
+        if not 0 < lr_override <= maximum:
+            raise ValueError(f"--lr must be positive and no larger than the upstream {maximum:g}")
     if adapter.canonical == "IR&ArF":
         if batch_size is not None and batch_size != BATCH_SIZE:
             raise ValueError("IR&ArF currently uses the shared batch_size=1 protocol")
@@ -369,7 +378,7 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     if adapter.canonical == "PSRF-DiffNet":
         optimizer_lr, optimizer_weight_decay = 1e-4, 0.0
     elif adapter.canonical == "PMI-RFCoNet":
-        optimizer_lr, optimizer_weight_decay = 1e-3, 0.0
+        optimizer_lr, optimizer_weight_decay = (1e-3 if lr_override is None else lr_override), 0.0
     elif adapter.canonical == "SA-RFM":
         # Released SA-RFM training uses AdamW(lr=1e-4, weight_decay=1e-4).
         optimizer_lr, optimizer_weight_decay = 1e-4, 1e-4
@@ -379,6 +388,11 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
 
     script = adapter.registered_train if mode == "registered" else adapter.mixed_train
     cmd = [sys.executable, str(ROOT / script)]
+    if adapter.canonical == "PMI-RFCoNet":
+        if grad_clip_override is not None:
+            cmd += ["--grad_clip",str(grad_clip_override)]
+        if resume_optimizer_override:
+            cmd.append("--resume_optimizer_override")
 
     if mode == "registered":
         common = [
@@ -711,7 +725,7 @@ def real_protocol_summary(adapter=None, batch_size=None) -> str:
     )
 
 
-def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, hidden_channels=None, lr_override=None) -> str:
+def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, hidden_channels=None, lr_override=None, grad_clip_override=None) -> str:
     if adapter and adapter.canonical == "IR&ArF":
         stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
         stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
@@ -734,7 +748,9 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
     stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
     stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
     if adapter and adapter.canonical == "PMI-RFCoNet":
-        optimizer_summary = "PMI-RFCoNet width=64, Adam lr=0.001 wd=0, L1, MultiStepLR(50,150,300; gamma=0.1)"
+        optimizer_summary = (f"PMI-RFCoNet width=64, Adam lr={(0.001 if lr_override is None else lr_override):g} wd=0, "
+                             f"grad_clip={(0 if grad_clip_override is None else grad_clip_override):g}, "
+                             "L1, MultiStepLR(50,150,300; gamma=0.1)")
     elif adapter and adapter.canonical == "SA-RFM":
         optimizer_summary = "SA-RFM AdamW lr=0.0001, wd=0.0001, L_RFM+1.0*L_OTD, ODE=1"
     elif adapter and adapter.canonical == "PSRF-DiffNet":
