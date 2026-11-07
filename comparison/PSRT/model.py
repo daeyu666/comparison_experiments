@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from model_SR import PSRTnet
 
-ARCHITECTURE_ID = "PSRT-TGRS2023-official-2x3-W2W-dynamic-channels-v1"
+ARCHITECTURE_ID = "PSRT-TGRS2023-independent-W2W-pyramid-v2"
 UPSTREAM_SOURCE_SHA = "07c41e4290719edc2fc1fd15ef56fec69d662d42"
 
 
