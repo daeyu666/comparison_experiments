@@ -128,6 +128,14 @@ _ADAPTERS = {
         test_script="comparison/PMI-RFCoNet/test_hsi_deformed.py",
         real_train="", real_infer="",
     ),
+    "psrt": ModelAdapter(
+        canonical="PSRT",
+        folder="PSRT",
+        registered_train="comparison/PSRT/train.py",
+        mixed_train="comparison/PSRT/train_hsi_deformed.py",
+        test_script="comparison/PSRT/test_hsi_deformed.py",
+        real_train="", real_infer="",
+    ),
     "sa-rfm": ModelAdapter(
         canonical="SA-RFM",
         folder="SA-RFM",
@@ -191,6 +199,8 @@ _ALIASES = {
     "emrdiff": "emr-diff",
     "emr_diff": "emr-diff",
     "emr-diff": "emr-diff",
+    "psrt": "psrt",
+    "psrt-net": "psrt",
     "sa-rfm": "sa-rfm",
     "sarfm": "sa-rfm",
     "safm": "sa-rfm",
@@ -384,6 +394,9 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         optimizer_lr, optimizer_weight_decay = 1e-4, 0.0
     elif adapter.canonical == "PMI-RFCoNet":
         optimizer_lr, optimizer_weight_decay = (1e-3 if lr_override is None else lr_override), 0.0
+    elif adapter.canonical == "PSRT":
+        # Released PSRT training: AdamW, lr=1e-4, weight_decay=1e-4, L1 loss.
+        optimizer_lr, optimizer_weight_decay = 1e-4, 1e-4
     elif adapter.canonical == "SA-RFM":
         # Released SA-RFM training uses AdamW(lr=1e-4, weight_decay=1e-4).
         optimizer_lr, optimizer_weight_decay = 1e-4, 1e-4
