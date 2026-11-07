@@ -128,7 +128,7 @@ def load_checkpoint(path, model, args, *, expected_stage, fingerprint, optimizer
     for field in ("dataset", "image_size", "patch_size", "stride", "scale_ratio",
                   "degradation_mode", "mtf_nyquist", "psf_truncate", "msi_mode",
                   "srf_interp", "srf_band_set"):
-        if field in recorded and getattr(args, field, None) != recorded[field]:
+        if field in recorded and hasattr(args, field) and getattr(args, field) != recorded[field]:
             raise ValueError(f"Checkpoint/test protocol mismatch for {field}")
     model.load_state_dict(state["model"], strict=True)
     if optimizer is not None:
