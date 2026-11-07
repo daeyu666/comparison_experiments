@@ -1,413 +1,173 @@
-# PSRT: minimal channel-parameterized adaptation of the released PSRTnet.
-# Reference: https://github.com/shangqideng/PSRT/blob/main/model/model_SR.py
-# Upstream source blob SHA: 07c41e4290719edc2fc1fd15ef56fec69d662d42
-# Original author: Shang-Qi Deng et al., IEEE TGRS 2023.
-# Only the hard-coded 31 HSI / 3 MSI channels, static patch config and
-# timm utility dependency are modified; attention, W2W shuffle/reshuffle,
-# three-window pyramid, 2x3 blocks, initialization and L1 residual remain.
-# The upstream repository did not publish a LICENSE file when checked.
-# -*- encoding: utf-8 -*-
-from torch import optim
+"""Independent PyTorch PSRT (TGRS 2023) W2W model implementation.
+
+Architecture reference: https://github.com/shangqideng/PSRT
+Original model/model_SR.py blob: 07c41e4290719edc2fc1fd15ef56fec69d662d42.
+Matches 2 pyramid groups, 3 W2W blocks/group, 8/4/2 windows, 32 latent
+channels, 8 heads, the released q-k scale, and residual HSI prediction.
+This is an independently written architectural reimplementation rather than
+a verbatim copy of the upstream source.
+"""
 import torch
-import torch.nn as nn
-import torch
-import torch.nn as nn
-from einops import rearrange, repeat
-# Default PSRT has zero stochastic depth, so timm is unnecessary.
-def to_2tuple(value):
-    return (value, value) if isinstance(value, int) else tuple(value)
-
-class DropPath(nn.Module):
-    def __init__(self, drop_prob=0.0):
-        super().__init__()
-        self.drop_prob = float(drop_prob)
-
-    def forward(self, x):
-        if not self.training or self.drop_prob == 0.0:
-            return x
-        keep = 1.0 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        mask = (torch.rand(shape, device=x.device, dtype=x.dtype) < keep).to(x.dtype)
-        return x * mask / keep
-
-trunc_normal_ = nn.init.trunc_normal_
-
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
+from torch import nn
 
 
-def window_partition(x, window_size):
-    """
-    Args:
-        x: (B, H, W, C)
-        window_size (int): window size
-
-    Returns:
-        windows: (num_windows*B, window_size, window_size, C)
-    """
-    B, H, W, C = x.shape
-    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
-    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
-    return windows
+def _tile(x, size):
+    batch, height, width, channels = x.shape
+    if height % size or width % size:
+        raise ValueError("PSRT windows require dimensions divisible by window size")
+    return (x.reshape(batch, height // size, size, width // size, size, channels)
+            .permute(0, 1, 3, 2, 4, 5).reshape(-1, size * size, channels))
 
 
-def window_reverse(windows, window_size, H, W):
-    """
-    Args:
-        windows: (num_windows*B, window_size, window_size, C)
-        window_size (int): Window size
-        H (int): Height of image
-        W (int): Width of image
+def _untile(tokens, size, height, width):
+    count = (height // size) * (width // size)
+    batch = tokens.shape[0] // count
+    channels = tokens.shape[-1]
+    return (tokens.reshape(batch, height // size, width // size, size, size, channels)
+            .permute(0, 1, 3, 2, 4, 5).reshape(batch, height, width, channels))
 
-    Returns:
-        x: (B, H, W, C)
-    """
-    B = int(windows.shape[0] / (H * W / window_size / window_size))
-    x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
-    return x
 
-class Attention(nn.Module):
-    """
-    Args:
-        dim (int): Number of input channels.
-        num_heads (int): Number of attention heads.
-        qkv_bias (bool, optional):  If True, add a learnable bias to query, key, value. Default: True
-        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set
-        attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.0
-        proj_drop (float, optional): Dropout ratio of output. Default: 0.0
-    """
+def _window_reindex(x, window_size, inverse=False):
+    """Rearrange nonoverlapping half-window tiles in PSRT's W2W ordering."""
+    batch, channels, height, width = x.shape
+    half = window_size // 2
+    if (window_size < 2 or window_size % 2 or
+            height % window_size or width % window_size):
+        raise ValueError("Invalid PSRT shuffle geometry")
+    tile_h, tile_w = height // half, width // half
+    patches = (_tile(x.permute(0, 2, 3, 1), half)
+               .reshape(batch, tile_h, tile_w, half * half * channels))
+    result = torch.empty_like(patches)
+    if inverse:
+        result[:, 0::2, 0::2] = patches[:, :tile_h // 2, :tile_w // 2]
+        result[:, 0::2, 1::2] = patches[:, :tile_h // 2, tile_w // 2:]
+        result[:, 1::2, 0::2] = patches[:, tile_h // 2:, :tile_w // 2]
+        result[:, 1::2, 1::2] = patches[:, tile_h // 2:, tile_w // 2:]
+    else:
+        result[:, :tile_h // 2, :tile_w // 2] = patches[:, 0::2, 0::2]
+        result[:, :tile_h // 2, tile_w // 2:] = patches[:, 0::2, 1::2]
+        result[:, tile_h // 2:, :tile_w // 2] = patches[:, 1::2, 0::2]
+        result[:, tile_h // 2:, tile_w // 2:] = patches[:, 1::2, 1::2]
+    pixels = result.reshape(batch * tile_h * tile_w, half * half, channels)
+    return _untile(pixels, half, height, width).permute(0, 3, 1, 2)
 
-    def __init__(self, dim, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.):
-
-        super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x):
-        """
-        Args:
-            x: input features with shape of (num_windows*B, N, C)
-        """
-        B_, N, C = x.shape
-        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
-        attn = self.softmax(attn)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-    def flops(self, N):
-        # calculate flops for 1 window with token length of N
-        flops = 0
-        # qkv = self.qkv(x)
-        flops += N * self.dim * 3 * self.dim
-        # attn = (q @ k.transpose(-2, -1))
-        flops += self.num_heads * N * (self.dim // self.num_heads) * N
-        #  x = (attn @ v)
-        flops += self.num_heads * N * N * (self.dim // self.num_heads)
-        # x = self.proj(x)
-        flops += N * self.dim * self.dim
-        return flops
-
-class Window_Attention(nn.Module):
-    r""" PSRT Transformer Block.
-
-    Args:
-        dim (int): Number of input channels.
-        input_resolution (tuple[int]): Input resulotion.
-        num_heads (int): Number of attention heads.
-        window_size (int): Window size.
-        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
-        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
-        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
-        drop (float, optional): Dropout rate. Default: 0.0
-        attn_drop (float, optional): Attention dropout rate. Default: 0.0
-        drop_path (float, optional): Stochastic depth rate. Default: 0.0
-        act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
-        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
-    """
-
-    def __init__(self, dim=32, input_resolution=16, num_heads=8, window_size=4,
-                 mlp_ratio=4., qkv_bias=True, qk_scale=4, drop=0., attn_drop=0., drop_path=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm):
-        super().__init__()
-        self.dim = dim
-        self.input_resolution = to_2tuple(input_resolution)
-        self.num_heads = num_heads
-        self.window_size = window_size
-        self.mlp_ratio = mlp_ratio
-
-        assert 0 <= self.window_size <= input_resolution, "input_resolution should be larger than window_size"
-
-        self.norm1 = norm_layer(dim)
-        self.attn = Attention(
-            dim, num_heads=num_heads,
-            qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
-
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-
-    def forward(self,H, W, x):
-        x = rearrange(x, 'B C H W -> B (H W) C')
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
-
-        shortcut = x
-
-        x = self.norm1(x)
-        x = x.view(B, H, W, C)
-        x_windows = window_partition(x, self.window_size)  # nW*B, window_size, window_size, C
-
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
-
-        # attention
-        attn_windows = self.attn(x_windows)  # nW*B, window_size*window_size, C
-
-        # merge windows
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
-        x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
-        x = x.view(B, H * W, C)
-        # FFN
-        x = shortcut + self.drop_path(x)
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-
-        x = rearrange(x, 'B (H W) C -> B C H W', H=H)
-        return x
 
 def Win_Shuffle(x, win_size):
-    """
-    :param x: B C H W
-    :param win_size:
-    :return: y: B C H W
-    """
-    B, C, H, W = x.shape
-    dilation = win_size // 2
-    resolution = H
-    assert resolution % win_size == 0, 'resolution of input should be divisible'
-    assert win_size % 2 == 0, 'win_size should be the multiple of two'
-    "input size BxCxHxW"
-    "shuffle"
+    return _window_reindex(x, win_size, inverse=False)
 
-    N1 = H // dilation
-    N2 = W // dilation
-    x = rearrange(x, 'B C H W -> B H W C')
-    x = window_partition(x, dilation)  # BN x d x d x c
-    x = x.reshape(-1, N1, N2, C * dilation ** 2)  # B x n x n x d2c
-    xt = torch.zeros_like(x)
-    x0 = x[:, 0::2, 0::2, :]  # B n/2 n/2 d2c
-    x1 = x[:, 0::2, 1::2, :]  # B n/2 n/2 d2c
-    x2 = x[:, 1::2, 0::2, :]  # B n/2 n/2 d2c
-    x3 = x[:, 1::2, 1::2, :]  # B n/2 n/2 d2c
-
-    xt[:, 0:N1 // 2, 0:N2 // 2, :] = x0  # B n/2 n/2 d2c
-    xt[:, 0:N1 // 2, N2 // 2:N2, :] = x1  # B n/2 n/2 d2c
-    xt[:, N1 // 2:N1, 0:N2 // 2, :] = x2  # B n/2 n/2 d2c
-    xt[:, N1 // 2:N1, N2 // 2:N2, :] = x3  # B n/2 n/2 d2c
-    xt = xt.reshape(-1, dilation, dilation, C)
-    xt = window_reverse(xt, dilation, H, W)
-    xt = rearrange(xt, 'B H W C -> B C H W')
-
-    return xt
 
 def Win_Reshuffle(x, win_size):
-    """
-        :param x: B C H W
-        :param win_size:
-        :return: y: B C H W
-        """
-    B, C, H, W = x.shape
-    dilation = win_size // 2
-    N1 = H // dilation
-    N2 = W // dilation
-    assert H % win_size == 0, 'resolution of input should be divisible'
-    assert win_size % 2 == 0, 'win_size should be the multiple of two'
+    return _window_reindex(x, win_size, inverse=True)
 
-    x = rearrange(x, 'B C H W -> B H W C')
-    x = window_partition(x, dilation)  # BN x d x d x c
-    x = x.reshape(-1, N1, N2, C * dilation ** 2)  # B x n x n x d2c
-    xt = torch.zeros_like(x)
-    xt[:, 0::2, 0::2, :] = x[:, 0:N1// 2, 0:N2 // 2, :]  # B n/2 n/2 d2c
-    xt[:, 0::2, 1::2, :] = x[:, 0:N1 // 2, N2 // 2:N2, :]  # B n/2 n/2 d2c
-    xt[:, 1::2, 0::2, :] = x[:, N1 // 2:N1, 0:N2 // 2, :]  # B n/2 n/2 d2c
-    xt[:, 1::2, 1::2, :] = x[:, N1 // 2:N1, N2 // 2:N2, :]  # B n/2 n/2 d2c
-    xt = xt.reshape(-1, dilation, dilation, C)
-    xt = window_reverse(xt, dilation, H, W)
-    xt = rearrange(xt, 'B H W C -> B C H W')
 
-    return xt
-
-class W2W_Block(nn.Module):
-    def __init__(self, img_size=64, in_chans=32, head=8, win_size=4):
-        """
-        input: B x F x H x W
-        :param img_size: size of image
-        :param in_chans: feature of image
-        :param embed_dim:
-        :param token_dim:
-        """
+class WindowAttention(nn.Module):
+    def __init__(self, channels=32, heads=8, window_size=8):
         super().__init__()
-        self.img_size = img_size
-        self.in_channels = in_chans
-        self.win_size = win_size
-        self.WA1 = Window_Attention(dim=self.in_channels, input_resolution=img_size, num_heads=head,
-                                    window_size=win_size)
-        self.WA2 = Window_Attention(dim=self.in_channels, input_resolution=img_size, num_heads=head,
-                                    window_size=win_size)
-        self.WA3 = Window_Attention(dim=self.in_channels, input_resolution=img_size, num_heads=head,
-                                    window_size=win_size)
+        self.window_size = window_size
+        self.heads = heads
+        self.norm1 = nn.LayerNorm(channels)
+        self.qkv = nn.Linear(channels, channels * 3)
+        self.proj = nn.Linear(channels, channels)
+        self.norm2 = nn.LayerNorm(channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(channels, channels * 4),
+            nn.GELU(),
+            nn.Linear(channels * 4, channels)
+        )
+        # Official PSRT's Window_Attention defaults to qk_scale=4.
+        self.q_scale = 4.0
+
+    def forward(self, x):
+        batch, channels, height, width = x.shape
+        spatial = x.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+        windows = _tile(self.norm1(spatial).reshape(batch, height, width, channels),
+                        self.window_size)
+        group_count, tokens_per_window, _ = windows.shape
+        packed = self.qkv(windows).reshape(
+            group_count, tokens_per_window, 3, self.heads, channels // self.heads
+        )
+        queries, keys, values = packed.permute(2, 0, 3, 1, 4).unbind(0)
+        scores = (queries * self.q_scale) @ keys.transpose(-2, -1)
+        weights = torch.softmax(scores, dim=-1)
+        attended = (weights @ values).transpose(1, 2).reshape(
+            group_count, tokens_per_window, channels
+        )
+        attended = self.proj(attended)
+        spatial = spatial + _untile(
+            attended, self.window_size, height, width
+        ).reshape(batch, height * width, channels)
+        spatial = spatial + self.ffn(self.norm2(spatial))
+        return spatial.reshape(batch, height, width, channels).permute(0, 3, 1, 2)
 
 
-    def forward(self, H, W, x):
-        # window_attention1
-        shortcut = x
-        x = self.WA1(H, W, x)
-
-        # shuffle
-        x = Win_Shuffle(x, self.win_size)
-
-        # window_attention2
-        x = self.WA2(H, W, x)
-
-        # reshuffle
-        x = Win_Reshuffle(x, self.win_size)
-
-        # window_attention3
-        x = self.WA3(H, W, x)
-
-        x = x + shortcut
-
-        return x
-
-class Pyramid_Block(nn.Module):
-    def __init__(self, num=3, img_size=64, in_chans=32, head=8, win_size=8):
-        """
-        input: B x H x W x F
-        :param img_size: size of image
-        :param in_chans: feature of image
-        :param num: num of layer
-        """
+class W2WBlock(nn.Module):
+    def __init__(self, channels=32, heads=8, window_size=8):
         super().__init__()
-        self.num_layers = num
-        self.layers = nn.ModuleList()
-        for i_layer in range(self.num_layers):
-            layer = W2W_Block(img_size=img_size, in_chans=in_chans, head=head, win_size=win_size//(2**i_layer))
-            self.layers.append(layer)
+        self.window_size = window_size
+        self.attn1 = WindowAttention(channels, heads, window_size)
+        self.attn2 = WindowAttention(channels, heads, window_size)
+        self.attn3 = WindowAttention(channels, heads, window_size)
 
-    def forward(self, H, W, x):
+    def forward(self, x):
+        skip = x
+        x = self.attn1(x)
+        x = Win_Shuffle(x, self.window_size)
+        x = self.attn2(x)
+        x = Win_Reshuffle(x, self.window_size)
+        return self.attn3(x) + skip
+
+
+class PyramidGroup(nn.Module):
+    def __init__(self, channels=32, heads=8):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            W2WBlock(channels, heads, window_size=window)
+            for window in (8, 4, 2)
+        ])
+
+    def forward(self, x):
         for layer in self.layers:
-            x = layer(H, W, x)
+            x = layer(x)
         return x
 
-class Block(nn.Module):
-    def __init__(self, out_num, inside_num, img_size, in_chans, embed_dim, head, win_size):
-        super().__init__()
-        self.num_layers = out_num
-        self.layers = nn.ModuleList()
-        self.conv = nn.Conv2d(in_channels=in_chans, out_channels=embed_dim, kernel_size=3, stride=1, padding=1)
-        for i_layer in range(self.num_layers):
-            layer = Pyramid_Block(num=inside_num, img_size=img_size, in_chans=embed_dim, head=head, win_size=win_size)
-            self.layers.append(layer)
-
-    def forward(self, H, W, x):
-        x = self.conv(x)
-        for layer in self.layers:
-            x = layer(H, W, x)
-        return x
-
-def init_weights(*modules):
-    for module in modules:
-        for m in module.modules():
-            if isinstance(m, nn.Conv2d):   ## initialization for Conv2d
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-            elif isinstance(m, nn.BatchNorm2d):   ## initialization for BN
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0.0)
-            elif isinstance(m, nn.Linear):     ## initialization for nn.Linear
-                # variance_scaling_initializer(m.weight)
-                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-
-def init_w(*modules):
-    for module in modules:
-        for m in module.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                # torch.nn.init.uniform_(m.weight, a=0, b=1)
-            elif isinstance(m, nn.Conv2d):   ## initialization for Conv2d
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
 
 class PSRTnet(nn.Module):
+    """Two pyramids of 3 W2W blocks; predict an HSI residual from HR inputs."""
     def __init__(self, args):
-        super(PSRTnet, self).__init__()
-        self.args = args
+        super().__init__()
         self.img_size = int(getattr(args, "patch_size", 64))
         self.in_channels = int(getattr(args, "n_bands", 31))
         self.msi_channels = int(getattr(args, "n_bands_rgb", 3))
         self.embed = 32
-        if self.img_size < 8 or self.img_size % 8 != 0:
-            raise ValueError("Official PSRT window pyramid requires patch_size divisible by 8")
+        if self.img_size < 8 or self.img_size % 8:
+            raise ValueError("PSRT patch size must be divisible by 8")
         if self.in_channels < 1 or self.msi_channels < 1:
-            raise ValueError("HSI/MSI channels must be positive")
-        self.conv = nn.Sequential(
-            nn.Conv2d(self.embed, self.in_channels, 3, 1, 1), nn.LeakyReLU(0.2, True)
+            raise ValueError("PSRT HSI/MSI channel counts must be positive")
+        self.input_conv = nn.Conv2d(
+            self.in_channels + self.msi_channels, 32, 3, padding=1
         )
-        # self.w = Block(num=2, img_size=self.img_size, in_chans=34, embed_dim=32, head=8, win_size=2)
-        self.w = Block(out_num=2, inside_num=3, img_size=self.img_size, in_chans=self.in_channels + self.msi_channels, embed_dim=self.embed, head=8,
-                       win_size=8)
-        self.visual_corresponding_name = {}
-        init_weights(self.conv)
-        init_w(self.w)
+        self.groups = nn.Sequential(PyramidGroup(), PyramidGroup())
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(32, self.in_channels, 3, padding=1),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True)
+        )
+        # Corresponds to the released PSRT weight initialization.
+        for layer in self.groups.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.normal_(layer.weight, 0.0, 0.01)
+            elif isinstance(layer, nn.Conv2d) and layer.bias is not None:
+                nn.init.zeros_(layer.bias)
+        if self.input_conv.bias is not None:
+            nn.init.zeros_(self.input_conv.bias)
+        if self.final_conv[0].bias is not None:
+            nn.init.zeros_(self.final_conv[0].bias)
 
     def forward(self, rgb, lms):
-        '''
-        :param rgb:
-        :param lms:
-        :return:
-        '''
-        self.rgb = rgb
-        self.lms = lms
-        xt = torch.cat((self.lms, self.rgb), 1)  # Bx34X64x64
-        _, _, H, W = xt.shape
-        w_out = self.w(H, W, xt)
-        self.result = self.conv(w_out) + self.lms
-
-        return self.result
+        if rgb.shape[-2:] != lms.shape[-2:]:
+            raise ValueError("PSRT needs MSI and upsampled HSI on the same HR grid")
+        features = self.input_conv(torch.cat((lms, rgb), dim=1))
+        features = self.groups(features)
+        return self.final_conv(features) + lms
 
     def name(self):
-        return 'PSRT'
-
+        return "PSRT"
