@@ -771,6 +771,8 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
         optimizer_summary = (f"PMI-RFCoNet width=64, Adam lr={(0.001 if lr_override is None else lr_override):g} wd=0, "
                              f"grad_clip={(0 if grad_clip_override is None else grad_clip_override):g}, "
                              "L1, MultiStepLR(50,150,300; gamma=0.1)")
+    elif adapter and adapter.canonical == "PSRT":
+        optimizer_summary = "PSRT AdamW lr=0.0001, wd=0.0001, L1, clip_grad_norm=10, 2x3 pyramid W2W"
     elif adapter and adapter.canonical == "SA-RFM":
         optimizer_summary = "SA-RFM AdamW lr=0.0001, wd=0.0001, L_RFM+1.0*L_OTD, ODE=1"
     elif adapter and adapter.canonical == "PSRF-DiffNet":
