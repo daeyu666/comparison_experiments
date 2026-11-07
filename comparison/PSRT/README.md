@@ -6,31 +6,32 @@ DOI: 10.1109/TGRS.2023.3244750.
 
 **Official repository:** https://github.com/shangqideng/PSRT
 **Core source:** `model/model_SR.py` (blob SHA `07c41e4290719edc2fc1fd15ef56fec69d662d42`).
-**Ported core:** `comparison/PSRT/model_SR.py`.
+**Independent architectural implementation:** `comparison/PSRT/model_SR.py`.
 
 ## Fidelity and changes from released source
 
-The original **PSRTnet** topology is preserved:
+The independently implemented **PSRTnet** follows the original architecture:
 
 - Input: concatenation of HR-MSI and bicubic-upsampled LR-HSI.
 - Feature extractor: one 3x3 convolution to 32 feature channels.
-- Exactly 2 outer blocks, each containing 3 pyramid blocks.
-- Each pyramid contains W2W attention blocks at window sizes **8, 4, 2**.
+- Exactly **2 sequential pyramid groups**, each with **3 W2W attention blocks**.
+- Each group uses W2W windows **8, 4, 2**, in that order.
 - Each W2W contains attention → window shuffle → attention →
   inverse reshuffle → attention, followed by a residual connection.
 - 8 heads, 32 channels, default qk scale 4; released initialization retained.
 - Output: 3x3 convolution, LeakyReLU, residual addition to upsampled HSI.
 
-Changes are limited to allowing **dynamic HSI/MSI channel counts** (the released
-network unconditionally assumes 31 HSI and 3 MSI channels), configurable
-64x64 patch, replacing an unused dependency on `timm.models.layers` utilities
-with equivalent local defaults, and wrapping bicubic interpolation in
-`model.py`. No extra cross-attention, loss, registration network or novel
-module has been added.
+This is an **independently written PyTorch implementation** of the published
+architecture, not a verbatim copy of unlicensed upstream source. It retains
+all core operations and parameters while allowing **dynamic HSI/MSI channel
+counts** (the original network hard-codes 31 HSI and 3 MSI channels).
+The wrapper performs bicubic LR-HSI interpolation. No extra registration,
+attention, loss or novel module is introduced. There is no external `timm`
+dependency.
 
 The original repository did not include a top-level LICENSE file when checked;
-the source is attributed above. This adapter is intended as a research
-reproduction, not a claim that the project is a new architecture.
+the original design is attributed above and its code is not reproduced verbatim.
+This is a research implementation of PSRT, not a new architecture.
 
 ## Optimization and benchmark protocol
 
