@@ -22,6 +22,7 @@ EMR-Diff
 CLSNet
 DRTNet
 PSRF-DiffNet
+PSRT
 SA-RFM
 MoE-PNP
 M2DTN
@@ -59,9 +60,10 @@ python test_multiseed_deformation.py --model EMR-Diff --dataset Augsburg --devic
 python test_multiseed_deformation.py --model CLSNet --dataset CAVE --device cuda:0
 python test_multiseed_deformation.py --model PSRF-DiffNet --dataset PaviaU --device cuda:0
 python test_multiseed_deformation.py --model SA-RFM --dataset PaviaU --device cuda:0
+python test_multiseed_deformation.py --model PSRT --dataset PaviaU --device cuda:0
 ```
 
-当前多seed模型适配器包括 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`、`PSRF-DiffNet`、`SA-RFM`；
+当前多seed模型适配器包括 `UAFL`、`EMR-Diff`、`CLSNet`、`DRTNet`、`PSRF-DiffNet`、`SA-RFM`、`PSRT`；
 数据集支持 `PaviaU`、`Houston13`、`Chikusei`、`CAVE`、`Botswana`、
 `Augsburg`。该入口使用各方法的 mixed checkpoint，默认形变seed为
 `10001..10010`、每seed每patch 10 cases、重建随机数seed为 `1234`，
@@ -74,6 +76,25 @@ python test_multiseed_deformation.py --model SA-RFM --dataset PaviaU --device cu
 `per_seed.csv` 为逐seed结果，`summary.json` 保存完整协议和明细。支持
 `--resume_output` 续跑已完成的seed，以及 `--overwrite_output` 清除同一输出目录
 中的旧seed标记后重跑。
+
+### PSRT（TGRS 2023）Pyramid Shuffle-and-Reshuffle Transformer
+
+官方参考结构的 2 个外层 Block、3 个 Pyramid Block、8/4/2 三尺度
+窗口 Shuffle/Reshuffle 注意力已适配动态 HSI/MSI 通道，支持统一
+64x64 训练和 128x128 推理。沿用官方 L1、AdamW 1e-4/1e-4、梯度裁剪10。
+详见 [PSRT README](comparison/PSRT/README.md)。
+
+```bash
+python comparison/PSRT/smoke_test.py --device cuda:0 --full
+python train.py --model PSRT --dataset PaviaU --mode registered --device cuda:0
+python train.py --model PSRT --dataset PaviaU --mode mixed --device cuda:0
+python test.py --model PSRT --dataset PaviaU --mode registered --device cuda:0
+python test.py --model PSRT --dataset PaviaU --mode mixed --device cuda:0
+```
+
+注意：此处采用统一数据退化和训练划分，不应直接将输出指标
+与作者使用的原始 HDF5 训练测试设置混作同一个实验协议。
+真实 Augsburg x3 没有为 PSRT 单独实现。
 
 ### SA-RFM（ICML 2026）结构感知流匹配适配
 
