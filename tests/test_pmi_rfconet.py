@@ -283,7 +283,92 @@ def test_root_stability_resume_options_are_explicit_and_do_not_change_other_mode
         lr_override=1e-4,grad_clip_override=1.,resume_optimizer_override=True)
     assert cmd[cmd.index("--lr")+1]=="0.0001" and cmd[cmd.index("--grad_clip")+1]=="1.0"
     assert "--resume_optimizer_override" in cmd and "--resume" in cmd
+    repair_cmd=protocol.build_train_command(adapter,"CAVE","registered","cpu",resume="auto",
+        repair_bn_stats=True,bn_calibration_batches=7)
+    assert "--repair_bn_stats" in repair_cmd
+    assert repair_cmd[repair_cmd.index("--bn_calibration_batches")+1]=="7"
+    with pytest.raises(ValueError,match="requires --resume"):
+        protocol.build_train_command(adapter,"CAVE","registered","cpu",repair_bn_stats=True)
     summary=protocol.protocol_summary(adapter,lr_override=1e-4,grad_clip_override=1.)
     assert "lr=0.0001" in summary and "grad_clip=1" in summary
     with pytest.raises(ValueError,match="only to PMI-RFCoNet"):
         protocol.build_train_command(protocol.resolve_model("CLSNet"),"CAVE","registered","cpu",grad_clip_override=1.)
+
+
+def test_bn_only_repair_recalibration_preserves_learned_weights_and_optimizer():
+    import copy
+    stability=importlib.import_module("comparison.PMI-RFCoNet.stability")
+    class Probe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv=torch.nn.Conv2d(2,2,1)
+            self.bn=torch.nn.BatchNorm2d(2)
+        def forward(self,lr,msi):return self.bn(self.conv(lr))
+    model=Probe();optimizer=torch.optim.Adam(model.parameters())
+    model(torch.rand(2,2,4,4),None).square().mean().backward();optimizer.step()
+    state={"model":copy.deepcopy(model.state_dict()),"optimizer":copy.deepcopy(optimizer.state_dict())}
+    state["model"]["bn.running_var"][0]=float("inf")
+    weights={k:v.clone() for k,v in state["model"].items() if k in dict(model.named_parameters())}
+    moments=copy.deepcopy(state["optimizer"])
+    report=stability.repair_bn_checkpoint(state,model)
+    assert report["damaged_buffers"]==["bn.running_var"]
+    assert state["model"]["bn.running_var"].tolist()==[1.,1.]
+    assert state["model"]["bn.num_batches_tracked"]==0
+    for key,value in weights.items():
+        torch.testing.assert_close(state["model"][key],value,rtol=0,atol=0)
+    for key,value in moments["state"].items():
+        for name,item in value.items():
+            torch.testing.assert_close(state["optimizer"]["state"][key][name],item,rtol=0,atol=0)
+    model.load_state_dict(state["model"])
+    n=stability.recalibrate_bn(model,[{"gt":torch.rand(2,2,4,4),"hr_msi":torch.rand(2,2,4,4)}]*3,
+                              "cpu",lambda gt:gt,3)
+    assert n==3 and model.bn.num_batches_tracked==3 and model.bn.momentum==.1
+    assert not stability.nonfinite_bn_buffers(model)
+    for key,value in weights.items():
+        torch.testing.assert_close(model.state_dict()[key],value,rtol=0,atol=0)
+    broken=copy.deepcopy(state);broken["model"]["conv.weight"][0,0,0,0]=float("nan")
+    with pytest.raises(ValueError,match="conv.weight"):
+        stability.repair_bn_checkpoint(broken,model)
+    broken=copy.deepcopy(state);first=next(iter(broken["optimizer"]["state"]))
+    broken["optimizer"]["state"][first]["exp_avg"].fill_(float("inf"))
+    with pytest.raises(ValueError,match="optimizer"):
+        stability.repair_bn_checkpoint(broken,model)
+
+
+def test_bn_statistics_overflow_is_detected_even_when_output_is_finite():
+    stability=importlib.import_module("comparison.PMI-RFCoNet.stability")
+    class Probe(torch.nn.Module):
+        def __init__(self):
+            super().__init__();self.bn=torch.nn.BatchNorm2d(2)
+        def forward(self,lr,msi):return self.bn(lr)
+    model=Probe().train()
+    x=torch.randn(2,2,4,4)*1e20
+    prediction=model(x,None)
+    assert torch.isfinite(x).all() and torch.isfinite(prediction).all()
+    assert "bn.running_var" in stability.nonfinite_bn_buffers(model)
+    with pytest.raises(FloatingPointError,match="recalibration failed"):
+        stability.recalibrate_bn(model,[{"gt":x,"hr_msi":x}],"cpu",lambda gt:gt,1)
+
+
+def test_actual_resume_with_bn_repair_saves_separate_recovered_checkpoint(trained_stages,tmp_path):
+    _,common,registered,_=trained_stages
+    source=registered/"last.pth.tar"
+    state=torch.load(source,weights_only=False)
+    key=next(k for k in state["model"] if k.endswith("running_var"))
+    state["model"][key][0]=float("inf")
+    torch.save(state,source)
+    output=tmp_path/"repaired"
+    # No extra epochs are needed to check the recovery path.
+    trainer.main("registered",common+["--resume",str(source),"--repair_bn_stats",
+        "--bn_calibration_batches","1","--checkpoint_dir",str(output),"--log_dir",str(tmp_path/"repair_log")])
+    assert (output/"bn_repair_report.json").is_file()
+    repaired=torch.load(output/"repaired_resume.pth.tar",weights_only=False)
+    assert repaired["bn_stats_repair"]["damaged_buffers"]==[key]
+    assert repaired["epoch"]==state["epoch"]
+    assert repaired["best_psnr"]==-float("inf")
+    assert repaired["scheduler"]==state["scheduler"]
+    parameter_names=set(dict(PMIRFCoNet(7,3,mid_channels=8,num_fc=1).named_parameters()))
+    for name,value in state["model"].items():
+        if name in parameter_names:
+            torch.testing.assert_close(repaired["model"][name],value,rtol=0,atol=0)
+    assert torch.isinf(torch.load(source,weights_only=False)["model"][key][0])

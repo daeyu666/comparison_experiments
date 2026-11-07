@@ -96,3 +96,83 @@ def reconfigure_learning_rate(optimizer,scheduler,new_base_lr):
     state["_last_lr"]=current
     scheduler.load_state_dict(state)
 
+
+def nonfinite_bn_buffers(model):
+    entries=[(name+".running_"+kind,getattr(module,"running_"+kind))
+             for name,module in model.named_modules()
+             if isinstance(module,torch.nn.modules.batchnorm._BatchNorm)
+             for kind in ("mean","var") if getattr(module,"running_"+kind) is not None]
+    if not entries:
+        return []
+    good=torch.stack([torch.isfinite(value).all() for _,value in entries])
+    if bool(good.all()):
+        return []
+    return [name for (name,_),ok in zip(entries,good.tolist()) if not ok]
+
+
+def repair_bn_checkpoint(state,model):
+    """Reset BN buffers only after proving parameters/Adam/other buffers finite."""
+    allowed=set()
+    for name,module in model.named_modules():
+        if isinstance(module,torch.nn.modules.batchnorm._BatchNorm):
+            allowed.update(name+"."+key for key in ("running_mean","running_var"))
+    invalid=[name for name,value in state["model"].items()
+             if torch.is_tensor(value) and not bool(torch.isfinite(value).all())]
+    recoverable=[name for name in invalid if name in allowed]
+    # Inspect an in-memory view with only recoverable BN buffers omitted.
+    view=dict(state)
+    view["model"]={k:v for k,v in state["model"].items() if k not in recoverable}
+    ensure_finite_checkpoint(view)
+    if not recoverable:
+        return None
+    initial=model.state_dict()
+    replaced=[]
+    for name,module in model.named_modules():
+        if isinstance(module,torch.nn.modules.batchnorm._BatchNorm):
+            for suffix in ("running_mean","running_var","num_batches_tracked"):
+                key=name+"."+suffix
+                if key in state["model"]:
+                    template=initial[key].detach().cpu()
+                    state["model"][key]=torch.ones_like(template) if suffix=="running_var" else torch.zeros_like(template)
+                    replaced.append(key)
+    ensure_finite_checkpoint(state)
+    return dict(damaged_buffers=recoverable,reset_buffers=replaced,
+                scope="BatchNorm statistics only; model parameters and Adam state retained")
+
+
+@torch.no_grad()
+def recalibrate_bn(model,batches,device,observation_builder,max_batches):
+    """Rebuild population statistics from training observations, with fixed weights."""
+    modules=list(model.modules())
+    modes=[module.training for module in modules]
+    bn=[module for module in modules if isinstance(module,torch.nn.modules.batchnorm._BatchNorm)]
+    momenta=[module.momentum for module in bn]
+    model.eval()  # Disable dropout; only BN statistics are updated.
+    for module in bn:
+        module.train()
+        module.momentum=None  # Cumulative mean over calibration minibatches.
+    completed=0
+    try:
+        for batch in batches:
+            if completed>=max_batches:
+                break
+            gt=batch["gt"].to(device)
+            msi=batch["hr_msi"].to(device)
+            lr=observation_builder(gt)
+            if not all(bool(torch.isfinite(value).all()) for value in (lr,msi)):
+                raise FloatingPointError("BN calibration observations are nonfinite")
+            prediction=model(lr,msi)
+            invalid=nonfinite_bn_buffers(model)
+            if invalid or not bool(torch.isfinite(prediction).all()):
+                raise FloatingPointError(
+                    f"BN recalibration failed at batch={completed}; invalid_buffers={invalid}. "
+                    "The current weights cannot be recovered safely this way; resume an earlier finite checkpoint or restart.")
+            completed+=1
+    finally:
+        for module,momentum in zip(bn,momenta):
+            module.momentum=momentum
+        for module,mode in zip(modules,modes):
+            module.training=mode
+    if not completed:
+        raise ValueError("BN calibration needs at least one training minibatch")
+    return completed

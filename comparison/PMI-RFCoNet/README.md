@@ -145,7 +145,7 @@ python train.py --model PMI-RFCoNet --dataset CAVE --mode registered \
 此选项会打印 RESUME_OPTIMIZER_OVERRIDE 并记录到新的 checkpoint/run_protocol。
 没有 --resume 时禁止使用；这属于明确记录的优化设置变更，不是原官方默认轨迹。
 
-训练会在更新前检查观测、损失及梯度。失败时停止，不跳过样本或用 nan_to_num
+训练会在更新前检查观测、BN running buffers、损失及梯度。失败时停止，不跳过样本或用 nan_to_num
 掩盖异常；在当前 checkpoint 目录的 failure/ 下保存：
 
 - failure_report.json：epoch、batch、输入范围、非有限数量、首个观测到异常输出的模块及梯度统计。
@@ -157,3 +157,30 @@ best.pth.tar/last.pth.tar 不会被失败快照覆盖。
 
 仅有 nonfinite loss 日志不能确定首次溢出位置；诊断文件用于区分异常输入、
 前向激活及梯度问题。降低 lr/裁剪属于稳定性措施，不能替代失败数据上的复验。
+
+### 旧 checkpoint 的 BN running_var/running_mean 已损坏
+
+训练态 BN 使用当前批次统计；即使输出和 loss 有限，累计 running_var 仍可能溢出。
+验证态依赖这些累计统计，因此旧版保存的 checkpoint 可能已经带有 Inf/NaN。
+降低 lr 不会自动修复文件里已有的坏统计。优先从较早的 best.pth.tar 恢复：
+
+```bash
+python train.py --model PMI-RFCoNet --dataset CAVE --mode registered \
+  --resume comparison/PMI-RFCoNet/checkpoints/physical/CAVE/best.pth.tar \
+  --lr 1e-4 --grad_clip 1.0 --resume_optimizer_override --repair_bn_stats
+```
+
+--repair_bn_stats 是显式恢复选项；仅当非有限张量全部属于实际 BN 模块的
+running_mean/running_var，且所有模型参数、其他缓冲及 Adam 状态有限时才允许修复。
+它重置全部 BN 的累计统计，用训练区域中固定种子随机抽取的默认 32 个 minibatch
+前向重校准；不更新权重，不使用验证或测试观测，保留 Adam、scheduler 阶段和 epoch，
+并在校准后恢复训练 RNG。--bn_calibration_batches 可调整批次数。
+若统计原本完好，此选项不执行重置或校准。若权重/Adam 已损坏，或校准时再次溢出，
+立即拒绝恢复；应改用更早的 checkpoint，必要时重新训练，不能把坏参数替换成零。
+
+成功校准后先另存 repaired_resume.pth.tar 和 bn_repair_report.json，校准步骤不覆盖源文件。
+旧的 best.pth.tar 在后续正常保存前备份为 best_before_bn_repair.pth.tar（不覆盖已有备份）。
+旧验证分数受到坏统计影响，因此仅在执行修复时重置 best_PSNR 监控，后续重新验证选择模型。
+此恢复过程会写入 checkpoint 元数据；它属于显式恢复操作，不等同于原始训练轨迹。
+本地测试验证人为损坏 BN 的恢复和方差溢出的检查，尚未取得用户实际损坏的 checkpoint
+及失败数据，不能据此保证该模型后续不会再次失稳。

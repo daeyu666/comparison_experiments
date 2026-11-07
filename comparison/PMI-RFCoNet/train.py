@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -30,7 +31,8 @@ from data_loader import build_datasets  # noqa: E402
 from metrics import MetricAverager, calc_metrics  # noqa: E402
 from experiment_protocol import DATASET_VALIDATION_INTERVAL  # noqa: E402
 from .model import ARCHITECTURE_ID, UPSTREAM_COMMIT, UPSTREAM_BLOB_SHA, build_model  # noqa: E402
-from .stability import fail_training, ensure_finite_checkpoint, reconfigure_learning_rate
+from .stability import (fail_training, ensure_finite_checkpoint, reconfigure_learning_rate,
+                        repair_bn_checkpoint, recalibrate_bn, nonfinite_bn_buffers)
 
 
 def parser(stage="registered", argv=None):
@@ -55,6 +57,8 @@ def parser(stage="registered", argv=None):
     p.add_argument("--init_checkpoint", default="")
     p.add_argument("--resume_optimizer_override", action="store_true",
                    help="Explicitly change lr/grad_clip when resuming; retain Adam moments, schedule phase and RNG")
+    p.add_argument("--repair_bn_stats",action="store_true",help="Explicitly reset damaged BN statistics and recalibrate using training observations; requires --resume")
+    p.add_argument("--bn_calibration_batches",type=int,default=32)
     p.add_argument("--mid_channels", type=int, default=64)
     p.add_argument("--num_fc", type=int, default=4)
     p.add_argument("--drop", type=float, default=0.0)
@@ -111,6 +115,7 @@ def checkpoint_payload(model, optimizer, scheduler, args, epoch, best_psnr, bad_
         "args": vars(args).copy(),
         "best_psnr": float(best_psnr),
         "bad_validations": int(bad_validations),
+        "bn_stats_repair": getattr(args,"bn_stats_repair_info",None),
         "rng": snapshot_rng(geometry_gen),
     }
     ensure_finite_checkpoint(payload)
@@ -119,7 +124,6 @@ def checkpoint_payload(model, optimizer, scheduler, args, epoch, best_psnr, bad_
 
 def load_checkpoint(path, model, args, *, expected_stage, fingerprint, optimizer=None, scheduler=None):
     state = torch.load(path, map_location="cpu", weights_only=False)
-    ensure_finite_checkpoint(state)
     if state.get("method") != "PMI-RFCoNet" or state.get("architecture_id") != ARCHITECTURE_ID:
         raise ValueError("Checkpoint is not compatible with this PMI-RFCoNet architecture")
     if state.get("upstream_blob_sha") != UPSTREAM_BLOB_SHA:
@@ -138,6 +142,11 @@ def load_checkpoint(path, model, args, *, expected_stage, fingerprint, optimizer
                  "degradation_mode", "mtf_nyquist", "psf_truncate"):
         if name in recorded and getattr(args, name, None) != recorded[name]:
             raise ValueError(f"PMI-RFCoNet checkpoint protocol mismatch for {name}")
+    repaired=None
+    if getattr(args,"repair_bn_stats",False):
+        repaired=repair_bn_checkpoint(state,model)
+    ensure_finite_checkpoint(state)
+    state["_bn_recalibration_required"]=repaired
     model.load_state_dict(state["model"], strict=True)
     if optimizer is not None:
         for name in ("seed", "lr", "weight_decay", "batch_size",
@@ -222,6 +231,10 @@ def main(stage="registered", argv=None):
         raise ValueError("--max_train_batches must be >= 0")
     if args.degradation_mode != "physical":
         raise ValueError("PMI-RFCoNet unified stages require the shared physical degradation")
+    if args.repair_bn_stats and not args.resume:
+        raise ValueError("--repair_bn_stats requires --resume")
+    if args.bn_calibration_batches<1:
+        raise ValueError("bn_calibration_batches must be positive")
     if args.resume_optimizer_override and not args.resume:
         raise ValueError("--resume_optimizer_override requires --resume")
     if stage == "registered" and args.init_checkpoint:
@@ -268,6 +281,36 @@ def main(stage="registered", argv=None):
                                 fingerprint=fingerprint)
         print(f"Initialized mixed PMI-RFCoNet from registered checkpoint: {init_path}", flush=True)
 
+    if args.resume and state.get("_bn_recalibration_required"):
+        repair=state["_bn_recalibration_required"]
+        repair["source_checkpoint"]=str(args.resume)
+        rng=snapshot_rng(geometry_gen)
+        calibration_gen=make_generator(device,args.seed+88001)
+        try:
+            set_seed(args.seed+88001)
+            calibration_loader=DataLoader(train_set,batch_size=args.batch_size,shuffle=True,num_workers=0,
+                generator=torch.Generator().manual_seed(args.seed+88001))
+            repair["calibration_batches"]=recalibrate_bn(
+                model,calibration_loader,device,
+                lambda gt:deformed_observation(gt,p0,args,calibration_gen,mixed=(stage=="mixed"))[0],
+                args.bn_calibration_batches)
+        finally:
+            restore_rng(rng,geometry_gen)
+        args.bn_stats_repair_info=repair
+        # Old validation scores used corrupted population statistics; start a
+        # new monitor, preserving the old best file before the first overwrite.
+        best_psnr,bad_validations=-float("inf"),0
+        old_best=ckpt_dir/"best.pth.tar"
+        backup=ckpt_dir/"best_before_bn_repair.pth.tar"
+        if old_best.is_file() and not backup.exists():
+            shutil.copy2(old_best,backup)
+        (ckpt_dir/"bn_repair_report.json").write_text(json.dumps(repair,indent=2),encoding="utf-8")
+        torch.save(checkpoint_payload(model,optimizer,scheduler,args,start_epoch-1,best_psnr,
+            bad_validations,fingerprint,geometry_gen),ckpt_dir/"repaired_resume.pth.tar")
+        print(f"BN_STATS_RECALIBRATED {repair}; validation monitor reset; source checkpoint unchanged",flush=True)
+    elif args.resume and state.get("bn_stats_repair"):
+        args.bn_stats_repair_info=state["bn_stats_repair"]
+
     protocol = {
         "method": "PMI-RFCoNet", "architecture_id": ARCHITECTURE_ID,
         "upstream_blob_sha": UPSTREAM_BLOB_SHA,
@@ -301,6 +344,11 @@ def main(stage="registered", argv=None):
                 fail_training(model,optimizer,lr_hsi,msi,gt,directory=ckpt_dir/"failure",args=args,
                     epoch=epoch+1,batch_idx=batch_idx,reason="nonfinite observation/target",replay=False)
             prediction = model(lr_hsi, msi)
+            invalid_bn=nonfinite_bn_buffers(model)
+            if invalid_bn:
+                fail_training(model,optimizer,lr_hsi,msi,gt,directory=ckpt_dir/"failure",args=args,
+                    epoch=epoch+1,batch_idx=batch_idx,
+                    reason=f"nonfinite BatchNorm statistics: {invalid_bn}")
             loss = torch.nn.functional.l1_loss(prediction, gt)
             if not torch.isfinite(loss):
                 fail_training(model,optimizer,lr_hsi,msi,gt,directory=ckpt_dir/"failure",args=args,

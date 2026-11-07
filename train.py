@@ -25,6 +25,8 @@ def parse_args():
                    help="Explicit Adam learning-rate override for IR&ArF or PMI-RFCoNet")
     p.add_argument("--grad_clip",type=float,default=None,help="PMI-RFCoNet only: gradient norm limit; 0 disables clipping")
     p.add_argument("--resume_optimizer_override",action="store_true",help="PMI-RFCoNet only: explicitly change lr/grad_clip on resume")
+    p.add_argument("--repair_bn_stats",action="store_true",help="PMI-RFCoNet only: explicitly recalibrate damaged BN buffers using training observations")
+    p.add_argument("--bn_calibration_batches",type=int,default=32)
     p.add_argument("--epochs", type=int, default=None,
                    help="Total target epochs, including completed epochs when resuming")
     p.add_argument("--resume", default="",
@@ -40,7 +42,8 @@ def main():
     cmd = build_train_command(adapter, args.dataset, args.mode, args.device, args.batch_size,
                               epochs=args.epochs, resume=args.resume,
                               hidden_channels=args.hidden_channels, lr_override=args.lr,
-                              grad_clip_override=args.grad_clip,resume_optimizer_override=args.resume_optimizer_override)
+                              grad_clip_override=args.grad_clip,resume_optimizer_override=args.resume_optimizer_override,
+                              repair_bn_stats=args.repair_bn_stats,bn_calibration_batches=args.bn_calibration_batches)
     print(
         f"UNIFIED_TRAIN model={adapter.canonical} dataset={args.dataset} "
         f"mode={args.mode}"

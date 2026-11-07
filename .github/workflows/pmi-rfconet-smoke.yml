@@ -1,7 +1,7 @@
 name: PMI-RFCoNet smoke
 on:
   push:
-    branches: [main, codex/pmi-rfconet-reproduction, codex/pmi-training-stability]
+    branches: [main, codex/pmi-rfconet-reproduction, codex/pmi-training-stability, codex/pmi-bn-recovery]
     paths:
       - 'comparison/PMI-RFCoNet/**'
       - 'tests/test_pmi_rfconet.py'

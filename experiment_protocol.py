@@ -300,7 +300,8 @@ def resolve_resume_checkpoint(adapter, dataset, mode, resume, hidden_channels=No
 
 def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: str, batch_size=None,
                         *, epochs=None, resume=None, hidden_channels=None, lr_override=None,
-                        grad_clip_override=None, resume_optimizer_override=False):
+                        grad_clip_override=None, resume_optimizer_override=False,
+                        repair_bn_stats=False, bn_calibration_batches=32):
     if dataset not in DATASETS:
         raise ValueError(f"Unsupported dataset={dataset!r}")
     if mode not in MODES:
@@ -315,13 +316,17 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             "or comparison/NonRegSRNet/train.py --pair observed.npz --srf_weights weights.npy "
             "--output_dir <directory> for one pair."
         )
-    if grad_clip_override is not None or resume_optimizer_override:
+    if grad_clip_override is not None or resume_optimizer_override or repair_bn_stats or bn_calibration_batches!=32:
         if adapter.canonical != "PMI-RFCoNet":
-            raise ValueError("--grad_clip/--resume_optimizer_override apply only to PMI-RFCoNet")
+            raise ValueError("--grad_clip/--resume_optimizer_override/--repair_bn_stats apply only to PMI-RFCoNet")
         if grad_clip_override is not None and grad_clip_override < 0:
             raise ValueError("--grad_clip must be nonnegative")
         if resume_optimizer_override and not resume:
             raise ValueError("--resume_optimizer_override requires --resume")
+    if repair_bn_stats and not resume:
+        raise ValueError("--repair_bn_stats requires --resume")
+    if bn_calibration_batches<1:
+        raise ValueError("--bn_calibration_batches must be positive")
     if lr_override is not None:
         if adapter.canonical not in ("IR&ArF","PMI-RFCoNet"):
             raise ValueError("--lr override is supported only by IR&ArF and PMI-RFCoNet")
@@ -393,6 +398,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
             cmd += ["--grad_clip",str(grad_clip_override)]
         if resume_optimizer_override:
             cmd.append("--resume_optimizer_override")
+        if repair_bn_stats:
+            cmd += ["--repair_bn_stats","--bn_calibration_batches",str(bn_calibration_batches)]
 
     if mode == "registered":
         common = [
