@@ -51,9 +51,9 @@ single-value case and otherwise follows standard BatchNorm behavior. Parameter,
 buffer, and state-dict names/shapes are unchanged.
 
 
-M2DTN's four-scale topology is intrinsically x4. Synthetic Augsburg x4 is supported; the
-Augsburg-2 real-world Wald x3 path is not exposed because changing it to x3 would alter the
-published cross-scale architecture.
+M2DTN's four-scale topology remains x4 internally. For real Augsburg, the
+[Wald x3 adapter](../real_augsburg/README.md) regrids the MSI and the
+reconstruction at the model boundary and retains the published internal stages.
 
 ## Commands
 

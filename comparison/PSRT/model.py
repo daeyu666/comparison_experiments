@@ -11,7 +11,10 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from model_SR import PSRTnet
+if __package__:
+    from .model_SR import PSRTnet
+else:
+    from model_SR import PSRTnet
 
 ARCHITECTURE_ID = "PSRT-TGRS2023-independent-W2W-pyramid-v2"
 UPSTREAM_SOURCE_SHA = "07c41e4290719edc2fc1fd15ef56fec69d662d42"

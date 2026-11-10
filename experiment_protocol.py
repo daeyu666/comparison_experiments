@@ -7,7 +7,7 @@ to adapt memory use to the server, without automatically scaling learning rate.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from emr_configuration import checkpoint_name, validate_hidden_channels, variant_suffix
 
@@ -199,6 +199,19 @@ _ADAPTERS = {
         real_infer="",
     ),
 }
+REAL_CLASSICAL_METHODS = ("CNMF", "HySure")
+REAL_NEW_NEURAL_METHODS = ("MoG-DCN", "PSRT", "ESFS", "M2DTN", "PMI-RFCoNet", "MoE-PNP", "SA-RFM")
+REAL_METHODS = ("CNMF", "HySure", "MoG-DCN", "PSRT", "ESFS", "CLSNet", "EMR-Diff",
+                "M2DTN", "PMI-RFCoNet", "MoE-PNP", "SA-RFM", "UAFL")
+_REAL_SHARED_ENTRY = "comparison/real_augsburg/run.py"
+for _method in (*REAL_CLASSICAL_METHODS, *REAL_NEW_NEURAL_METHODS):
+    _key = _method.lower()
+    _ADAPTERS[_key] = replace(
+        _ADAPTERS[_key],
+        real_train=_REAL_SHARED_ENTRY if _method in REAL_NEW_NEURAL_METHODS else "",
+        real_infer=_REAL_SHARED_ENTRY,
+    )
+
 _ALIASES = {
     "mogdcn": "mog-dcn",
     "nonregsrnet": "nonregsrnet",
@@ -645,137 +658,159 @@ REAL_TILE_STRIDE = 48
 REAL_QNR_WINDOW_HR = 48
 REAL_QNR_MIN_VALID_FRACTION = 0.80
 REAL_QNR_SUPPORT_FRACTION = 0.01
+REAL_CHECKPOINT_FAMILY = "augsburg2_wald_center_holdout"
 
 
 def real_checkpoint_dir(adapter: ModelAdapter) -> Path:
     return (
         ROOT / "comparison" / adapter.folder
-        / "checkpoints" / "augsburg2_wald_center_holdout"
+        / "checkpoints" / REAL_CHECKPOINT_FAMILY
     )
 
 
 def real_log_dir(adapter: ModelAdapter) -> Path:
     return (
         ROOT / "comparison" / adapter.folder
-        / "logs" / "augsburg2_wald_center_holdout"
+        / "logs" / REAL_CHECKPOINT_FAMILY
     )
 
 
 def real_output_dir(adapter: ModelAdapter) -> Path:
     return (
         ROOT / "comparison" / adapter.folder
-        / "outputs" / "augsburg2_wald_center_holdout"
+        / "outputs" / REAL_CHECKPOINT_FAMILY
     )
 
 
-def real_checkpoint_path(adapter: ModelAdapter) -> Path:
-    return real_checkpoint_dir(adapter) / "best.pth.tar"
+def real_checkpoint_path(adapter: ModelAdapter, hidden_channels=None) -> Path:
+    width = model_hidden_channels(adapter, hidden_channels)
+    return real_checkpoint_dir(adapter) / (
+        checkpoint_name("best", width) if adapter.canonical == "EMR-Diff" else "best.pth.tar"
+    )
 
 
-def build_real_train_command(adapter: ModelAdapter, device: str, batch_size=None):
-    if not adapter.real_train:
-        raise NotImplementedError(f"{adapter.canonical} has no real-world Augsburg Wald training adapter")
-    resolved_batch = training_batch_size(adapter, batch_size, real=True)
-    cmd = [
-        sys.executable,
-        str(ROOT / adapter.real_train),
-        "--stage", "train",
-        "--wald_root", str(REAL_WALD_ROOT),
-        "--radiometry_json", str(REAL_RADIOMETRY),
-        "--checkpoint_dir", str(real_checkpoint_dir(adapter).relative_to(ROOT)),
-        "--log_dir", str(real_log_dir(adapter).relative_to(ROOT)),
-        "--train_patch_size", str(REAL_TRAIN_PATCH),
-        "--train_stride", str(REAL_TRAIN_STRIDE),
-        "--eval_patch_size", str(REAL_EVAL_PATCH),
-        "--min_valid_fraction", str(REAL_MIN_VALID_FRACTION),
-        "--batch_size", str(resolved_batch),
-        "--num_workers", str(REAL_NUM_WORKERS),
-        "--epochs", str(REAL_EPOCHS),
-        "--lr", str(REAL_LR),
-        "--weight_decay", str(REAL_WEIGHT_DECAY),
-        "--eval_interval", str(REAL_EVAL_INTERVAL),
-        "--save_interval", str(REAL_SAVE_INTERVAL),
-        "--monitor", REAL_MONITOR,
-        "--seed", str(REAL_SEED),
-        "--device", device,
+def _real_train_options(batch, epochs=REAL_EPOCHS):
+    return [
+        "--train_patch_size", str(REAL_TRAIN_PATCH), "--train_stride", str(REAL_TRAIN_STRIDE),
+        "--eval_patch_size", str(REAL_EVAL_PATCH), "--min_valid_fraction", str(REAL_MIN_VALID_FRACTION),
+        "--batch_size", str(batch), "--num_workers", str(REAL_NUM_WORKERS),
+        "--epochs", str(epochs), "--lr", str(REAL_LR), "--weight_decay", str(REAL_WEIGHT_DECAY),
+        "--eval_interval", str(REAL_EVAL_INTERVAL), "--save_interval", str(REAL_SAVE_INTERVAL),
+        "--monitor", REAL_MONITOR, "--seed", str(REAL_SEED),
     ]
+
+
+def _real_cache_options(wald_root, radiometry_json):
+    return ["--wald_root", str(wald_root or REAL_WALD_ROOT),
+            "--radiometry_json", str(radiometry_json or REAL_RADIOMETRY)]
+
+
+def build_real_train_command(adapter: ModelAdapter, device: str, batch_size=None, *,
+                             hidden_channels=None, epochs=None, resume=None, wald_root=None,
+                             radiometry_json=None, checkpoint_directory=None, log_directory=None):
+    if not adapter.real_train:
+        raise NotImplementedError(f"{adapter.canonical} is a per-pair solver with no training; use test_real.py")
+    batch = training_batch_size(adapter, batch_size, real=True)
+    width = model_hidden_channels(adapter, hidden_channels)
+    epochs = REAL_EPOCHS if epochs is None else epochs
+    if epochs < 1:
+        raise ValueError("--epochs must be positive")
+    directory = Path(checkpoint_directory) if checkpoint_directory else real_checkpoint_dir(adapter)
+    logs = Path(log_directory) if log_directory else real_log_dir(adapter)
+    cmd = [
+        sys.executable, str(ROOT / adapter.real_train), "--stage", "train", "--device", device,
+        *_real_cache_options(wald_root, radiometry_json),
+        "--checkpoint_dir", str(directory), "--log_dir", str(logs), *_real_train_options(batch, epochs),
+    ]
+    if adapter.real_train == _REAL_SHARED_ENTRY:
+        cmd += ["--model", adapter.canonical]
     if adapter.canonical == "EMR-Diff":
-        cmd += ["--eval_seed", str(REAL_EVAL_SEED), "--model_width", "64"]
+        cmd += ["--eval_seed", str(REAL_EVAL_SEED), "--model_width", str(width)]
+    if resume:
+        path = Path(resume) if resume != "auto" else directory / (
+            checkpoint_name("last", width) if adapter.canonical == "EMR-Diff" else "last.pth.tar"
+        )
+        cmd += ["--resume", str(path)]
     return cmd
 
 
-def build_real_reference_test_command(adapter: ModelAdapter, device: str):
-    if not adapter.real_train:
+def _real_test_checkpoint(adapter, checkpoint, hidden_channels, check_files):
+    if adapter.canonical in REAL_CLASSICAL_METHODS:
+        if checkpoint or hidden_channels is not None:
+            raise ValueError(f"{adapter.canonical} does not use a pretrained checkpoint")
+        return []
+    path = Path(checkpoint) if checkpoint else real_checkpoint_path(adapter, hidden_channels)
+    if check_files and not path.is_file():
+        raise FileNotFoundError(f"Real Augsburg checkpoint not found: {path}")
+    return ["--checkpoint", str(path)]
+
+
+def build_real_reference_test_command(adapter: ModelAdapter, device: str, *,
+                                      checkpoint=None, hidden_channels=None, wald_root=None,
+                                      radiometry_json=None, output=None, check_files=True):
+    script = adapter.real_train or (adapter.real_infer if adapter.canonical in REAL_CLASSICAL_METHODS else "")
+    if not script:
         raise NotImplementedError(f"{adapter.canonical} has no real-world Augsburg Wald test adapter")
-    checkpoint = real_checkpoint_path(adapter)
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"Real Augsburg checkpoint not found: {checkpoint}")
+    width = model_hidden_channels(adapter, hidden_channels)
     cmd = [
-        sys.executable,
-        str(ROOT / adapter.real_train),
-        "--stage", "test",
-        "--wald_root", str(REAL_WALD_ROOT),
-        "--radiometry_json", str(REAL_RADIOMETRY),
-        "--checkpoint_dir", str(real_checkpoint_dir(adapter).relative_to(ROOT)),
-        "--log_dir", str(real_log_dir(adapter).relative_to(ROOT)),
-        "--checkpoint", str(checkpoint.relative_to(ROOT)),
-        "--train_patch_size", str(REAL_TRAIN_PATCH),
-        "--train_stride", str(REAL_TRAIN_STRIDE),
-        "--eval_patch_size", str(REAL_EVAL_PATCH),
-        "--min_valid_fraction", str(REAL_MIN_VALID_FRACTION),
-        "--batch_size", "1",
-        "--num_workers", "0",
-        "--epochs", str(REAL_EPOCHS),
-        "--lr", str(REAL_LR),
-        "--weight_decay", str(REAL_WEIGHT_DECAY),
-        "--eval_interval", str(REAL_EVAL_INTERVAL),
-        "--save_interval", str(REAL_SAVE_INTERVAL),
-        "--monitor", REAL_MONITOR,
-        "--seed", str(REAL_SEED),
-        "--device", device,
+        sys.executable, str(ROOT / script), "--stage", "test", "--device", device,
+        *_real_cache_options(wald_root, radiometry_json),
+        *_real_test_checkpoint(adapter, checkpoint, hidden_channels, check_files),
+        *_real_train_options(1),
     ]
+    if script == _REAL_SHARED_ENTRY:
+        cmd += ["--model", adapter.canonical, "--save_root", str(output or real_output_dir(adapter))]
     if adapter.canonical == "EMR-Diff":
-        cmd += ["--eval_seed", str(REAL_EVAL_SEED), "--model_width", "64"]
+        cmd += ["--eval_seed", str(REAL_EVAL_SEED), "--model_width", str(width)]
     return cmd
 
 
-def build_real_native_test_command(adapter: ModelAdapter, device: str):
+def build_real_native_test_command(adapter: ModelAdapter, device: str, *,
+                                   checkpoint=None, hidden_channels=None, wald_root=None,
+                                   radiometry_json=None, output=None, check_files=True,
+                                   write_tif=True, tile_size=REAL_TILE_SIZE, tile_stride=REAL_TILE_STRIDE):
     if not adapter.real_infer:
-        raise NotImplementedError(f"{adapter.canonical} has no native real-world Augsburg Wald inference adapter")
-    checkpoint = real_checkpoint_path(adapter)
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"Real Augsburg checkpoint not found: {checkpoint}")
+        raise NotImplementedError(f"{adapter.canonical} has no native Augsburg inference adapter")
+    width = model_hidden_channels(adapter, hidden_channels)
+    if tile_size % 24 or tile_stride % 24 or not 0 < tile_stride <= tile_size <= 144:
+        raise ValueError("Use Wald tile/stride multiples of 24, with 0 < stride <= tile <= 144")
+    classical = adapter.canonical in REAL_CLASSICAL_METHODS
     cmd = [
-        sys.executable,
-        str(ROOT / adapter.real_infer),
-        "--center_holdout",
-        "--wald_root", str(REAL_WALD_ROOT),
-        "--radiometry_json", str(REAL_RADIOMETRY),
-        "--checkpoint", str(checkpoint.relative_to(ROOT)),
-        "--save_root", str(real_output_dir(adapter).relative_to(ROOT)),
-        "--tile_size", str(REAL_TILE_SIZE),
-        "--tile_stride", str(REAL_TILE_STRIDE),
-        "--device", device,
-        "--write_tif",
+        sys.executable, str(ROOT / adapter.real_infer), "--center_holdout",
+        *_real_cache_options(wald_root, radiometry_json),
+        *_real_test_checkpoint(adapter, checkpoint, hidden_channels, check_files),
+        "--save_root", str(output or real_output_dir(adapter)),
+        "--tile_size", str(tile_size), "--tile_stride", str(tile_stride),
+        "--device", "cpu" if classical else device,
         "--qnr_window_hr", str(REAL_QNR_WINDOW_HR),
         "--qnr_min_valid_fraction", str(REAL_QNR_MIN_VALID_FRACTION),
         "--qnr_support_fraction", str(REAL_QNR_SUPPORT_FRACTION),
     ]
+    if write_tif:
+        cmd.append("--write_tif")
+    if adapter.real_infer == _REAL_SHARED_ENTRY:
+        cmd += ["--stage", "native", "--model", adapter.canonical]
     if adapter.canonical == "EMR-Diff":
         cmd += ["--eval_seed", str(REAL_EVAL_SEED)]
+        if hidden_channels is not None:
+            cmd += ["--model_width", str(width)]
     return cmd
 
 
-def real_protocol_summary(adapter=None, batch_size=None) -> str:
-    resolved_batch = training_batch_size(adapter, batch_size, real=True) if adapter else REAL_BATCH_SIZE
+def real_protocol_summary(adapter=None, batch_size=None, *, hidden_channels=None, epochs=None) -> str:
+    classical = adapter and adapter.canonical in REAL_CLASSICAL_METHODS
+    training = "per-pair numerical solver (no checkpoint)" if classical else (
+        f"train={REAL_TRAIN_PATCH}/stride{REAL_TRAIN_STRIDE}, eval={REAL_EVAL_PATCH}; "
+        f"epochs={REAL_EPOCHS if epochs is None else epochs}, AdamW lr={REAL_LR:g}, "
+        f"wd={REAL_WEIGHT_DECAY:g}, batch={training_batch_size(adapter, batch_size, real=True) if adapter else REAL_BATCH_SIZE}; "
+        f"best={REAL_MONITOR}"
+    )
+    if adapter and adapter.canonical == "EMR-Diff":
+        training += f", base_channels={validate_hidden_channels(hidden_channels)}"
     return (
         f"{REAL_SPLIT_PROTOCOL}; x3 Wald; test30={REAL_TEST_BBOX_30M}, "
         f"test10={REAL_TEST_BBOX_10M}, forbidden30={REAL_FORBIDDEN_BBOX_30M}; "
-        f"train={REAL_TRAIN_PATCH}/stride{REAL_TRAIN_STRIDE}, "
-        f"eval={REAL_EVAL_PATCH}; epochs={REAL_EPOCHS}; "
-        f"AdamW lr={REAL_LR:g}, wd={REAL_WEIGHT_DECAY:g}, batch={resolved_batch}; "
-        f"best={REAL_MONITOR}; native tile={REAL_TILE_SIZE}/"
-        f"{REAL_TILE_STRIDE}; QNR window={REAL_QNR_WINDOW_HR}"
+        f"{training}; native tile={REAL_TILE_SIZE}/{REAL_TILE_STRIDE}; QNR window={REAL_QNR_WINDOW_HR}"
     )
 
 

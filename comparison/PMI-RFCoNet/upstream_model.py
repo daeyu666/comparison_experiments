@@ -64,7 +64,7 @@ class encoder_hs(nn.Module):
 
         self.LeakyReLU = nn.LeakyReLU()
 
-    def forward(self, x):
+    def forward(self, x, hr_size=None):
 
         out1 = self.LeakyReLU(self.conv_1x_1(x))
         out1 = self.LeakyReLU(self.conv_1x_2(out1))
@@ -76,6 +76,8 @@ class encoder_hs(nn.Module):
         out2 = self.LeakyReLU(self.conv_2x_2(out2))
 
         out2_up = self.up_2x_4x(out2)
+        if hr_size is not None:
+            out2_up = F.interpolate(out2_up, size=hr_size, mode="bilinear", align_corners=False)
         out3 = self.LeakyReLU(self.conv_4x_1(out2_up))
         out3 = self.LeakyReLU(self.conv_4x_2(out3))
 
@@ -102,11 +104,12 @@ class encoder_ms(nn.Module):
 
         self.MaxPool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-    def forward(self, x):
+    def forward(self, x, intermediate_size=None):
         out1 = self.LeakyReLU(self.conv_4x_1(x))
         out1 = self.LeakyReLU(self.conv_4x_2(out1))
 
-        out1_mp = self.MaxPool(out1)
+        out1_mp = (self.MaxPool(out1) if intermediate_size is None
+                   else F.adaptive_max_pool2d(out1, intermediate_size))
         out2 = self.LeakyReLU(self.conv_2x_1(out1_mp))
         out2 = self.LeakyReLU(self.conv_2x_2(out2))
 
@@ -555,8 +558,12 @@ class SuperResolutionModel(nn.Module):
 
     def forward(self, X_LR, X_HR):
 
-        f_4x, f_2x, f_1x = self.encoder_HR(X_HR)
-        lr_1x, lr_2x, lr_4x, lr_spa = self.encoder_LR(X_LR)
+        # In Wald x3 the middle grid is 2x the observed LR grid. Keep the
+        # three registration/fusion levels and map only internal features.
+        hr_size = X_HR.shape[-2:] if self.factor == 3 else None
+        middle_size = tuple(2 * n for n in X_LR.shape[-2:]) if hr_size is not None else None
+        f_4x, f_2x, f_1x = self.encoder_HR(X_HR, middle_size)
+        lr_1x, lr_2x, lr_4x, lr_spa = self.encoder_LR(X_LR, hr_size)
 
         w_1x = self.w_GAP_1x(lr_1x)
         w_2x = self.w_GAP_2x(lr_2x)
@@ -588,6 +595,8 @@ class SuperResolutionModel(nn.Module):
         # upscale
         reg_LR_4x = self.relu(self.conv_4x(LR_2x))
         reg_LR_4x = self.upscale_2x(reg_LR_4x)
+        if hr_size is not None:
+            reg_LR_4x = F.interpolate(reg_LR_4x, size=hr_size, mode="bilinear", align_corners=False)
 
 
         # STAGE 3

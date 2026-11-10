@@ -19,6 +19,7 @@ from wald_emr_common import (
     read_radiometry, require_center_holdout, verify_checkpoint, predict,
 )
 from EMRDiff import Edge
+from emr_configuration import checkpoint_name, validate_hidden_channels
 from augsburg2_wald_qnr import evaluate_cache
 from augsburg2_wald_center_roi import crop_heldout, geotiff_transform
 
@@ -41,7 +42,7 @@ def parse_args():
     )
     p.add_argument(
         "--checkpoint",
-        default="./comparison/EMR-Diff/checkpoints/augsburg2_wald_center_holdout/best.pth.tar",
+        default=None,
     )
     p.add_argument(
         "--save_root",
@@ -56,7 +57,11 @@ def parse_args():
     p.add_argument("--qnr_min_valid_fraction", type=float, default=0.8)
     p.add_argument("--qnr_support_fraction", type=float, default=0.01)
     p.add_argument("--eval_seed", type=int, default=1234)
+    p.add_argument("--model_width", "--base_channels", type=validate_hidden_channels)
     args = p.parse_args()
+    if args.checkpoint is None:
+        args.checkpoint = str(Path("./comparison/EMR-Diff/checkpoints/augsburg2_wald_center_holdout")
+                              / checkpoint_name("best", args.model_width))
     if args.skip_qnr:
         p.error("Center-heldout inference requires QNR output; omit --skip_qnr")
     return args
@@ -112,7 +117,7 @@ def main():
     device = torch.device(args.device)
 
     checkpoint = torch.load(
-        args.checkpoint, map_location=device, weights_only=False
+        args.checkpoint, map_location="cpu", weights_only=False
     )
     verify_checkpoint(
         checkpoint,
@@ -121,10 +126,11 @@ def main():
         split_protocol_id=split_protocol_id,
         test_bbox_30m=test_bbox_30m,
         forbidden_bbox_30m=forbidden_bbox_30m,
-        monitor="ref_sam",
+        width=args.model_width,
     )
     model = build_model(int(checkpoint["model_width"]), device=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint.pop("model_state_dict"))
+    checkpoint.pop("optimizer_state_dict", None)
     model.eval()
     diffusion = build_diffusion(device)
     edge = Edge().to(device).eval()
@@ -274,6 +280,8 @@ def main():
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "radiometry_sha256": sha,
         "diffusion_eval_seed": args.eval_seed,
+        "backbone_width": model.width,
+        "checkpoint_epoch": checkpoint.get("epoch"),
     }
     protocol_path = dest / "EMRDiff_Wald_heldout_protocol.json"
     protocol_path.write_text(

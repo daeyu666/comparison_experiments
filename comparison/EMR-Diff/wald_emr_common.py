@@ -14,6 +14,8 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 HERE = Path(__file__).resolve().parent
+if str(HERE.parents[1]) not in sys.path:
+    sys.path.insert(0, str(HERE.parents[1]))
 UAFL_ROOT = HERE.parent / "UAFL"
 if str(UAFL_ROOT) not in sys.path:
     sys.path.insert(0, str(UAFL_ROOT))

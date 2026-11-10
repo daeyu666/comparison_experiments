@@ -12,11 +12,18 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from upstream_sb import (
-    ImprovedDiT,
-    riemannian_flow_matching_loss,
-    optimal_transport_direction_loss,
-)
+if __package__:
+    from .upstream_sb import (
+        ImprovedDiT,
+        riemannian_flow_matching_loss,
+        optimal_transport_direction_loss,
+    )
+else:
+    from upstream_sb import (
+        ImprovedDiT,
+        riemannian_flow_matching_loss,
+        optimal_transport_direction_loss,
+    )
 
 ARCHITECTURE_ID = "SA-RFM-official-ImprovedDiT-v1"
 UPSTREAM_BLOB_SHA = "bb1f9c472d9539c73c4f3bd3d296990b8e16b2de"
@@ -58,7 +65,7 @@ class SARFMModel(nn.Module):
         return self.net(x_t, t, lr_hsi, hr_msi)
 
     def flow_loss(self, lr_hsi: torch.Tensor, gt: torch.Tensor,
-                  hr_msi: torch.Tensor, *, lambda_otd: float = 1.0):
+                  hr_msi: torch.Tensor, *, lambda_otd: float = 1.0, valid_mask=None):
         """Actual effective objective from upstream SA_SB_Trainer.train_step."""
         if lambda_otd < 0:
             raise ValueError("lambda_otd must be nonnegative")
@@ -69,8 +76,9 @@ class SARFMModel(nn.Module):
         u_target = gt - x0
         result = self.velocity(x_t, t, lr_hsi, hr_msi)
         v, metric = result["pred"], result["metric_tensor"]
-        loss_rfm = riemannian_flow_matching_loss(v, u_target, metric, use_riemannian=True)
-        loss_otd = optimal_transport_direction_loss(v, u_target, metric)
+        valid = None if valid_mask is None else valid_mask > 0.5
+        loss_rfm = riemannian_flow_matching_loss(v, u_target, metric, use_riemannian=True, valid_mask=valid)
+        loss_otd = optimal_transport_direction_loss(v, u_target, metric, valid_mask=valid)
         total = loss_rfm + lambda_otd * loss_otd
         return total, {"rfm": loss_rfm.detach(), "otd": loss_otd.detach()}
 

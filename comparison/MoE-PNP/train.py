@@ -59,10 +59,16 @@ def _use_dsp(image, flow, spatial_transform):
     return spatial_transform(image, flow).permute(0, 3, 1, 2)
 
 
-def _smoothing_loss(flow):
+def _smoothing_loss(flow, mask=None):
     dx = torch.abs(flow[:, :, :, 1:] - flow[:, :, :, :-1])
     dy = torch.abs(flow[:, :, 1:, :] - flow[:, :, :-1, :])
-    return (torch.mean(dx * dx) + torch.mean(dy * dy)) / 2.0
+    if mask is None:
+        return (dx.square().mean() + dy.square().mean()) / 2.0
+    def avg(d, good):
+        good = good.expand_as(d)
+        return (d.square() * good).sum() / good.sum().clamp_min(1)
+    return (avg(dx, mask[..., 1:] & mask[..., :-1])
+            + avg(dy, mask[..., 1:, :] & mask[..., :-1, :])) / 2.0
 
 
 class _LocalNCC:
@@ -70,37 +76,59 @@ class _LocalNCC:
     def __init__(self, window=9):
         self.window = int(window)
 
-    def loss(self, first, second):
+    def loss(self, first, second, mask=None):
         if first.shape != second.shape or first.ndim != 4 or first.shape[1] != 1:
             raise ValueError("MoE-PNP registration consistency expects equal N x 1 x H x W inputs")
         window = self.window
         filt = torch.ones((1, 1, window, window), device=first.device, dtype=first.dtype)
         padding = window // 2
+        if mask is not None:
+            first = first * mask
+            second = second * mask
         first2, second2, cross_product = first * first, second * second, first * second
         first_sum = F.conv2d(first, filt, padding=padding)
         second_sum = F.conv2d(second, filt, padding=padding)
         first2_sum = F.conv2d(first2, filt, padding=padding)
         second2_sum = F.conv2d(second2, filt, padding=padding)
         cross_sum = F.conv2d(cross_product, filt, padding=padding)
-        window_size = float(window * window)
+        if mask is None:
+            window_size = float(window * window)
+        else:
+            support = F.conv2d(mask.to(first.dtype), filt, padding=padding)
+            window_size = support.clamp_min(1)
         first_mean = first_sum / window_size
         second_mean = second_sum / window_size
         cross = cross_sum - second_mean * first_sum - first_mean * second_sum + first_mean * second_mean * window_size
         first_var = first2_sum - 2 * first_mean * first_sum + first_mean * first_mean * window_size
         second_var = second2_sum - 2 * second_mean * second_sum + second_mean * second_mean * window_size
         corr_sq = cross * cross / (first_var * second_var + 1e-5)
-        return -torch.mean(corr_sq)
+        if mask is None:
+            return -corr_sq.mean()
+        good = mask & (support >= 0.8 * (window * window))
+        return -(corr_sq * good).sum() / good.sum().clamp_min(1)
 
 
-def compute_moepnp_loss(model, lr_hsi, hr_msi, gt, blur, ncc):
+def compute_moepnp_loss(model, lr_hsi, hr_msi, gt, blur, ncc, valid_mask=None):
     (
         pred_hr, pred_mid, intensity_mid, intensity_hr,
         msi_mid_gray, msi_hr_gray, flow_mid, flow_hr,
         flow_mid_init, flow_hr_init, spatial_mid, spatial_hr,
     ) = model.forward_full(lr_hsi, hr_msi)
 
-    gt_mid = F.interpolate(blur(gt), scale_factor=0.5, mode="bilinear", align_corners=False)
-    loss_reconstruction = 0.5 * F.l1_loss(pred_hr, gt) + 0.5 * F.l1_loss(pred_mid, gt_mid)
+    gt_mid = F.interpolate(blur(gt), size=pred_mid.shape[-2:], mode="bilinear", align_corners=False)
+    if valid_mask is None:
+        mid_mask = hr_mask = None
+        loss_reconstruction = 0.5 * F.l1_loss(pred_hr, gt) + 0.5 * F.l1_loss(pred_mid, gt_mid)
+    else:
+        native = F.interpolate(pred_hr, size=gt.shape[-2:], mode="bilinear", align_corners=False, antialias=True)
+        mid_mask = F.interpolate(valid_mask, size=pred_mid.shape[-2:], mode="area") >= 1
+        hr_mask = F.interpolate(valid_mask, size=pred_hr.shape[-2:], mode="nearest") > 0.5
+
+        def l1(pred, target, mask):
+            good = mask.expand_as(pred)
+            return ((pred - target).abs() * good).sum() / good.sum().clamp_min(1)
+
+        loss_reconstruction = 0.5 * l1(native, gt, valid_mask > 0.5) + 0.5 * l1(pred_mid, gt_mid, mid_mask)
 
     msi_mid_registered = _use_dsp(msi_mid_gray, flow_mid, spatial_mid)
     msi_hr_registered = _use_dsp(msi_hr_gray.detach(), flow_hr, spatial_hr)
@@ -108,14 +136,14 @@ def compute_moepnp_loss(model, lr_hsi, hr_msi, gt, blur, ncc):
     intensity_hr_registered = _use_dsp(intensity_hr.detach(), flow_hr_init, spatial_hr)
 
     loss_registration = (
-        ncc.loss(intensity_mid, msi_mid_registered)
-        + ncc.loss(intensity_hr.detach(), msi_hr_registered)
-        + ncc.loss(msi_mid_gray, intensity_mid_registered)
-        + ncc.loss(msi_hr_gray.detach(), intensity_hr_registered)
+        ncc.loss(intensity_mid, msi_mid_registered, mid_mask)
+        + ncc.loss(intensity_hr.detach(), msi_hr_registered, hr_mask)
+        + ncc.loss(msi_mid_gray, intensity_mid_registered, mid_mask)
+        + ncc.loss(msi_hr_gray.detach(), intensity_hr_registered, hr_mask)
     ) / 4.0
     loss_smoothness = (
-        _smoothing_loss(flow_mid) + _smoothing_loss(flow_hr)
-        + _smoothing_loss(flow_mid_init) + _smoothing_loss(flow_hr_init)
+        _smoothing_loss(flow_mid, mid_mask) + _smoothing_loss(flow_hr, hr_mask)
+        + _smoothing_loss(flow_mid_init, mid_mask) + _smoothing_loss(flow_hr_init, hr_mask)
     ) / 4.0
     total = loss_reconstruction + 0.001 * loss_registration + 0.01 * loss_smoothness
     return total, {

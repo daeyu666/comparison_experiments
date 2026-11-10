@@ -103,7 +103,7 @@ python test.py --model PSRT --dataset PaviaU --mode mixed --device cuda:0
 
 注意：此处采用统一数据退化和训练划分，不应直接将输出指标
 与作者使用的原始 HDF5 训练测试设置混作同一个实验协议。
-真实 Augsburg x3 没有为 PSRT 单独实现。
+真实 Augsburg ×3 见下方统一入口。
 
 ### SA-RFM（ICML 2026）结构感知流匹配适配
 
@@ -122,7 +122,7 @@ python test.py --model SA-RFM --dataset PaviaU --mode mixed --device cuda:0
 
 该适配器按官方实际生效的 `L_RFM + λ_otd L_OTD` 优化目标、AdamW
 (1e-4, 1e-4) 和默认 1 步 Euler ODE 工作。数据划分、SRF/PSF 和形变
-协议与其他模型一致。真实 Augsburg Wald x3 尚未接入。
+协议与其他模型一致。真实 Augsburg ×3 见下方统一入口。
 
 ### EMR-Diff synthetic基线的动态输入输出适配
 
@@ -147,7 +147,7 @@ HSI+MSI联合状态、观测条件、多模态残差、加噪与逆扩散均在�
 `fixed64_state_projection_v1` synthetic权重不直接兼容新参数命名，需重新
 训练，不能用于新结构的stage2初始化、续训或测试。根train.py/test.py用法
 及800/600两阶段预算保持不变。真实世界Augsburg center-heldout Wald x3
-也直接使用BAFUNet动态输入输出，state=246、hidden=64，架构ID为
+也直接使用BAFUNet动态输入输出，state=246，hidden 默认64，可单独指定，架构ID为
 `dynamic_io_wald_v2`。旧Wald外部head权重需重新训练，不与synthetic权重混用。
 
 ### EMR-Diff在24G显存服务器上的训练设置
@@ -469,197 +469,19 @@ python test_real.py  --model NewModel
 
 ## 真实世界 Augsburg-2 独立统一入口
 
-真实世界Augsburg-2 **不使用** 六个 synthetic x4 数据集的
-`train.py / test.py`。两套实验协议完全独立：
-
-```text
-synthetic x4:
-  train.py
-  test.py
-
-real Augsburg-2 center-heldout Wald x3:
-  train_real.py
-  test_real.py
-```
-
-注意：
+按 S2Diff-MH 的 Region 2 **中心留出 Wald ×3** 协议，逐个训练、自动发现本地
+Wald 权重并批量测试。CNMF、HySure 直接在 CPU 求解；其余方法先训练。
 
 ```bash
-python train.py --model UAFL --dataset Augsburg --mode mixed
+python train_real.py --model ESFS --device cuda:0
+python train_real.py --model EMR-Diff --base_channels 128 --device cuda:0
+python test_real.py --model all --device cuda:0
 ```
 
-中的 `Augsburg` 指的是 **synthetic Augsburg x4**。
-
-真实世界实验必须使用：
-
-```bash
-python train_real.py --model UAFL
-python test_real.py  --model UAFL
-```
-
-或：
-
-```bash
-python train_real.py --model EMR-Diff
-python test_real.py  --model EMR-Diff
-```
-
-除可选的 `--device` 外，真实世界实验不暴露其他实验超参数，
-全部冻结在 `experiment_protocol.py`。
-
-### 冻结的真实世界协议
-
-```text
-protocol_id:
-  Augsburg2-Wald-center-holdout-v1
-
-observed HSI:
-  30m
-  100 x 120 x 242
-
-observed real Sentinel-2 MSI:
-  10m
-  300 x 360 x 4
-  B2 / B3 / B4 / B8
-
-scale:
-  x3 Wald
-
-held-out test, 30m:
-  [24:72, 36:84]
-  48 x 48
-
-native held-out ROI, 10m:
-  [72:216, 108:252]
-  144 x 144
-
-training forbidden region, 30m:
-  [18:78, 30:90]
-  center test ROI + 6-pixel PSF guard
-
-train patch:
-  24 x 24
-
-train stride:
-  6
-
-validation / RR test patch:
-  48 x 48
-
-minimum valid fraction:
-  0.80
-
-training epochs:
-  100
-
-optimizer:
-  AdamW
-
-learning rate:
-  1e-5
-
-weight decay:
-  5e-5
-
-batch size:
-  1 (other methods); EMR-Diff default = 2
-
-validation interval:
-  5 epochs
-
-save interval:
-  5 epochs
-
-best checkpoint:
-  minimum pooled masked validation SAM
-
-seed:
-  10
-```
-
-radiometry必须使用center-holdout专用标定：
-
-```text
-../S2Diff-MH/data/calibration/
-Augsburg2_Wald_center_holdout_radiometry.json
-```
-
-禁止复用旧full-region radiometry或旧full-region checkpoint。
-
-### 真实世界训练
-
-所有模型统一：
-
-```bash
-python train_real.py --model <Method>
-```
-
-当前：
-
-```bash
-python train_real.py --model UAFL
-python train_real.py --model EMR-Diff
-```
-
-checkpoint仍保存在模型自身目录：
-
-```text
-comparison/UAFL/checkpoints/augsburg2_wald_center_holdout/best.pth.tar
-comparison/EMR-Diff/checkpoints/augsburg2_wald_center_holdout/best.pth.tar
-```
-
-### 真实世界测试
-
-统一：
-
-```bash
-python test_real.py --model <Method>
-```
-
-一个命令依次执行：
-
-```text
-Step 1:
-  reduced-resolution center-heldout reference test
-
-  output:
-    REF_PSNR
-    REF_SAM
-    REF_RMSE
-
-Step 2:
-  native 10m center-heldout inference
-
-  output:
-    144 x 144 x 242 reconstructed HSI
-
-Step 3:
-  held-out native QNR evaluation
-
-  output:
-    QNR
-    Dlambda
-    Ds
-
-Step 4:
-  write GeoTIFF with the correct center-ROI geotransform
-```
-
-native inference固定：
-
-```text
-tile size = 96
-tile stride = 48
-
-QNR:
-  HR window = 48
-  minimum valid fraction = 0.80
-  SRF support threshold = 0.01
-```
-
-native 10m尺度不存在真实HR-HSI，因此禁止报告10m PSNR/SAM。
-native质量只使用真实30m HSI作为光谱参考、真实10m MSI作为空间参考的
-QNR / Dlambda / Ds。
+批测只在未训练的 144×144 中心 ROI 上计算 QNR / Dlambda / Ds，统一保存
+重建 NPY、GeoTIFF 和指标汇总。合成 ×4 的 `train.py/test.py --dataset Augsburg`
+是另一套协议。数据准备、模型适配、权重目录与批测参数见
+[真实 Augsburg 使用说明](comparison/real_augsburg/README.md)。
 
 ## 所有对比实验固定协议
 

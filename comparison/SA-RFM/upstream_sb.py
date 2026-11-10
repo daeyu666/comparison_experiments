@@ -298,7 +298,8 @@ def riemannian_flow_matching_loss(
     v_pred: torch.Tensor, 
     u_target: torch.Tensor, 
     M: torch.Tensor,
-    use_riemannian: bool = True
+    use_riemannian: bool = True,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Riemannian Metric-Weighted Flow Matching Loss (Eq. 10 in paper)
@@ -323,7 +324,8 @@ def riemannian_flow_matching_loss(
     
     if not use_riemannian:
         # 标准 L2 损失（各向同性，用于对比）
-        return torch.mean(diff ** 2)
+        sq = diff.square()
+        return sq.mean() if valid_mask is None else sq[valid_mask.expand_as(sq)].mean()
     
     B, C, H, W = diff.shape
     
@@ -349,8 +351,9 @@ def riemannian_flow_matching_loss(
     
     # 归一化到 [1, 10] 范围，确保稳定性
     # trace(M) 的理论最小值是 2α（在完全平滑区域）
-    trace_min = trace_M.min().detach()
-    trace_max = trace_M.max().detach()
+    support = trace_M if valid_mask is None else trace_M[valid_mask[:, 0]]
+    trace_min = support.min().detach()
+    trace_max = support.max().detach()
     
     if trace_max > trace_min:
         # 归一化到 [1, max_weight] 范围
@@ -367,7 +370,7 @@ def riemannian_flow_matching_loss(
     weighted_diff_sq = weight * (diff ** 2)  # (B, C, H, W)
     
     # 对所有维度求均值
-    loss = weighted_diff_sq.mean()
+    loss = weighted_diff_sq.mean() if valid_mask is None else weighted_diff_sq[valid_mask.expand_as(weighted_diff_sq)].mean()
     
     return loss
 
@@ -544,7 +547,8 @@ def compute_optimal_transport_direction(
 def optimal_transport_direction_loss(
     v_pred: torch.Tensor,
     d: torch.Tensor,
-    M: torch.Tensor
+    M: torch.Tensor,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     最优传输方向正则化损失 (Eq. 14 in paper)
@@ -565,7 +569,8 @@ def optimal_transport_direction_loss(
     v_opt = compute_optimal_transport_direction(d, M)
     
     # L2 损失
-    loss = torch.mean((v_pred - v_opt) ** 2)
+    sq = (v_pred - v_opt).square()
+    loss = sq.mean() if valid_mask is None else sq[valid_mask.expand_as(sq)].mean()
     
     return loss
 

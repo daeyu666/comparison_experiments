@@ -57,7 +57,8 @@ protocol, NOT the upstream dataset preparation:
   identical to the official SA-RFM training script.
 
 Supported synthetic x4 datasets are PaviaU, Houston13, Chikusei, CAVE,
-Botswana and Augsburg. Real Augsburg/Wald x3 is **not** implemented.
+Botswana and Augsburg. The separate [Augsburg Wald x3 adapter](../real_augsburg/README.md)
+uses the same RFM + OTD objective with the Wald validity mask.
 
 ## Run from repository root
 

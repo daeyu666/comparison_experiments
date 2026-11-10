@@ -48,7 +48,7 @@ MIT 许可见 LICENSE.upstream。
 
 没有已知 PSF/SRF 损失模块被替换：这是端到端监督模型，使用公共生成观测和 HR-HSI 标签训练。
 本次复现范围为六个数据集的 synthetic x4；官方三层级拓扑固定 x4，
-真实 Augsburg Wald x3 不接入。
+[真实 Augsburg Wald ×3](../real_augsburg/README.md) 使用原生 LR 与 HR 网格、2×LR 中间特征及三层配准融合。
 
 ## 公共实验设置
 

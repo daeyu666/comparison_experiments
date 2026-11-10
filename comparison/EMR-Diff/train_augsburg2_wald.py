@@ -23,6 +23,7 @@ from wald_emr_common import (
     training_step, verify_checkpoint,
 )
 from EMRDiff import Edge
+from emr_configuration import checkpoint_name, validate_hidden_channels, variant_suffix
 
 
 def parse_args():
@@ -64,7 +65,7 @@ def parse_args():
     p.add_argument("--eval_seed", type=int, default=1234)
     p.add_argument("--device", default="cuda")
     p.add_argument(
-        "--model_width", type=int, default=64,
+        "--model_width", "--base_channels", type=validate_hidden_channels, default=64,
         help="BAFUNet hidden feature width; state input/output remain 242+4=246 channels",
     )
     return p.parse_args()
@@ -210,7 +211,7 @@ def main():
     params = sum(p.numel() for p in model.parameters())
 
     if args.stage == "test":
-        ckpt = Path(args.checkpoint) if args.checkpoint else checkpoints / "best.pth.tar"
+        ckpt = Path(args.checkpoint) if args.checkpoint else checkpoints / checkpoint_name("best", args.model_width)
         load_state(
             ckpt, model, sha=sha, sigma=sigma, device=device,
             split_protocol_id=split_protocol_id, test_bbox_30m=test_bbox_30m,
@@ -268,7 +269,10 @@ def main():
 
     checkpoints.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
-    history = logs / "history.csv"
+    history = logs / f"history{variant_suffix(args.model_width)}.csv"
+    if not args.resume and ((checkpoints / checkpoint_name("best", args.model_width)).exists()
+                            or (checkpoints / checkpoint_name("last", args.model_width)).exists()):
+        raise FileExistsError("Existing EMR Wald width variant; use --resume auto or a new checkpoint directory")
 
     print(
         f"EMR_AUGSBURG2_CENTER_HOLDOUT train={len(train_set)} "
@@ -315,7 +319,7 @@ def main():
             if improved:
                 best = score
                 save_state(
-                    checkpoints / "best.pth.tar",
+                    checkpoints / checkpoint_name("best", args.model_width),
                     model=model, optimizer=optimizer, epoch=epoch, best=best,
                     args=args, sha=sha, sigma=sigma,
                     split_protocol_id=split_protocol_id,
@@ -345,7 +349,7 @@ def main():
 
         if is_eval or current % args.save_interval == 0:
             save_state(
-                checkpoints / "last.pth.tar",
+                checkpoints / checkpoint_name("last", args.model_width),
                 model=model, optimizer=optimizer, epoch=epoch, best=best,
                 args=args, sha=sha, sigma=sigma,
                 split_protocol_id=split_protocol_id,
@@ -355,7 +359,7 @@ def main():
 
     print(
         f"EMR_WALD_CENTER_TRAIN_COMPLETE best_{args.monitor}={best:.6f} "
-        f"best={checkpoints / 'best.pth.tar'}"
+        f"best={checkpoints / checkpoint_name('best', args.model_width)}"
     )
 
 

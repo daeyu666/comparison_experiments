@@ -23,3 +23,5 @@ comparison/*/outputs/*
 !comparison/*/outputs/.gitkeep
 comparison/*/logs/*
 !comparison/*/logs/.gitkeep
+
+outputs/augsburg2_wald_center_holdout/
