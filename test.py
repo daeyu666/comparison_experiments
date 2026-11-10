@@ -9,7 +9,7 @@ from comparison.NonRegSRNet.options import add_fit_args
 from comparison.traditional.options import add_classical_args, DEFAULTS as CLASSICAL_DEFAULTS
 
 from experiment_protocol import (
-    DATASETS, MODES, ROOT, TEST_GEOMETRY_SEEDS, build_test_command, protocol_summary, resolve_model,
+    DATASETS, MODES, REGISTERED_ONLY_METHODS, ROOT, TEST_GEOMETRY_SEEDS, build_test_command, protocol_summary, resolve_model,
 )
 
 
@@ -17,7 +17,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Unified two-stage comparison final-test launcher"
     )
-    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, PSRT, SA-RFM, PMI-RFCoNet, CNMF, HySure, MoE-PNP, M2DTN or NonRegSRNet")
+    p.add_argument("--model", required=True, help="e.g. UAFL, EMR-Diff, CLSNet, DRTNet, PSRF-DiffNet, PSRT, SA-RFM, PMI-RFCoNet, CNMF, HySure, MoG-DCN, ESFS, MoE-PNP, M2DTN or NonRegSRNet")
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--mode", required=True, choices=MODES)
     p.add_argument("--device", default="cuda:0")
@@ -38,8 +38,11 @@ def parse_args(argv=None):
     args = p.parse_args(argv)
     if args.resume_output and args.overwrite_output:
         p.error("Choose resume_output OR overwrite_output")
-    if (args.mode == "registered" or args.legacy_single_seed) and (args.resume_output or args.overwrite_output or (args.max_samples and args.model.lower() not in ("cnmf","hysure"))):
-        p.error("resume_output/overwrite_output/max_samples apply only to the mixed multiseed test")
+    if args.mode == "registered" or args.legacy_single_seed:
+        if args.resume_output or args.overwrite_output:
+            p.error("resume_output/overwrite_output apply only to the mixed multiseed test")
+        if args.max_samples and resolve_model(args.model).canonical not in REGISTERED_ONLY_METHODS:
+            p.error("max_samples requires a registered-only adapter or a mixed multiseed test")
     return args
 
 

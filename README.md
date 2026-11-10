@@ -23,6 +23,8 @@ CLSNet
 DRTNet
 PSRF-DiffNet
 PSRT
+MoG-DCN
+ESFS
 SA-RFM
 MoE-PNP
 M2DTN
@@ -76,6 +78,13 @@ python test_multiseed_deformation.py --model PSRT --dataset PaviaU --device cuda
 `per_seed.csv` 为逐seed结果，`summary.json` 保存完整协议和明细。支持
 `--resume_output` 续跑已完成的seed，以及 `--overwrite_output` 清除同一输出目录
 中的旧seed标记后重跑。
+
+### MoG-DCN（TIP 2021）与 ESFS（TGRS 2025）
+
+仅参加已配准组。使用公共 ×4 数据、SRF、验证频率和评价指标。
+[MoG-DCN](comparison/MoG-DCN/README.md) 保留学习式退化算子的深度展开；
+[ESFS](comparison/ESFS/README.md) 保留空间和频域融合路径。
+训练、测试、续训及早停参数见[使用说明](comparison/registered_fusion/README.md)。
 
 ### PSRT（TGRS 2023）Pyramid Shuffle-and-Reshuffle Transformer
 

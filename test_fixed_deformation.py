@@ -9,7 +9,9 @@ from pathlib import Path
 
 import torch
 
-from experiment_protocol import DATASETS, MODES, ROOT, checkpoint_path, resolve_model, model_hidden_channels
+from experiment_protocol import (
+    DATASETS, MODES, REGISTERED_ONLY_METHODS, ROOT, checkpoint_path, model_hidden_channels, resolve_model,
+)
 from emr_configuration import add_hidden_channels_argument, checkpoint_width, variant_suffix
 from fixed_deformation_protocol import STRENGTHS, add_suite_args, run_fixed_suite
 from comparison.NonRegSRNet.options import add_fit_args
@@ -297,7 +299,7 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     adapter = resolve_model(args.model)
-    if adapter.canonical in ("CNMF", "HySure"):
+    if adapter.canonical in REGISTERED_ONLY_METHODS:
         raise ValueError(f"{adapter.canonical} is Registered-only; use test.py --mode registered")
     model_hidden_channels(adapter, args.hidden_channels)
     if adapter.canonical not in MODEL_BUILDERS:

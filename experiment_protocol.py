@@ -17,6 +17,12 @@ DATASETS = (
     "PaviaU", "Houston13", "Chikusei", "CAVE", "Botswana", "Augsburg"
 )
 MODES = ("registered", "mixed")
+# Method-specific settings from the authors' released training entries.
+REGISTERED_NEURAL_OPTIMIZERS = {
+    "MoG-DCN": (1e-4, 1e-8, ()),
+    "ESFS": (1e-4, 0.0, (100, 150, 175, 190, 195)),
+}
+REGISTERED_ONLY_METHODS = frozenset(("CNMF", "HySure", *REGISTERED_NEURAL_OPTIMIZERS))
 
 # Synthetic x4 comparison protocol; EMR training batch may be overridden.
 IMAGE_SIZE = 128
@@ -121,6 +127,14 @@ _ADAPTERS = {
                          test_script="comparison/CNMF/test.py", real_train="", real_infer=""),
     "hysure": ModelAdapter(canonical="HySure", folder="HySure", registered_train="", mixed_train="",
                            test_script="comparison/HySure/test.py", real_train="", real_infer=""),
+    **{
+        method.lower(): ModelAdapter(
+            canonical=method, folder=method,
+            registered_train=f"comparison/{method}/train.py", mixed_train="",
+            test_script=f"comparison/{method}/test.py", real_train="", real_infer="",
+        )
+        for method in REGISTERED_NEURAL_OPTIMIZERS
+    },
     "pmi-rfconet": ModelAdapter(
         canonical="PMI-RFCoNet", folder="PMI-RFCoNet",
         registered_train="comparison/PMI-RFCoNet/train.py",
@@ -186,6 +200,7 @@ _ADAPTERS = {
     ),
 }
 _ALIASES = {
+    "mogdcn": "mog-dcn",
     "nonregsrnet": "nonregsrnet",
     "nonreg": "nonregsrnet",
     "nonreg-srnet": "nonregsrnet",
@@ -318,6 +333,8 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
         raise ValueError(f"Unsupported mode={mode!r}")
     if adapter.canonical in ("CNMF", "HySure"):
         raise NotImplementedError(f"{adapter.canonical} has no dataset pretraining. Run test.py --model {adapter.canonical} --dataset {dataset} --mode registered")
+    if adapter.canonical in REGISTERED_NEURAL_OPTIMIZERS and mode != "registered":
+        raise ValueError(f"{adapter.canonical} is Registered-only; mixed training is disabled")
     if adapter.canonical == "NonRegSRNet":
         raise NotImplementedError(
             "NonRegSRNet uses fresh self-supervised optimization per observation pair. "
@@ -390,7 +407,9 @@ def build_train_command(adapter: ModelAdapter, dataset: str, mode: str, device: 
     # Preserve method-specific optimization settings where the released paper
     # differs from the common comparison defaults. PSRF-DiffNet uses Adam at
     # 1e-4 with no weight decay in its released training entry point.
-    if adapter.canonical == "PSRF-DiffNet":
+    if adapter.canonical in REGISTERED_NEURAL_OPTIMIZERS:
+        optimizer_lr, optimizer_weight_decay, _ = REGISTERED_NEURAL_OPTIMIZERS[adapter.canonical]
+    elif adapter.canonical == "PSRF-DiffNet":
         optimizer_lr, optimizer_weight_decay = 1e-4, 0.0
     elif adapter.canonical == "PMI-RFCoNet":
         optimizer_lr, optimizer_weight_decay = (1e-3 if lr_override is None else lr_override), 0.0
@@ -520,6 +539,12 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
             resume_output=resume_output, overwrite_output=overwrite_output,
             legacy_single_seed=legacy_single_seed, fit_options=nonreg_options,
         )
+    if adapter.canonical in REGISTERED_NEURAL_OPTIMIZERS:
+        if mode != "registered":
+            raise ValueError(f"{adapter.canonical} is Registered-only; mixed/warp tests are disabled")
+        if resume_output or overwrite_output or max_samples < 0:
+            raise ValueError("Invalid registered evaluation settings")
+
     checkpoint = Path(checkpoint_override).resolve() if checkpoint_override else (
         checkpoint_path(adapter, dataset, mode, hidden_channels) if hidden_channels is not None
         else checkpoint_path(adapter, dataset, mode)
@@ -547,6 +572,15 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
             cmd += ["--hidden_channels", str(hidden_channels)]
         return cmd
 
+    if adapter.canonical in REGISTERED_NEURAL_OPTIMIZERS:
+        target = (Path(output_override) / "summary.json" if output_override else
+                  output_dir(adapter, dataset, mode) / ("smoke_summary.json" if max_samples else "summary.json"))
+        return [
+            sys.executable, str(ROOT / adapter.test_script), "--dataset", dataset,
+            "--device", device, "--checkpoint", str(checkpoint), "--data_root", str(data_root),
+            "--test_mode", "registered_only", "--eval_seed", str(eval_seed),
+            "--max_samples", str(max_samples), "--output_json", str(target),
+        ]
     output = Path(output_override) / "legacy_test.json" if output_override else (
         ROOT / "comparison" / adapter.folder / "outputs" / "unified_two_stage"
         / dataset / f"{adapter.canonical.replace('-', '')}_{mode}_seed{MIXED_SEED}{variant_suffix(hidden_channels)}.json"
@@ -764,6 +798,15 @@ def protocol_summary(adapter=None, batch_size=None, *, epochs=None, mode=None, h
         )
     if adapter and adapter.canonical in ("CNMF", "HySure"):
         return "Registered only; no pretraining/checkpoint; CPU numerical solver per pair; known shared P0/SRF; public split and metrics"
+    if adapter and adapter.canonical in REGISTERED_NEURAL_OPTIMIZERS:
+        lr, wd, milestones = REGISTERED_NEURAL_OPTIMIZERS[adapter.canonical]
+        schedule = f"MultiStepLR{milestones}, gamma=0.5" if milestones else "constant LR"
+        return (
+            f"Registered only, x{SCALE_RATIO}, physical MTF={MTF_NYQUIST}, "
+            f"train={PATCH_SIZE}/stride{STRIDE}, eval={IMAGE_SIZE}; "
+            f"epochs={epochs if epochs is not None else REGISTERED_EPOCHS}; "
+            f"Adam lr={lr:g}, wd={wd:g}, {schedule}, L1, batch={training_batch_size(adapter, batch_size)}"
+        )
     resolved_batch = training_batch_size(adapter, batch_size) if adapter else BATCH_SIZE
     stage1_epochs = epochs if epochs is not None and mode == "registered" else REGISTERED_EPOCHS
     stage2_epochs = epochs if epochs is not None and mode == "mixed" else MIXED_EPOCHS
