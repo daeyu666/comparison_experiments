@@ -32,3 +32,9 @@ python comparison/MoG-DCN/diagnose_splits.py --dataset Houston13 --device cuda:0
 Use `--checkpoint` and `--validation_log` if training used custom paths. Check
 `recomputed_minus_logged` first, then compare the absolute versus relative
 error, spectral magnitude contribution, and learned operator traces.
+
+Use `--trace_pixels` to follow the top 1% final-error pixels through the
+bicubic initialization, each denoiser proposal, and each spatial/spectral
+correction. The `PIXEL_TRACE` and `PIXEL_UPDATES` lines summarize that same
+pixel set, and their coordinates are zero-based within the evaluated patch.
+This probe does not alter the prediction or the official metrics.

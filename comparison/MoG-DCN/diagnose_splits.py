@@ -92,6 +92,52 @@ def predict_in_training_tiles(model, lr, msi, tile, scale):
     ], dim=-2)
 
 
+def trace_error_pixels(model, lr, msi, gt, prediction):
+    """Follow the same top-1% final-error pixels through every iterate."""
+    h, w = gt.shape[-2:]
+    pixel_sse = (prediction.double().clamp(0, 1) - gt.double().clamp(0, 1)).square().sum(dim=1)[0]
+    n = max(1, math.ceil(0.01 * pixel_sse.numel()))
+    locations = pixel_sse.flatten().topk(n).indices
+    yy, xx = locations // w, locations % w
+    target = gt[0, :, yy, xx].double()
+    stages = {i: {} for i in range(len(model.refine) + 1)}
+
+    def observe(stage, name, tensor):
+        x = tensor[0, :, yy, xx].double()
+        entry = stats(x)
+        if not name.endswith("_delta"):
+            entry.update(
+                raw_rmse=rms(x - target),
+                clipped_rmse=rms(x.clamp(0, 1) - target.clamp(0, 1)),
+                min=float(x.min()),
+                negative_fraction=float((x < 0).float().mean()),
+            )
+        stages[stage][name] = entry
+
+    traced = model(lr, msi, observer=observe)
+    return {
+        "count": n, "worst_pixel_rc_in_patch": [int(yy[0]), int(xx[0])],
+        "bbox_in_patch_rc_exclusive": [int(yy.min()), int(xx.min()), int(yy.max()) + 1, int(xx.max()) + 1],
+        "within_8_pixels_of_patch_edge": int(((yy < 8) | (xx < 8) | (yy >= h - 8) | (xx >= w - 8)).sum()),
+        "replay_max_abs_difference": float((traced - prediction).abs().amax()),
+        "stages": stages,
+    }
+
+
+def print_pixel_trace(split, trace):
+    estimates = {f"s{i}_{name}": [round(row["raw_rmse"], 6), round(row["clipped_rmse"], 6),
+                                  round(row["min"], 6)]
+                 for i, entries in trace["stages"].items()
+                 for name, row in entries.items() if "raw_rmse" in row}
+    deltas = {f"s{i}_{name}": round(row["rms"], 6)
+              for i, entries in trace["stages"].items()
+              for name, row in entries.items() if name.endswith("_delta")}
+    details = {k: v for k, v in trace.items() if k != "stages"}
+    print(f"PIXEL_TRACE {split} " + json.dumps({**details, "raw_rmse_clipped_rmse_min": estimates},
+                                               allow_nan=False), flush=True)
+    print(f"PIXEL_UPDATES {split} " + json.dumps(deltas, allow_nan=False), flush=True)
+
+
 @torch.inference_mode()
 def audit_split(model, split, device, args):
     # Houston13/PaviaU each have exactly one patch per held-out split.
@@ -113,6 +159,8 @@ def audit_split(model, split, device, args):
         "error": error_profile(pred, gt),
         "operator_trace": trace,
     }
+    if args.trace_pixels:
+        result["pixel_trace"] = trace_error_pixels(model, lr, msi, gt, pred)
     if args.check_tiled:
         tiled = predict_in_training_tiles(model, lr, msi, args.patch_size, args.scale_ratio)
         if not bool(torch.isfinite(tiled).all()):
@@ -143,6 +191,8 @@ def main(argv=None):
     p.add_argument("--validation_log", type=Path)
     p.add_argument("--check_tiled", action="store_true",
                    help="Diagnostic only: reuse the observed pair, but infer in training-size tiles")
+    p.add_argument("--trace_pixels", action="store_true",
+                   help="Trace the top-1%% final-error pixels through the four stages")
     p.add_argument("--output_json", type=Path)
     args = p.parse_args(argv)
     if args.dataset not in ("Houston13", "PaviaU", "Botswana"):
@@ -179,6 +229,8 @@ def main(argv=None):
         print("ERROR " + json.dumps(summary["error"], allow_nan=False), flush=True)
         for operator, records in summary["operator_trace"].items():
             print(f"OPERATOR {name} {operator} " + json.dumps(records, allow_nan=False), flush=True)
+        if "pixel_trace" in summary:
+            print_pixel_trace(name, summary["pixel_trace"])
         if "training_size_tile_probe" in summary:
             print(f"TILE_PROBE {name} " + json.dumps(summary["training_size_tile_probe"]), flush=True)
     if logged:

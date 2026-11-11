@@ -95,8 +95,11 @@ class MoGDCN(nn.Module):
     def spectral_residual(self, estimate, msi):
         return self.spectral_back(msi - self.spectral_forward(estimate))
 
-    def forward(self, lr_hsi, hr_msi):
+    def forward(self, lr_hsi, hr_msi, *, observer=None):
+        """Optionally expose intermediate tensors for read-only diagnostics."""
         x = F.interpolate(lr_hsi, scale_factor=self.scale, mode="bicubic", align_corners=False)
+        if observer is not None:
+            observer(0, "initial", x)
         memory = []
         for stage, project in enumerate(self.refine):
             features = self.embed(x)
@@ -107,16 +110,30 @@ class MoGDCN(nn.Module):
             # Released CAVE path: same estimate is used for the noisy anchor
             # and the current iterate, so these two coefficients combine.
             d, e = self.prior_step, self.prior_penalty
-            intermediate = (1 - d - d * e) * x + d * self.spectral_residual(x, hr_msi) + d * (x - e * (noise + x))
+            prior_spectral = d * self.spectral_residual(x, hr_msi)
+            intermediate = (1 - d - d * e) * x + prior_spectral + d * (x - e * (noise + x))
             detail, _ = self.denoise(project(torch.cat((self.embed(intermediate), skip), dim=1)))
             proposal = detail + intermediate
+            if observer is not None:
+                observer(stage + 1, "prior", intermediate)
+                observer(stage + 1, "proposal", proposal)
+                observer(stage + 1, "prior_spectral_delta", prior_spectral)
+                observer(stage + 1, "prior_noise_delta", -d * e * noise)
+                observer(stage + 1, "refine_delta", detail)
             if stage == len(self.refine) - 1:
                 return proposal
 
             residual = self.spatial_forward(x) - lr_hsi
             spatial = self.spatial_back(residual, output_size=x.shape[-2:])
             d, e = self.data_step, self.data_penalty
-            x = (1 - d * e) * x + d * (self.spectral_residual(x, hr_msi) + spatial) + d * e * proposal
+            data_spectral = self.spectral_residual(x, hr_msi)
+            updated = (1 - d * e) * x + d * (data_spectral + spatial) + d * e * proposal
+            if observer is not None:
+                observer(stage + 1, "updated", updated)
+                observer(stage + 1, "data_spatial_delta", d * spatial)
+                observer(stage + 1, "data_spectral_delta", d * data_spectral)
+                observer(stage + 1, "data_proposal_delta", d * e * (proposal - x))
+            x = updated
 
 
 def build_model(info):
