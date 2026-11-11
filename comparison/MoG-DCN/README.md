@@ -19,3 +19,16 @@ Training retains L1 and Adam (LR 1e-4, weight decay 1e-8, constant LR).
 Use the public benchmark split and retrain per dataset. Inference uses a
 fixed checkpoint. See the [shared registered protocol](../registered_fusion/README.md)
 for commands, resume, outputs and smoke checks.
+
+For a large validation/test discrepancy, audit both splits with one fixed
+checkpoint. This read-only probe uses the official metrics; the optional tile
+probe is diagnostic and does not replace full-patch benchmark inference.
+
+```bash
+python comparison/MoG-DCN/diagnose_splits.py --dataset Houston13 --device cuda:0 \
+  --check_tiled --output_json /tmp/mog_houston_diagnosis.json
+```
+
+Use `--checkpoint` and `--validation_log` if training used custom paths. Check
+`recomputed_minus_logged` first, then compare the absolute versus relative
+error, spectral magnitude contribution, and learned operator traces.
