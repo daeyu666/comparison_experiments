@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+import experiment_protocol as protocol
 import test_real as batch
 from comparison.real_augsburg.common import pad_pair, positions
 from experiment_protocol import (
@@ -17,6 +18,38 @@ def weight(root, method, family, name):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
     return p
+
+
+@pytest.mark.parametrize("layout", ["nested", "direct", "legacy"])
+def test_real_launchers_find_wald_data(tmp_path, monkeypatch, layout):
+    repo = tmp_path / "comparison_experiments"
+    monkeypatch.setattr(protocol, "ROOT", repo)
+    name = protocol.REAL_WALD_CACHE_NAME
+    legacy_data = tmp_path / "S2Diff-MH" / "data"
+    legacy_cache = legacy_data / name
+    legacy_meta = legacy_cache / "train" / "meta.json"
+    legacy_meta.parent.mkdir(parents=True)
+    legacy_meta.touch()
+    data = legacy_data if layout == "legacy" else repo / "data"
+    cache = data if layout == "direct" else data / name
+    if layout != "legacy":
+        meta = cache / "train" / "meta.json"
+        meta.parent.mkdir(parents=True)
+        meta.touch()
+    calibration = data / "calibration" / protocol.REAL_RADIOMETRY_NAME
+    calibration.parent.mkdir()
+    calibration.touch()
+
+    train = build_real_train_command(resolve_model("ESFS"), "cpu")
+    assert train[train.index("--wald_root") + 1] == str(cache)
+    assert train[train.index("--radiometry_json") + 1] == str(calibration)
+    test = batch.parse_args(["--model", "CNMF", "--dry_run"])
+    assert (test.wald_root, test.radiometry_json) == (cache, calibration)
+    custom_cache, custom_calibration = tmp_path / "custom", tmp_path / "custom.json"
+    test = batch.parse_args(["--model", "CNMF", "--dry_run",
+                             "--wald_root", str(custom_cache),
+                             "--radiometry_json", str(custom_calibration)])
+    assert (test.wald_root, test.radiometry_json) == (custom_cache, custom_calibration)
 
 
 def test_discovery_matches_real_family_and_selects_best_per_width(tmp_path):

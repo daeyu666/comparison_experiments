@@ -19,7 +19,9 @@ def parse_args(argv=None):
                    dest="hidden_channels", type=validate_hidden_channels, help="EMR-Diff only; default 64")
     p.add_argument("--epochs", type=int)
     p.add_argument("--resume", help="Local checkpoint path or auto")
-    for key in ("wald_root", "radiometry_json", "checkpoint_dir", "log_dir"):
+    p.add_argument("--wald_root", type=Path)
+    p.add_argument("--radiometry_json", type=Path)
+    for key in ("checkpoint_dir", "log_dir"):
         p.add_argument("--" + key, type=lambda path: Path(path).expanduser().resolve())
     p.add_argument("--dry_run", action="store_true")
     return p.parse_args(argv)

@@ -28,9 +28,9 @@ from experiment_protocol import (
     REAL_CLASSICAL_METHODS, REAL_EVAL_INTERVAL, REAL_EVAL_PATCH, REAL_EVAL_SEED,
     REAL_EPOCHS, REAL_LR, REAL_MIN_VALID_FRACTION, REAL_MONITOR, REAL_NEW_NEURAL_METHODS,
     REAL_QNR_MIN_VALID_FRACTION, REAL_QNR_SUPPORT_FRACTION, REAL_QNR_WINDOW_HR,
-    REAL_RADIOMETRY, REAL_SAVE_INTERVAL, REAL_SEED, REAL_TILE_SIZE, REAL_TILE_STRIDE,
-    REAL_TRAIN_PATCH, REAL_TRAIN_STRIDE, REAL_WALD_ROOT, REAL_WEIGHT_DECAY,
-    real_checkpoint_dir, real_log_dir, real_output_dir, resolve_model,
+    REAL_SAVE_INTERVAL, REAL_SEED, REAL_TILE_SIZE, REAL_TILE_STRIDE,
+    REAL_TRAIN_PATCH, REAL_TRAIN_STRIDE, REAL_WEIGHT_DECAY,
+    real_checkpoint_dir, real_log_dir, real_output_dir, resolve_model, resolve_real_data_paths,
 )
 
 
@@ -38,8 +38,8 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", choices=(*REAL_CLASSICAL_METHODS, *REAL_NEW_NEURAL_METHODS), required=True)
     p.add_argument("--stage", choices=("train", "test", "native"), required=True)
-    p.add_argument("--wald_root", default=ROOT / REAL_WALD_ROOT, type=Path)
-    p.add_argument("--radiometry_json", default=ROOT / REAL_RADIOMETRY, type=Path)
+    p.add_argument("--wald_root", type=Path)
+    p.add_argument("--radiometry_json", type=Path)
     p.add_argument("--checkpoint", type=Path)
     p.add_argument("--checkpoint_dir", type=Path)
     p.add_argument("--log_dir", type=Path)
@@ -270,7 +270,7 @@ def evaluate(args, cache, adapter):
 def main():
     args = parser().parse_args()
     adapter = resolve_model(args.model)
-    cache = WaldCache.load(args.wald_root, args.radiometry_json)
+    cache = WaldCache.load(*resolve_real_data_paths(args.wald_root, args.radiometry_json))
     if args.stage == "train":
         train(args, cache, adapter)
     else:

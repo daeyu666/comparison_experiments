@@ -631,10 +631,8 @@ def build_test_command(adapter: ModelAdapter, dataset: str, mode: str, device: s
 
 
 # Frozen real-world Augsburg-2 center-heldout Wald x3 protocol.
-REAL_WALD_ROOT = Path("../S2Diff-MH/data/augsburg2_wald_center_holdout")
-REAL_RADIOMETRY = Path(
-    "../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json"
-)
+REAL_WALD_CACHE_NAME = "augsburg2_wald_center_holdout"
+REAL_RADIOMETRY_NAME = "Augsburg2_Wald_center_holdout_radiometry.json"
 REAL_SPLIT_PROTOCOL = "Augsburg2-Wald-center-holdout-v1"
 REAL_TEST_BBOX_30M = (24, 36, 72, 84)
 REAL_TEST_BBOX_10M = (72, 108, 216, 252)
@@ -700,9 +698,33 @@ def _real_train_options(batch, epochs=REAL_EPOCHS):
     ]
 
 
+def resolve_real_data_paths(wald_root=None, radiometry_json=None):
+    """Find the Wald cache and its nearby train-only radiometry file."""
+    data = ROOT / "data"
+    if wald_root is None:
+        candidates = (
+            data / REAL_WALD_CACHE_NAME,
+            data,
+            ROOT.parent / "S2Diff-MH" / "data" / REAL_WALD_CACHE_NAME,
+        )
+        wald_root = next((p for p in candidates if (p / "train" / "meta.json").is_file()),
+                         candidates[0])
+    wald_root = Path(wald_root).expanduser().absolute()
+    if radiometry_json is None:
+        data_dir = wald_root.parent if wald_root.name == REAL_WALD_CACHE_NAME else wald_root
+        candidates = (
+            data_dir / "calibration" / REAL_RADIOMETRY_NAME,
+            data_dir / REAL_RADIOMETRY_NAME,
+            wald_root / "calibration" / REAL_RADIOMETRY_NAME,
+            wald_root / REAL_RADIOMETRY_NAME,
+        )
+        radiometry_json = next((p for p in candidates if p.is_file()), candidates[0])
+    return wald_root.resolve(), Path(radiometry_json).expanduser().resolve()
+
+
 def _real_cache_options(wald_root, radiometry_json):
-    return ["--wald_root", str(wald_root or REAL_WALD_ROOT),
-            "--radiometry_json", str(radiometry_json or REAL_RADIOMETRY)]
+    wald_root, radiometry_json = resolve_real_data_paths(wald_root, radiometry_json)
+    return ["--wald_root", str(wald_root), "--radiometry_json", str(radiometry_json)]
 
 
 def build_real_train_command(adapter: ModelAdapter, device: str, batch_size=None, *,

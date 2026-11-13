@@ -14,10 +14,11 @@ import tempfile
 
 from emr_configuration import validate_hidden_channels
 from experiment_protocol import (
-    REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS, REAL_RADIOMETRY,
+    REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS,
     REAL_QNR_MIN_VALID_FRACTION, REAL_QNR_SUPPORT_FRACTION, REAL_QNR_WINDOW_HR,
-    REAL_SPLIT_PROTOCOL, REAL_TEST_BBOX_10M, REAL_TILE_SIZE, REAL_TILE_STRIDE, REAL_WALD_ROOT,
+    REAL_SPLIT_PROTOCOL, REAL_TEST_BBOX_10M, REAL_TILE_SIZE, REAL_TILE_STRIDE,
     ROOT, build_real_native_test_command, build_real_reference_test_command, resolve_model,
+    resolve_real_data_paths,
 )
 
 _WEIGHT = re.compile(r"^(best|last)(?:_base([0-9]+))?\.(?:pth\.tar|pth|pt)$")
@@ -105,8 +106,8 @@ def parse_args(argv=None):
     p.add_argument("--base_channels", "--base_channel", "--hidden_channels", "--model_width",
                    dest="width", type=validate_hidden_channels, help="Filter/validate the EMR-Diff base width")
     p.add_argument("--allow_last", action="store_true", help="Use last weights only when no best exists for that variant")
-    p.add_argument("--wald_root", type=_path, default=(ROOT / REAL_WALD_ROOT).resolve())
-    p.add_argument("--radiometry_json", type=_path, default=(ROOT / REAL_RADIOMETRY).resolve())
+    p.add_argument("--wald_root", type=Path)
+    p.add_argument("--radiometry_json", type=Path)
     p.add_argument("--output_dir", type=_path, default=ROOT / "outputs" / REAL_CHECKPOINT_FAMILY)
     p.add_argument("--tile_size", type=int, default=REAL_TILE_SIZE)
     p.add_argument("--tile_stride", type=int, default=REAL_TILE_STRIDE)
@@ -128,6 +129,7 @@ def parse_args(argv=None):
         p.error("--checkpoint requires one neural model")
     if not 0 < args.tile_stride <= args.tile_size <= 144 or any(n % 24 for n in (args.tile_size, args.tile_stride)):
         p.error("Tile and stride must be multiples of 24, with 0 < stride <= tile <= 144")
+    args.wald_root, args.radiometry_json = resolve_real_data_paths(args.wald_root, args.radiometry_json)
     return args
 
 

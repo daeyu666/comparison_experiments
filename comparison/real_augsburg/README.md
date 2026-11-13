@@ -1,9 +1,12 @@
 # Augsburg Region 2 · center-heldout Wald ×3
 
 使用 [S2Diff-MH 的 center-holdout 缓存和标定](https://github.com/daeyu666/S2Diff-MH/blob/main/AUGSBURG2_WALD_CENTER_HOLDOUT.md)。
-默认查找兄弟目录 `../S2Diff-MH/data/augsburg2_wald_center_holdout` 和
-`../S2Diff-MH/data/calibration/Augsburg2_Wald_center_holdout_radiometry.json`。
-路径不同时，训练和测试都可传 `--wald_root`、`--radiometry_json`。
+默认先从本仓库的 `data/augsburg2_wald_center_holdout` 查找缓存；若
+`data/train/meta.json` 存在，也支持直接使用 `data` 作为缓存根目录。
+本仓库没有缓存时，再查找 `../S2Diff-MH/data/augsburg2_wald_center_holdout`。
+标定文件通常放在所用数据目录的 `calibration/Augsburg2_Wald_center_holdout_radiometry.json`。
+路径不同时，训练和测试都可传 `--wald_root`（包含 `train/`、`validation/`、
+`test/`、`full/` 的目录）和 `--radiometry_json`（标定文件路径）。
 
 训练用 90m HSI + 从真实 Sentinel-2 聚合的 30m MSI 重建观测的 30m HSI。
 训练块 24×24、步长 6，排除 30m 中心测试区及 6 像素保护带；验证用独立
