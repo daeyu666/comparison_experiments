@@ -46,7 +46,7 @@ EMR-Diff 的默认宽度 64 保存 `best.pth.tar`，128 保存 `best_base128.pth
 # 先预览：只看发现了哪些权重和将执行的命令
 python test_real.py --model all --dry_run
 
-# 只测已有权重的方法；CNMF/HySure 始终可直接求解
+# 续测：跳过 summary.csv 中已成功的方法和权重变体
 python test_real.py --model all --device cuda:0
 
 # 权重分散在多个本地目录时，可以重复传入
@@ -73,7 +73,12 @@ python test_real.py --model EMR-Diff --base_channels 128 --device cuda:0
 - `qnr.json`：QNR、Dlambda、Ds 和评分窗口/有效区；
 - `protocol.json`：权重、标定及推理来源。
 
-总目录写 `summary.csv` 和 `summary.json`。默认神经方法使用 96×96 滑窗、
+总目录写 `summary.csv` 和 `summary.json`，每完成一个测试就更新。重复运行时，
+同一输出目录下方法与权重变体对应的 `status=ok` 会跳过并保留原结果；
+失败或此前缺权重的任务可重试。更换权重或需要为已完成的测试补跑 `--reference`
+时，可加 `--rerun`，也可用 `--output_dir` 保存到新目录。
+
+默认神经方法使用 96×96 滑窗、
 步长 48；正式比较统一使用同一滑窗设置。QNR 复用 S2Diff-MH / UAFL 的
 HSI–MSI 实现：48×48 高分窗口、80% 最小有效像元比例、SRF 覆盖阈值 1%。
 `--reference` 可额外运行独立的 30m Wald 参考测试，写到 `reference.log`，

@@ -22,6 +22,10 @@ from experiment_protocol import (
 )
 
 _WEIGHT = re.compile(r"^(best|last)(?:_base([0-9]+))?\.(?:pth\.tar|pth|pt)$")
+_METRICS = ("QNR", "Dlambda", "Ds")
+_SUMMARY_NUMBERS = {"backbone_width": int, **dict.fromkeys(_METRICS, float)}
+_SUMMARY_FIELDS = ("method", "variant", "status", "checkpoint", "backbone_width", *_METRICS,
+                   "output_dir", "error")
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,7 @@ def parse_args(argv=None):
     p.add_argument("--tile_stride", type=int, default=REAL_TILE_STRIDE)
     p.add_argument("--no_geotiff", action="store_true")
     p.add_argument("--reference", action="store_true", help="Also run the separate 30m Wald reference test")
+    p.add_argument("--rerun", action="store_true", help="Rerun selected jobs even if summary.csv says ok")
     p.add_argument("--dry_run", action="store_true")
     args = p.parse_args(argv)
     if "all" in args.model:
@@ -217,6 +222,21 @@ def run_job(job, args, dest):
         return metrics
 
 
+def read_summary(output):
+    path = output / "summary.csv"
+    if not path.is_file():
+        return {}
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        rows = {}
+        for entry in csv.DictReader(f):
+            row = {field: entry[field] for field in _SUMMARY_FIELDS if entry.get(field)}
+            for field, convert in _SUMMARY_NUMBERS.items():
+                if field in row:
+                    row[field] = convert(row[field])
+            rows[row["method"], row.get("variant", "")] = row
+        return rows
+
+
 def write_summary(output, rows, args):
     output.mkdir(parents=True, exist_ok=True)
     info = {"protocol": REAL_SPLIT_PROTOCOL, "wald_root": str(args.wald_root),
@@ -225,28 +245,49 @@ def write_summary(output, rows, args):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(info, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     tmp.replace(path)
-    with (output / "summary.csv").open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=(
-            "method", "variant", "status", "checkpoint", "backbone_width", "QNR", "Dlambda", "Ds",
-            "output_dir", "error",
-        ))
+    path = output / "summary.csv"
+    tmp = path.with_suffix(".csv.tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_SUMMARY_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
+    tmp.replace(path)
 
 
 def main(argv=None):
     args = parse_args(argv)
     jobs, missing = plan(args)
     print(f"REAL_AUGSBURG_TEST {REAL_SPLIT_PROTOCOL}; native x3 QNR")
-    rows = []
+    rows = read_summary(args.output_dir)
+    summary_changed = False
+    completed_without_checkpoint = False
     for method in missing:
+        completed = [
+            variant for (name, variant), row in rows.items()
+            if name == method and row.get("status") == "ok"
+            and (method != "EMR-Diff" or args.width is None
+                 or variant.split("_", 1)[0] == f"base{args.width}")
+        ]
+        if completed and not args.rerun:
+            for variant in completed:
+                print(f"SKIP_OK {method}/{variant}", flush=True)
+            completed_without_checkpoint = True
+            continue
         print(f"MISSING_CHECKPOINT {method}", flush=True)
-        rows.append(dict(method=method, status="missing_checkpoint"))
-    if not args.dry_run and jobs:
-        from comparison.real_augsburg.common import WaldCache
-        WaldCache.load(args.wald_root, args.radiometry_json)
-        args.output_dir.mkdir(parents=True, exist_ok=True)
+        row = dict(method=method, status="missing_checkpoint")
+        if rows.get((method, "")) != row:
+            rows[method, ""] = row
+            summary_changed = True
     for job in jobs:
+        if rows.get((job.method, ""), {}).get("status") == "missing_checkpoint":
+            del rows[job.method, ""]
+            summary_changed = True
+    ran = failed = False
+    for job in jobs:
+        key = job.method, job.variant
+        if not args.rerun and rows.get(key, {}).get("status") == "ok":
+            print(f"SKIP_OK {job.method}/{job.variant}", flush=True)
+            continue
         dest = args.output_dir / job.method / job.variant
         print(f"JOB {job.method}/{job.variant} checkpoint={job.checkpoint or 'solver'}", flush=True)
         if args.dry_run:
@@ -254,6 +295,11 @@ def main(argv=None):
             if args.reference:
                 print("REFERENCE " + shlex.join(command(job, args, dest, reference=True)))
             continue
+        if not ran:
+            from comparison.real_augsburg.common import WaldCache
+            WaldCache.load(args.wald_root, args.radiometry_json)
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            ran = True
         row = dict(method=job.method, variant=job.variant, checkpoint=str(job.checkpoint or ""),
                    output_dir=str(dest))
         try:
@@ -261,15 +307,18 @@ def main(argv=None):
             protocol = json.loads((dest / "protocol.json").read_text(encoding="utf-8"))
             if protocol.get("backbone_width") is not None:
                 row["backbone_width"] = protocol["backbone_width"]
-            row.update(status="ok", **{k: metrics[k] for k in ("QNR", "Dlambda", "Ds")})
+            row.update(status="ok", **{k: metrics[k] for k in _METRICS})
         except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
+            failed = True
             row.update(status="failed", error=str(exc))
             print(f"FAILED {job.method}/{job.variant}: {exc}", flush=True)
-        rows.append(row)
+        rows[key] = row
+        write_summary(args.output_dir, list(rows.values()), args)
     if not args.dry_run:
-        write_summary(args.output_dir, rows, args)
+        if not ran and summary_changed:
+            write_summary(args.output_dir, list(rows.values()), args)
         print(f"WALD_BATCH_SUMMARY={args.output_dir / 'summary.csv'}", flush=True)
-        return 1 if not jobs or any(row["status"] == "failed" for row in rows) else 0
+        return 1 if failed or not (jobs or completed_without_checkpoint) else 0
     return 0
 
 

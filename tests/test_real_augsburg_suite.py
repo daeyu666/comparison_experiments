@@ -1,3 +1,5 @@
+import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -6,7 +8,7 @@ import torch
 
 import experiment_protocol as protocol
 import test_real as batch
-from comparison.real_augsburg.common import pad_pair, positions
+from comparison.real_augsburg.common import WaldCache, pad_pair, positions
 from experiment_protocol import (
     REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS,
     build_real_native_test_command, build_real_train_command, resolve_model,
@@ -63,6 +65,51 @@ def test_discovery_matches_real_family_and_selects_best_per_width(tmp_path):
     assert [j.checkpoint for j in batch.discover("EMR-Diff", roots)] == [w64, w128]
     assert [j.checkpoint for j in batch.discover("EMR-Diff", roots, width=128)] == [w128]
     assert [j.checkpoint for j in batch.discover("EMR-Diff", roots, allow_last=True)] == [w64, w128, w192]
+
+
+def test_batch_resumes_from_csv_and_saves_progress(tmp_path, monkeypatch, capsys):
+    output = tmp_path / "outputs"
+    output.mkdir()
+    (output / "summary.csv").write_text(
+        "method,variant,status,backbone_width,QNR,Dlambda,Ds\n"
+        "CNMF,solver,ok,,0.91,0.02,0.07\n"
+        "EMR-Diff,base64,ok,64,0.82,0.10,0.09\n"
+        "HySure,solver,failed,,,,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(batch, "ROOT", tmp_path)
+    for name in ("best.pth.tar", "best_base128.pth.tar"):
+        weight(tmp_path, "EMR-Diff", REAL_CHECKPOINT_FAMILY, name)
+    loads, calls = [], []
+    monkeypatch.setattr(WaldCache, "load", lambda *args: loads.append(args))
+
+    def results():
+        with (output / "summary.csv").open(newline="", encoding="utf-8") as handle:
+            return {(r["method"], r["variant"]): r for r in csv.DictReader(handle)}
+
+    def fake_run(job, args, dest):
+        calls.append((job.method, job.variant))
+        if job.method == "HySure":
+            assert results()["EMR-Diff", "base128"]["status"] == "ok"
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "protocol.json").write_text("{}", encoding="utf-8")
+        return {"QNR": 0.7, "Dlambda": 0.1, "Ds": 0.2}
+
+    monkeypatch.setattr(batch, "run_job", fake_run)
+    options = ["--output_dir", str(output), "--device", "cpu"]
+    assert batch.main([*options, "--model", "EMR-Diff", "HySure"]) == 0
+    assert calls == [("EMR-Diff", "base128"), ("HySure", "solver")]
+    assert results()["CNMF", "solver"]["QNR"] == "0.91"
+    summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert summary["results"][1]["backbone_width"] == 64
+
+    assert batch.main([*options, "--model", "CNMF", "EMR-Diff", "HySure"]) == 0
+    assert len(loads) == 1 and len(calls) == 2
+    assert "SKIP_OK CNMF/solver" in capsys.readouterr().out
+
+    assert batch.main([*options, "--model", "CNMF", "--rerun"]) == 0
+    assert calls[-1] == ("CNMF", "solver")
+    assert results()["CNMF", "solver"]["QNR"] == "0.7"
 
 
 def test_explicit_synthetic_weights_are_not_accepted(tmp_path):
