@@ -8,9 +8,9 @@ import torch
 
 import experiment_protocol as protocol
 import test_real as batch
-from comparison.real_augsburg.common import WaldCache, pad_pair, positions
+from comparison.real_augsburg.common import WaldCache, pad_pair, predict_native_roi
 from experiment_protocol import (
-    REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS,
+    REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS, REAL_NATIVE_INFERENCE,
     build_real_native_test_command, build_real_train_command, resolve_model,
 )
 
@@ -71,10 +71,12 @@ def test_batch_resumes_from_csv_and_saves_progress(tmp_path, monkeypatch, capsys
     output = tmp_path / "outputs"
     output.mkdir()
     (output / "summary.csv").write_text(
-        "method,variant,status,backbone_width,QNR,Dlambda,Ds\n"
-        "CNMF,solver,ok,,0.91,0.02,0.07\n"
-        "EMR-Diff,base64,ok,64,0.82,0.10,0.09\n"
-        "HySure,solver,failed,,,,\n",
+        "method,variant,status,inference_mode,backbone_width,QNR,Dlambda,Ds\n"
+        "CNMF,solver,ok,,,0.91,0.02,0.07\n"
+        f"EMR-Diff,base64,ok,{REAL_NATIVE_INFERENCE},64,0.82,0.10,0.09\n"
+        "EMR-Diff,base128,ok,,128,0.75,0.10,0.11\n"
+        "ESFS,default,ok,,,0.87,0.03,0.08\n"
+        "HySure,solver,failed,,,,,\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(batch, "ROOT", tmp_path)
@@ -90,7 +92,7 @@ def test_batch_resumes_from_csv_and_saves_progress(tmp_path, monkeypatch, capsys
     def fake_run(job, args, dest):
         calls.append((job.method, job.variant))
         if job.method == "HySure":
-            assert results()["EMR-Diff", "base128"]["status"] == "ok"
+            assert results()["EMR-Diff", "base128"]["inference_mode"] == REAL_NATIVE_INFERENCE
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "protocol.json").write_text("{}", encoding="utf-8")
         return {"QNR": 0.7, "Dlambda": 0.1, "Ds": 0.2}
@@ -100,6 +102,7 @@ def test_batch_resumes_from_csv_and_saves_progress(tmp_path, monkeypatch, capsys
     assert batch.main([*options, "--model", "EMR-Diff", "HySure"]) == 0
     assert calls == [("EMR-Diff", "base128"), ("HySure", "solver")]
     assert results()["CNMF", "solver"]["QNR"] == "0.91"
+    assert results()["ESFS", "default"]["status"] == "stale_inference"
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     assert summary["results"][1]["backbone_width"] == 64
 
@@ -125,6 +128,7 @@ def test_all_methods_have_real_routes(method):
     cmd = build_real_native_test_command(adapter, "cuda:0", check_files=False)
     assert Path(cmd[1]).is_file()
     assert "--center_holdout" in cmd
+    assert "--tile_size" not in cmd and "--tile_stride" not in cmd
     assert cmd[cmd.index("--qnr_window_hr") + 1] == "48"
     if method in REAL_CLASSICAL_METHODS:
         assert "--checkpoint" not in cmd
@@ -147,14 +151,27 @@ def test_emr_width_routes_to_separate_real_checkpoints():
     assert cmd[cmd.index("--checkpoint") + 1].endswith("augsburg2_wald_center_holdout/best_base128.pth.tar")
 
 
-def test_native_grid_and_model_padding_preserve_observed_pixels():
+def test_native_roi_is_calibrated_and_predicted_once():
+    calls = []
+
+    def predict(lr, msi):
+        assert not torch.is_grad_enabled()
+        calls.append((tuple(lr.shape), tuple(msi.shape)))
+        torch.testing.assert_close(msi, torch.full_like(msi, 0.5))
+        return lr.repeat_interleave(3, dim=-2).repeat_interleave(3, dim=-1)
+
+    lr = np.zeros((48, 48, 242), dtype=np.float32)
+    lr[16:32, 16:32] = 0.75
+    msi = np.full((144, 144, 4), 0.125, dtype=np.float32)
+    cube = predict_native_roi(predict, lr, msi, (np.full(4, 2.0), np.full(4, 0.25)), "cpu")
+    assert calls == [((1, 242, 48, 48), (1, 4, 144, 144))]
+    np.testing.assert_array_equal(cube[::3, ::3], lr)
+
+
+def test_model_padding_preserves_observed_pixels():
     hsi = torch.rand(1, 2, 8, 8)
     msi = torch.rand(1, 3, 24, 24)
     lr, hr = pad_pair(hsi, msi, multiple=8, minimum=16)
     assert lr.shape[-2:] == (16, 16) and hr.shape[-2:] == (48, 48)
     torch.testing.assert_close(lr[..., :8, :8], hsi)
     torch.testing.assert_close(hr[..., :24, :24], msi)
-    result = np.zeros(144)
-    for start in positions(144, 96, 48):
-        result[start:start + 96] += 1
-    assert (result > 0).all()

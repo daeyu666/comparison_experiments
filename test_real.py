@@ -14,9 +14,9 @@ import tempfile
 
 from emr_configuration import validate_hidden_channels
 from experiment_protocol import (
-    REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS,
+    REAL_CHECKPOINT_FAMILY, REAL_CLASSICAL_METHODS, REAL_METHODS, REAL_NATIVE_INFERENCE,
     REAL_QNR_MIN_VALID_FRACTION, REAL_QNR_SUPPORT_FRACTION, REAL_QNR_WINDOW_HR,
-    REAL_SPLIT_PROTOCOL, REAL_TEST_BBOX_10M, REAL_TILE_SIZE, REAL_TILE_STRIDE,
+    REAL_SPLIT_PROTOCOL, REAL_TEST_BBOX_10M,
     ROOT, build_real_native_test_command, build_real_reference_test_command, resolve_model,
     resolve_real_data_paths,
 )
@@ -24,7 +24,7 @@ from experiment_protocol import (
 _WEIGHT = re.compile(r"^(best|last)(?:_base([0-9]+))?\.(?:pth\.tar|pth|pt)$")
 _METRICS = ("QNR", "Dlambda", "Ds")
 _SUMMARY_NUMBERS = {"backbone_width": int, **dict.fromkeys(_METRICS, float)}
-_SUMMARY_FIELDS = ("method", "variant", "status", "checkpoint", "backbone_width", *_METRICS,
+_SUMMARY_FIELDS = ("method", "variant", "status", "inference_mode", "checkpoint", "backbone_width", *_METRICS,
                    "output_dir", "error")
 
 
@@ -113,8 +113,6 @@ def parse_args(argv=None):
     p.add_argument("--wald_root", type=Path)
     p.add_argument("--radiometry_json", type=Path)
     p.add_argument("--output_dir", type=_path, default=ROOT / "outputs" / REAL_CHECKPOINT_FAMILY)
-    p.add_argument("--tile_size", type=int, default=REAL_TILE_SIZE)
-    p.add_argument("--tile_stride", type=int, default=REAL_TILE_STRIDE)
     p.add_argument("--no_geotiff", action="store_true")
     p.add_argument("--reference", action="store_true", help="Also run the separate 30m Wald reference test")
     p.add_argument("--rerun", action="store_true", help="Rerun selected jobs even if summary.csv says ok")
@@ -132,8 +130,6 @@ def parse_args(argv=None):
         p.error("Base width only applies to EMR-Diff")
     if args.checkpoint and (len(args.model) != 1 or args.model[0] in REAL_CLASSICAL_METHODS):
         p.error("--checkpoint requires one neural model")
-    if not 0 < args.tile_stride <= args.tile_size <= 144 or any(n % 24 for n in (args.tile_size, args.tile_stride)):
-        p.error("Tile and stride must be multiples of 24, with 0 < stride <= tile <= 144")
     args.wald_root, args.radiometry_json = resolve_real_data_paths(args.wald_root, args.radiometry_json)
     return args
 
@@ -172,8 +168,7 @@ def command(job, args, output, *, reference=False):
     adapter = resolve_model(job.method)
     if reference:
         return build_real_reference_test_command(adapter, args.device, **kwargs)
-    return build_real_native_test_command(adapter, args.device, write_tif=not args.no_geotiff,
-                                          tile_size=args.tile_size, tile_stride=args.tile_stride, **kwargs)
+    return build_real_native_test_command(adapter, args.device, write_tif=not args.no_geotiff, **kwargs)
 
 
 def normalize_outputs(folder, geotiff):
@@ -209,8 +204,10 @@ def run_job(job, args, dest):
         print("COMMAND " + shlex.join(cmd), flush=True)
         subprocess.run(cmd, cwd=ROOT, check=True)
         metrics = normalize_outputs(staging, not args.no_geotiff)
+        metadata = json.loads((staging / "protocol.json").read_text(encoding="utf-8"))
+        if metadata.get("inference_mode") != REAL_NATIVE_INFERENCE:
+            raise ValueError("Native inference did not report one reconstruction of the full ROI")
         if args.reference:
-            metadata = json.loads((staging / "protocol.json").read_text(encoding="utf-8"))
             if job.method == "EMR-Diff":
                 job = replace(job, width=metadata.get("backbone_width", job.width))
             ref = command(job, args, staging, reference=True)
@@ -257,9 +254,19 @@ def write_summary(output, rows, args):
 def main(argv=None):
     args = parse_args(argv)
     jobs, missing = plan(args)
-    print(f"REAL_AUGSBURG_TEST {REAL_SPLIT_PROTOCOL}; native x3 QNR")
+    print(f"REAL_AUGSBURG_TEST {REAL_SPLIT_PROTOCOL}; native x3 QNR; inference={REAL_NATIVE_INFERENCE}")
     rows = read_summary(args.output_dir)
     summary_changed = False
+    for (method, _), row in rows.items():
+        mode = row.get("inference_mode")
+        if row.get("status") != "ok" or mode == REAL_NATIVE_INFERENCE:
+            continue
+        if method in REAL_CLASSICAL_METHODS and not mode:
+            # Before the switch, both solvers already processed the entire ROI.
+            row["inference_mode"] = REAL_NATIVE_INFERENCE
+        else:
+            row["status"] = "stale_inference"
+        summary_changed = True
     completed_without_checkpoint = False
     for method in missing:
         completed = [
@@ -307,7 +314,7 @@ def main(argv=None):
             protocol = json.loads((dest / "protocol.json").read_text(encoding="utf-8"))
             if protocol.get("backbone_width") is not None:
                 row["backbone_width"] = protocol["backbone_width"]
-            row.update(status="ok", **{k: metrics[k] for k in _METRICS})
+            row.update(status="ok", inference_mode=REAL_NATIVE_INFERENCE, **{k: metrics[k] for k in _METRICS})
         except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
             failed = True
             row.update(status="failed", error=str(exc))

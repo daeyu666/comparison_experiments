@@ -651,8 +651,7 @@ REAL_SAVE_INTERVAL = 5
 REAL_MONITOR = "ref_sam"
 REAL_SEED = 10
 REAL_EVAL_SEED = 1234
-REAL_TILE_SIZE = 96
-REAL_TILE_STRIDE = 48
+REAL_NATIVE_INFERENCE = "single_roi"
 REAL_QNR_WINDOW_HR = 48
 REAL_QNR_MIN_VALID_FRACTION = 0.80
 REAL_QNR_SUPPORT_FRACTION = 0.01
@@ -790,19 +789,16 @@ def build_real_reference_test_command(adapter: ModelAdapter, device: str, *,
 def build_real_native_test_command(adapter: ModelAdapter, device: str, *,
                                    checkpoint=None, hidden_channels=None, wald_root=None,
                                    radiometry_json=None, output=None, check_files=True,
-                                   write_tif=True, tile_size=REAL_TILE_SIZE, tile_stride=REAL_TILE_STRIDE):
+                                   write_tif=True):
     if not adapter.real_infer:
         raise NotImplementedError(f"{adapter.canonical} has no native Augsburg inference adapter")
     width = model_hidden_channels(adapter, hidden_channels)
-    if tile_size % 24 or tile_stride % 24 or not 0 < tile_stride <= tile_size <= 144:
-        raise ValueError("Use Wald tile/stride multiples of 24, with 0 < stride <= tile <= 144")
     classical = adapter.canonical in REAL_CLASSICAL_METHODS
     cmd = [
         sys.executable, str(ROOT / adapter.real_infer), "--center_holdout",
         *_real_cache_options(wald_root, radiometry_json),
         *_real_test_checkpoint(adapter, checkpoint, hidden_channels, check_files),
         "--save_root", str(output or real_output_dir(adapter)),
-        "--tile_size", str(tile_size), "--tile_stride", str(tile_stride),
         "--device", "cpu" if classical else device,
         "--qnr_window_hr", str(REAL_QNR_WINDOW_HR),
         "--qnr_min_valid_fraction", str(REAL_QNR_MIN_VALID_FRACTION),
@@ -832,7 +828,7 @@ def real_protocol_summary(adapter=None, batch_size=None, *, hidden_channels=None
     return (
         f"{REAL_SPLIT_PROTOCOL}; x3 Wald; test30={REAL_TEST_BBOX_30M}, "
         f"test10={REAL_TEST_BBOX_10M}, forbidden30={REAL_FORBIDDEN_BBOX_30M}; "
-        f"{training}; native tile={REAL_TILE_SIZE}/{REAL_TILE_STRIDE}; QNR window={REAL_QNR_WINDOW_HR}"
+        f"{training}; native inference={REAL_NATIVE_INFERENCE}; QNR window={REAL_QNR_WINDOW_HR}"
     )
 
 

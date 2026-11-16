@@ -17,11 +17,13 @@ import torch
 THIS=Path(__file__).resolve().parent
 sys.path.insert(0,str(THIS.parents[1]))
 from comparison.CLSNet.wald_common import (
-    correct_msi, load_state, read_json, read_radiometry, require_wald, predict_clsnet
+    load_state, read_json, read_radiometry, require_wald, predict_clsnet
 )
 from comparison.CLSNet.model import build_clsnet, architecture_metadata
 from comparison.UAFL.augsburg2_wald_qnr import evaluate_cache
 from comparison.UAFL.augsburg2_wald_center_roi import crop_heldout, geotiff_transform
+from comparison.real_augsburg.common import predict_native_roi
+from experiment_protocol import REAL_NATIVE_INFERENCE
 
 
 def parse_args():
@@ -32,8 +34,6 @@ def parse_args():
     p.add_argument("--checkpoint",default="./comparison/CLSNet/checkpoints/augsburg2_wald/best.pth.tar")
     p.add_argument("--radiometry_json",default="./data/calibration/Augsburg2_Wald_radiometry.json")
     p.add_argument("--save_root",default="./comparison/CLSNet/outputs/augsburg2_wald")
-    p.add_argument("--tile_size",type=int,default=96)
-    p.add_argument("--tile_stride",type=int,default=48)
     p.add_argument("--device",default="cuda")
     p.add_argument("--write_tif",action="store_true")
     p.add_argument("--skip_qnr", action="store_true", help="Skip original-scale no-reference QNR evaluation")
@@ -58,23 +58,9 @@ def parse_args():
     return args
 
 
-def positions(length, tile, stride):
-    if length<tile:
-        raise ValueError("Full scene dimension is smaller than tile")
-    out=list(range(0,length-tile+1,stride))
-    last=length-tile
-    if not out or out[-1]!=last:
-        out.append(last)
-    if any(x%3 for x in out):
-        raise ValueError("Tiling origins must be divisible by 3 for the LR grid")
-    return out
-
-
 @torch.no_grad()
 def main():
     args=parse_args()
-    if args.tile_size%24 or args.tile_stride%24 or args.tile_stride>args.tile_size:
-        raise ValueError("CLSNet full tiles/strides must be multiples of 24; stride<=tile")
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA not available")
     sigma=require_wald(args.wald_root)
@@ -111,27 +97,8 @@ def main():
         f"area={output_suffix} HR_shape={h}x{w} "
         f"origin_10m_rowcol=({roi_y0},{roi_x0})"
     )
-    ys=positions(h,args.tile_size,args.tile_stride)
-    xs=positions(w,args.tile_size,args.tile_stride)
-    sum_cube=np.zeros((h,w,242),dtype=np.float32)
-    count=np.zeros((h,w),dtype=np.float32)
-
-    for i,top in enumerate(ys):
-        for j,left in enumerate(xs):
-            ts=args.tile_size
-            lp=np.asarray(lr[top//3:(top+ts)//3,left//3:(left+ts)//3]).copy()
-            mp=np.asarray(msi[top:top+ts,left:left+ts]).copy()
-            x_h=torch.from_numpy(np.ascontiguousarray(lp.transpose(2,0,1))).float().unsqueeze(0).to(device)
-            x_m=torch.from_numpy(np.ascontiguousarray(mp.transpose(2,0,1))).float().unsqueeze(0).to(device)
-            x_m=correct_msi(x_m,calibration)
-            pred=predict_clsnet(model,x_h,x_m)
-            arr=pred[0].permute(1,2,0).float().cpu().numpy()
-            sum_cube[top:top+ts,left:left+ts]+=arr
-            count[top:top+ts,left:left+ts]+=1.0
-            print(f"CLSNet_FULL_TILE {i+1}/{len(ys)} {j+1}/{len(xs)} at={top},{left}")
-    if not np.all(count>0):
-        raise RuntimeError("Full-resolution reconstruction has uncovered pixels")
-    fused=sum_cube/count[...,None]
+    fused=predict_native_roi(lambda hsi, msi: predict_clsnet(model, hsi, msi),
+                             lr, msi, calibration, device)
     fused[np.asarray(mask)==0]=0.
     dest=Path(args.save_root)
     dest.mkdir(parents=True,exist_ok=True)
@@ -187,8 +154,7 @@ def main():
         "quantitative_full_psnr":None,
         "output_shape":list(fused.shape),
         "valid_fraction":float(np.asarray(mask).mean()),
-        "tile_size":args.tile_size,
-        "tile_stride":args.tile_stride,
+        "inference_mode":REAL_NATIVE_INFERENCE,
         "checkpoint":str(Path(args.checkpoint).resolve()),
         "srf_source":"fixed Wald cache",
         "radiometry_sha256":sha,

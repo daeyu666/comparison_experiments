@@ -15,13 +15,15 @@ import torch
 import torch.nn.functional as F
 
 from wald_emr_common import (
-    build_model, build_diffusion, correct_msi, read_json,
+    build_model, build_diffusion, read_json,
     read_radiometry, require_center_holdout, verify_checkpoint, predict,
 )
 from EMRDiff import Edge
 from emr_configuration import checkpoint_name, validate_hidden_channels
 from augsburg2_wald_qnr import evaluate_cache
 from augsburg2_wald_center_roi import crop_heldout, geotiff_transform
+from comparison.real_augsburg.common import predict_native_roi
+from experiment_protocol import REAL_NATIVE_INFERENCE
 
 
 def parse_args():
@@ -48,8 +50,6 @@ def parse_args():
         "--save_root",
         default="./comparison/EMR-Diff/outputs/augsburg2_wald_center_holdout",
     )
-    p.add_argument("--tile_size", type=int, default=96)
-    p.add_argument("--tile_stride", type=int, default=48)
     p.add_argument("--device", default="cuda")
     p.add_argument("--write_tif", action="store_true")
     p.add_argument("--skip_qnr", action="store_true")
@@ -67,21 +67,9 @@ def parse_args():
     return args
 
 
-def positions(length, tile, stride):
-    if length < tile:
-        raise ValueError("Held-out ROI dimension is smaller than tile")
-    out = list(range(0, length - tile + 1, stride))
-    last = length - tile
-    if not out or out[-1] != last:
-        out.append(last)
-    if any(x % 3 for x in out):
-        raise ValueError("Tile origins must remain aligned to the x3 LR grid")
-    return out
-
-
 @torch.no_grad()
-def predict_tile(model, diffusion, edge, lq, ref):
-    """Pad only the EMR network input if a UAFL-compatible tile is not /16."""
+def predict_roi(model, diffusion, edge, lq, ref):
+    """Keep any network padding outside the reconstructed observation grid."""
     h, w = ref.shape[-2:]
     lq_hr = F.interpolate(lq, size=(h, w), mode="bicubic", align_corners=False)
     ph, pw = (-h) % 16, (-w) % 16
@@ -96,15 +84,6 @@ def predict_tile(model, diffusion, edge, lq, ref):
 @torch.no_grad()
 def main():
     args = parse_args()
-    if (
-        args.tile_size % 24
-        or args.tile_stride % 24
-        or args.tile_stride > args.tile_size
-    ):
-        raise ValueError(
-            "Center-heldout native inference tiles/strides must be multiples "
-            "of 24 and stride<=tile, matching UAFL"
-        )
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
 
@@ -174,44 +153,12 @@ def main():
         f"origin_10m_rowcol=({roi_y0},{roi_x0})"
     )
 
-    ys = positions(h, args.tile_size, args.tile_stride)
-    xs = positions(w, args.tile_size, args.tile_stride)
-    sum_cube = np.zeros((h, w, 242), dtype=np.float32)
-    count = np.zeros((h, w), dtype=np.float32)
-
     torch.manual_seed(args.eval_seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(args.eval_seed)
 
-    for i, top in enumerate(ys):
-        for j, left in enumerate(xs):
-            size = args.tile_size
-            lr_tile = np.asarray(
-                lr[top // 3:(top + size) // 3,
-                   left // 3:(left + size) // 3]
-            ).copy()
-            msi_tile = np.asarray(
-                msi[top:top + size, left:left + size]
-            ).copy()
-            lq = torch.from_numpy(
-                np.ascontiguousarray(lr_tile.transpose(2, 0, 1))
-            ).float().unsqueeze(0).to(device)
-            ref = torch.from_numpy(
-                np.ascontiguousarray(msi_tile.transpose(2, 0, 1))
-            ).float().unsqueeze(0).to(device)
-            ref = correct_msi(ref, calibration)
-            pred = predict_tile(model, diffusion, edge, lq, ref)
-            arr = pred[0].permute(1, 2, 0).float().cpu().numpy()
-            sum_cube[top:top + size, left:left + size] += arr
-            count[top:top + size, left:left + size] += 1.0
-            print(
-                f"EMR_WALD_HELDOUT_TILE {i+1}/{len(ys)} "
-                f"{j+1}/{len(xs)} at={top},{left}"
-            )
-
-    if not np.all(count > 0):
-        raise RuntimeError("Held-out reconstruction has uncovered pixels")
-    fused = sum_cube / count[..., None]
+    fused = predict_native_roi(lambda hsi, msi: predict_roi(model, diffusion, edge, hsi, msi),
+                               lr, msi, calibration, device)
     fused[np.asarray(mask) == 0] = 0.0
 
     dest = Path(args.save_root)
@@ -275,8 +222,7 @@ def main():
         "no_reference_quality": quality,
         "output_shape": list(fused.shape),
         "valid_fraction": float(np.asarray(mask).mean()),
-        "tile_size": args.tile_size,
-        "tile_stride": args.tile_stride,
+        "inference_mode": REAL_NATIVE_INFERENCE,
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "radiometry_sha256": sha,
         "diffusion_eval_seed": args.eval_seed,

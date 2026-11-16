@@ -21,14 +21,14 @@ from comparison.UAFL.augsburg2_wald_common import (
 )
 from comparison.UAFL.augsburg2_wald_qnr import evaluate_cache
 from comparison.UAFL.common import set_seed
-from comparison.real_augsburg.common import WaldCache, chw, positions, write_geotiff, write_json
+from comparison.real_augsburg.common import WaldCache, chw, predict_native_roi, write_geotiff, write_json
 from comparison.real_augsburg.methods import architecture_id, build_model, classical_solver, training_loss
 from comparison.registered_fusion.runner import restore_rng, save_state, snapshot_rng
 from experiment_protocol import (
     REAL_CLASSICAL_METHODS, REAL_EVAL_INTERVAL, REAL_EVAL_PATCH, REAL_EVAL_SEED,
-    REAL_EPOCHS, REAL_LR, REAL_MIN_VALID_FRACTION, REAL_MONITOR, REAL_NEW_NEURAL_METHODS,
+    REAL_EPOCHS, REAL_LR, REAL_MIN_VALID_FRACTION, REAL_MONITOR, REAL_NATIVE_INFERENCE, REAL_NEW_NEURAL_METHODS,
     REAL_QNR_MIN_VALID_FRACTION, REAL_QNR_SUPPORT_FRACTION, REAL_QNR_WINDOW_HR,
-    REAL_SAVE_INTERVAL, REAL_SEED, REAL_TILE_SIZE, REAL_TILE_STRIDE,
+    REAL_SAVE_INTERVAL, REAL_SEED,
     REAL_TRAIN_PATCH, REAL_TRAIN_STRIDE, REAL_WEIGHT_DECAY,
     real_checkpoint_dir, real_log_dir, real_output_dir, resolve_model, resolve_real_data_paths,
 )
@@ -58,7 +58,6 @@ def parser():
         ("lr", REAL_LR), ("weight_decay", REAL_WEIGHT_DECAY),
         ("eval_interval", REAL_EVAL_INTERVAL), ("save_interval", REAL_SAVE_INTERVAL),
         ("seed", REAL_SEED), ("eval_seed", REAL_EVAL_SEED),
-        ("tile_size", REAL_TILE_SIZE), ("tile_stride", REAL_TILE_STRIDE),
         ("qnr_window_hr", REAL_QNR_WINDOW_HR), ("qnr_min_valid_fraction", REAL_QNR_MIN_VALID_FRACTION),
         ("qnr_support_fraction", REAL_QNR_SUPPORT_FRACTION),
     ):
@@ -190,24 +189,6 @@ def train(args, cache, adapter):
             save_state(state, paths / "last.pth.tar")
 
 
-@torch.no_grad()
-def tiled_predict(model, lr, msi, calibration, device, tile, stride):
-    h, w = msi.shape[:2]
-    result = np.zeros((h, w, lr.shape[-1]), np.float32)
-    weights = np.zeros((h, w), np.float32)
-    for y in positions(h, tile, stride):
-        for x in positions(w, tile, stride):
-            obs = chw(lr[y // 3:(y + tile) // 3, x // 3:(x + tile) // 3], device)
-            guide = chw(msi[y:y + tile, x:x + tile], device)
-            tile_pred = model(obs, correct_msi(guide, calibration))
-            arr = tile_pred[0].permute(1, 2, 0).float().cpu().numpy()
-            if arr.shape != (tile, tile, lr.shape[-1]) or not np.isfinite(arr).all():
-                raise FloatingPointError(f"Invalid native prediction shape/values at tile {(y, x)}")
-            result[y:y + tile, x:x + tile] += arr
-            weights[y:y + tile, x:x + tile] += 1
-    return result / weights[..., None]
-
-
 def evaluate(args, cache, adapter):
     classical = args.model in REAL_CLASSICAL_METHODS
     dest = args.save_root or real_output_dir(adapter)
@@ -240,9 +221,7 @@ def evaluate(args, cache, adapter):
         gain, bias = cache.calibration
         cube, solver_report = solve(lr, msi * gain + bias)
     else:
-        if any(n % 24 for n in (args.tile_size, args.tile_stride)):
-            raise ValueError("Wald native tile and stride must be multiples of 24")
-        cube = tiled_predict(model, lr, msi, cache.calibration, device, args.tile_size, args.tile_stride)
+        cube = predict_native_roi(model, lr, msi, cache.calibration, device)
         solver_report = None
     seconds = time.perf_counter() - before
     if cube.shape != (*mask.shape, 242) or not np.isfinite(cube).all():
@@ -261,7 +240,7 @@ def evaluate(args, cache, adapter):
     write_json(dest / "protocol.json", {
         **metadata, "checkpoint": str(checkpoint.resolve()) if checkpoint else None,
         "device": str(device), "output_shape": list(cube.shape), "inference_seconds": seconds,
-        "tile_size": None if classical else args.tile_size, "tile_stride": None if classical else args.tile_stride,
+        "inference_mode": REAL_NATIVE_INFERENCE,
         "solver": solver_report, "eval_seed": args.eval_seed,
     })
     print(f"WALD_QNR {args.model} QNR={scores['QNR']:.6f} Dlambda={scores['Dlambda']:.6f} Ds={scores['Ds']:.6f}")

@@ -75,11 +75,12 @@ python test_real.py --model EMR-Diff --base_channels 128 --device cuda:0
 
 总目录写 `summary.csv` 和 `summary.json`，每完成一个测试就更新。重复运行时，
 同一输出目录下方法与权重变体对应的 `status=ok` 会跳过并保留原结果；
-失败或此前缺权重的任务可重试。更换权重或需要为已完成的测试补跑 `--reference`
-时，可加 `--rerun`，也可用 `--output_dir` 保存到新目录。
+旧版本的神经方法滑窗结果会标为 `stale_inference`，有权重时自动重测。
+之前已成功的 CNMF/HySure 已经使用整块 ROI，可直接复用。更换权重或需要为已完成的
+测试补跑 `--reference` 时，可加 `--rerun`，也可用 `--output_dir` 保存到新目录。
 
-默认神经方法使用 96×96 滑窗、
-步长 48；正式比较统一使用同一滑窗设置。QNR 复用 S2Diff-MH / UAFL 的
+原尺度测试对完整的 144×144 中心 ROI 做一次推理，不切块、不拼接，记录为
+`inference_mode=single_roi`。QNR 复用 S2Diff-MH / UAFL 的
 HSI–MSI 实现：48×48 高分窗口、80% 最小有效像元比例、SRF 覆盖阈值 1%。
 `--reference` 可额外运行独立的 30m Wald 参考测试，写到 `reference.log`，
 不参与 10m 的 QNR 汇总。

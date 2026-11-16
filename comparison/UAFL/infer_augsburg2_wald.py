@@ -16,12 +16,15 @@ import torch
 
 THIS=Path(__file__).resolve().parent
 sys.path.insert(0,str(THIS))
+sys.path.insert(1,str(THIS.parents[1]))
 from augsburg2_wald_common import (
     correct_msi, load_state, read_json, read_radiometry, require_wald, predict_uafl
 )
 from model import build_uafl
 from augsburg2_wald_qnr import evaluate_cache
 from augsburg2_wald_center_roi import crop_heldout, geotiff_transform
+from comparison.real_augsburg.common import predict_native_roi
+from experiment_protocol import REAL_NATIVE_INFERENCE
 
 
 def parse_args():
@@ -32,8 +35,8 @@ def parse_args():
     p.add_argument("--checkpoint",default="./comparison/UAFL/checkpoints/augsburg2_wald/best.pth.tar")
     p.add_argument("--radiometry_json",default="./data/calibration/Augsburg2_Wald_radiometry.json")
     p.add_argument("--save_root",default="./comparison/UAFL/outputs/augsburg2_wald")
-    p.add_argument("--tile_size",type=int,default=96)
-    p.add_argument("--tile_stride",type=int,default=48)
+    p.add_argument("--tile_size",type=int,help="Legacy full-region Wald only; default 96")
+    p.add_argument("--tile_stride",type=int,help="Legacy full-region Wald only; default 48")
     p.add_argument("--device",default="cuda")
     p.add_argument("--write_tif",action="store_true")
     p.add_argument("--skip_qnr", action="store_true", help="Skip original-scale no-reference QNR evaluation")
@@ -68,11 +71,31 @@ def positions(length, tile, stride):
     return out
 
 
+def predict_legacy_full(model, lr, msi, calibration, device, tile, stride):
+    h, w = msi.shape[:2]
+    if not 0 < stride <= tile or tile % 24 or stride % 24:
+        raise ValueError("UAFL full tiles/strides must be positive multiples of 24; stride<=tile")
+    ys, xs = positions(h, tile, stride), positions(w, tile, stride)
+    sum_cube = np.zeros((h, w, 242), dtype=np.float32)
+    count = np.zeros((h, w), dtype=np.float32)
+    for i, top in enumerate(ys):
+        for j, left in enumerate(xs):
+            lp = np.asarray(lr[top//3:(top+tile)//3, left//3:(left+tile)//3]).copy()
+            mp = np.asarray(msi[top:top+tile, left:left+tile]).copy()
+            x_h = torch.from_numpy(np.ascontiguousarray(lp.transpose(2, 0, 1))).float().unsqueeze(0).to(device)
+            x_m = torch.from_numpy(np.ascontiguousarray(mp.transpose(2, 0, 1))).float().unsqueeze(0).to(device)
+            pred = predict_uafl(model, x_h, correct_msi(x_m, calibration))
+            sum_cube[top:top+tile, left:left+tile] += pred[0].permute(1, 2, 0).float().cpu().numpy()
+            count[top:top+tile, left:left+tile] += 1.0
+            print(f"UAFL_FULL_TILE {i+1}/{len(ys)} {j+1}/{len(xs)} at={top},{left}")
+    if not np.all(count > 0):
+        raise RuntimeError("Full-resolution reconstruction has uncovered pixels")
+    return sum_cube / count[..., None]
+
+
 @torch.no_grad()
 def main():
     args=parse_args()
-    if args.tile_size%24 or args.tile_stride%24 or args.tile_stride>args.tile_size:
-        raise ValueError("UAFL full tiles/strides must be multiples of 24; stride<=tile")
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA not available")
     sigma=require_wald(args.wald_root)
@@ -109,27 +132,19 @@ def main():
         f"area={output_suffix} HR_shape={h}x{w} "
         f"origin_10m_rowcol=({roi_y0},{roi_x0})"
     )
-    ys=positions(h,args.tile_size,args.tile_stride)
-    xs=positions(w,args.tile_size,args.tile_stride)
-    sum_cube=np.zeros((h,w,242),dtype=np.float32)
-    count=np.zeros((h,w),dtype=np.float32)
-
-    for i,top in enumerate(ys):
-        for j,left in enumerate(xs):
-            ts=args.tile_size
-            lp=np.asarray(lr[top//3:(top+ts)//3,left//3:(left+ts)//3]).copy()
-            mp=np.asarray(msi[top:top+ts,left:left+ts]).copy()
-            x_h=torch.from_numpy(np.ascontiguousarray(lp.transpose(2,0,1))).float().unsqueeze(0).to(device)
-            x_m=torch.from_numpy(np.ascontiguousarray(mp.transpose(2,0,1))).float().unsqueeze(0).to(device)
-            x_m=correct_msi(x_m,calibration)
-            pred=predict_uafl(model,x_h,x_m)
-            arr=pred[0].permute(1,2,0).float().cpu().numpy()
-            sum_cube[top:top+ts,left:left+ts]+=arr
-            count[top:top+ts,left:left+ts]+=1.0
-            print(f"UAFL_FULL_TILE {i+1}/{len(ys)} {j+1}/{len(xs)} at={top},{left}")
-    if not np.all(count>0):
-        raise RuntimeError("Full-resolution reconstruction has uncovered pixels")
-    fused=sum_cube/count[...,None]
+    if output_suffix == "heldout":
+        if args.tile_size is not None or args.tile_stride is not None:
+            raise ValueError("Center-heldout inference processes the full ROI without tiles")
+        fused = predict_native_roi(lambda hsi, guide: predict_uafl(model, hsi, guide),
+                                   lr, msi, calibration, device)
+        inference = {"inference_mode": REAL_NATIVE_INFERENCE}
+    else:
+        if args.center_holdout:
+            raise ValueError("--center_holdout requires a center-heldout cache")
+        tile = args.tile_size if args.tile_size is not None else 96
+        stride = args.tile_stride if args.tile_stride is not None else 48
+        fused = predict_legacy_full(model, lr, msi, calibration, device, tile, stride)
+        inference = {"inference_mode": "tiled_full_region", "tile_size": tile, "tile_stride": stride}
     fused[np.asarray(mask)==0]=0.
     dest=Path(args.save_root)
     dest.mkdir(parents=True,exist_ok=True)
@@ -184,8 +199,7 @@ def main():
         "quantitative_full_psnr":None,
         "output_shape":list(fused.shape),
         "valid_fraction":float(np.asarray(mask).mean()),
-        "tile_size":args.tile_size,
-        "tile_stride":args.tile_stride,
+        **inference,
         "checkpoint":str(Path(args.checkpoint).resolve()),
         "srf_source":"fixed Wald cache",
         "radiometry_sha256":sha,

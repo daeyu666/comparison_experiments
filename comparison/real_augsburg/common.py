@@ -9,7 +9,7 @@ import torch
 from torch.nn import functional as F
 
 from comparison.UAFL.augsburg2_wald_center_roi import geotiff_transform, read_roi
-from comparison.UAFL.augsburg2_wald_common import read_json, read_radiometry, require_wald
+from comparison.UAFL.augsburg2_wald_common import correct_msi, read_json, read_radiometry, require_wald
 from experiment_protocol import (
     REAL_FORBIDDEN_BBOX_30M, REAL_SPLIT_PROTOCOL, REAL_TEST_BBOX_10M, REAL_TEST_BBOX_30M,
 )
@@ -97,13 +97,20 @@ def chw(array, device):
     return torch.from_numpy(np.array(array.transpose(2, 0, 1), dtype=np.float32, order="C"))[None].to(device)
 
 
-def positions(length, tile, stride):
-    if not 0 < stride <= tile <= length or any(n % 3 for n in (length, tile, stride)):
-        raise ValueError("Native tile and stride must align with the x3 grid")
-    values = list(range(0, length - tile + 1, stride))
-    if values[-1] != length - tile:
-        values.append(length - tile)
-    return values
+@torch.no_grad()
+def predict_native_roi(predict, lr, msi, calibration, device):
+    """Reconstruct all held-out native pixels with one inference call."""
+    y, x, yy, xx = REAL_TEST_BBOX_10M
+    h, w = yy - y, xx - x
+    if lr.shape != (h // 3, w // 3, 242) or msi.shape != (h, w, 4):
+        raise ValueError(f"Invalid native center ROI input shapes: HSI={lr.shape}, MSI={msi.shape}")
+    pred = predict(chw(lr, device), correct_msi(chw(msi, device), calibration))
+    if pred.shape != (1, 242, h, w):
+        raise ValueError(f"Invalid native center ROI prediction shape: {tuple(pred.shape)}")
+    cube = pred[0].permute(1, 2, 0).float().cpu().numpy()
+    if not np.isfinite(cube).all():
+        raise FloatingPointError("Native center ROI prediction contains nonfinite values")
+    return cube
 
 
 def pad_pair(lr, msi, multiple, minimum=0):
