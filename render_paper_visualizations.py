@@ -19,7 +19,7 @@ TARGETS = (("residual_rmse", 1.0, "Spectral RMSE"),
 ERROR_CMAP = "jet"
 COLORBAR_ORIENTATION = "vertical"
 DEFAULT_LIMIT_FACTORS = {("PaviaU", "residual_rmse"): 1.25}
-DEFAULT_RESIDUAL_GAMMAS = {"PaviaU": 3.0}
+DEFAULT_GAMMAS = {("PaviaU", "residual_rmse"): 3.0, ("PaviaU", "sam_deg"): 1.25}
 DEFAULT = ROOT / "outputs/paper_visualization"
 
 
@@ -99,6 +99,8 @@ def parse_args(argv=None):
     p.add_argument("--residual_gamma", type=float,
                    help="RMSE color scale exponent (default: PaviaU 3, CAVE 1; 1 is linear)")
     p.add_argument("--sam_max", type=float, help="Override the pooled SAM scale in degrees")
+    p.add_argument("--sam_gamma", type=float,
+                   help="SAM color scale exponent (default: PaviaU 1.25, CAVE 1; 1 is linear)")
     p.add_argument("--error_percentile", type=float, default=99.0)
     p.add_argument("--zoom", type=int, default=3)
     args = p.parse_args(argv)
@@ -107,8 +109,10 @@ def parse_args(argv=None):
     for value in (args.residual_max, args.sam_max):
         if value is not None and not (np.isfinite(value) and value > 0):
             p.error("Error map maxima must be positive and finite")
-    if args.residual_gamma is not None and not (np.isfinite(args.residual_gamma) and args.residual_gamma > 0):
-        p.error("--residual_gamma must be positive and finite")
+    for field in ("residual_gamma", "sam_gamma"):
+        value = getattr(args, field)
+        if value is not None and not (np.isfinite(value) and value > 0):
+            p.error(f"--{field} must be positive and finite")
     if not np.isfinite(args.rgb_nm).all():
         p.error("RGB wavelengths must be finite")
     return args
@@ -128,11 +132,12 @@ def main(argv=None):
         # Cache only small display settings, not the raw cubes.
         settings = {}
         limits = {"residual_rmse": args.residual_max, "sam_deg": args.sam_max}
-        gamma = args.residual_gamma if args.residual_gamma is not None else DEFAULT_RESIDUAL_GAMMAS.get(dataset, 1.0)
-        gammas = {"residual_rmse": gamma, "sam_deg": 1.0}
+        gammas = {"residual_rmse": args.residual_gamma, "sam_deg": args.sam_gamma}
         limit_factors = {}
         norms = {}
         for field, bound, label in TARGETS:
+            if gammas[field] is None:
+                gammas[field] = DEFAULT_GAMMAS.get((dataset, field), 1.0)
             if limits[field] is None:
                 factor = DEFAULT_LIMIT_FACTORS.get((dataset, field), 1.0)
                 limits[field] = min(bound, factor * common_limit(results, field, bound, args.error_percentile))
