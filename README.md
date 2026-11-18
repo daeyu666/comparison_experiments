@@ -1,5 +1,8 @@
 # HSI Super-Resolution Comparison Experiments
 
+论文复杂度实验可运行 `python benchmark_paviau.py --device cuda:0`，
+统一汇总 PaviaU 上的 Params、FLOPs 和推理时间；见 [PaviaU 复杂度说明](BENCHMARK_PAVIAU.md)。
+
 
 ## 统一训练 / 测试入口（正式两阶段对比实验）
 

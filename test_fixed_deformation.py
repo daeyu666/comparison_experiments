@@ -25,7 +25,7 @@ def _load_evaluator(folder):
     return module
 
 
-def _emr(args):
+def _emr(args, *, profile_modules=None):
     evaluator = _load_evaluator("EMR-Diff")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     args.hidden_channels = checkpoint_width(checkpoint, getattr(args, "hidden_channels", None))
@@ -50,10 +50,13 @@ def _emr(args):
                "architecture_id": checkpoint.get("architecture_id"),
                "backbone_width": checkpoint.get("backbone_width"),
                "registered_probability": checkpoint.get("registered_probability")}
+    if profile_modules is not None:
+        profile_modules.append(trainer.Net)
+        details["diffusion_steps"] = trainer.num_timesteps
     return test_set, trainer._reconstruct, p0.degrade, trainer.device, details
 
 
-def _uafl(args):
+def _uafl(args, *, profile_modules=None):
     evaluator = _load_evaluator("UAFL")
     cfg = evaluator.build_shared_cfg(args)
     _, _, test_set, info = evaluator.build_datasets(cfg, include_validation=True)
@@ -81,6 +84,8 @@ def _uafl(args):
     def predict(lr_hsi, hr_msi):
         return model(evaluator.upsample_lr_hsi(lr_hsi, hr_msi.shape[-2:]), hr_msi)
 
+    if profile_modules is not None:
+        profile_modules.append(model)
     details = {"checkpoint_epoch": checkpoint.get("epoch"),
                "training_stage": args.mode, "registered_probability": train_args.get("registered_probability")}
     return test_set, predict, p0.degrade, device, details
