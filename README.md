@@ -1,5 +1,8 @@
 # HSI Super-Resolution Comparison Experiments
 
+PaviaU 和 CAVE 论文定性图的推理导出与绘图入口见
+[论文可视化说明](PAPER_VISUALIZATION.md)。
+
 论文复杂度实验可运行 `python benchmark_paviau.py --device cuda:0`，
 统一汇总 PaviaU 上的 Params、FLOPs 和推理时间；见 [PaviaU 复杂度说明](BENCHMARK_PAVIAU.md)。
 

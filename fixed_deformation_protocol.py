@@ -173,7 +173,7 @@ def sample_fixed_geometry(height, width, strength, *, sample_index, case_index,
                           seed=10, control_grid=5, min_jacobian=0.5,
                           local_deformation="bspline", elastic_sigma_hr_px=8.0,
                           elastic_truncate=3.0, tarc_alpha=10.0,
-                          tarc_sigma_hr_px=5.0):
+                          tarc_sigma_hr_px=5.0, exact_local_max=False):
     """CPU/float32 synthesis; the seed is independent of level/model/device.
 
     Paired levels start with the same candidate field and amplitude fraction.
@@ -186,6 +186,8 @@ def sample_fixed_geometry(height, width, strength, *, sample_index, case_index,
         raise ValueError("min_jacobian must be in (0,1]")
     if local_deformation not in ("bspline", "elastic", "tarc", "tarc_physical"):
         raise ValueError("unsupported local_deformation")
+    if exact_local_max and local_deformation not in ("bspline", "elastic"):
+        raise ValueError("An exact local peak is supported for bspline and elastic fields")
     if elastic_sigma_hr_px <= 0 or elastic_truncate <= 0:
         raise ValueError("elastic sigma/truncate must be positive")
     if tarc_alpha <= 0 or tarc_sigma_hr_px <= 0:
@@ -198,7 +200,9 @@ def sample_fixed_geometry(height, width, strength, *, sample_index, case_index,
             control = torch.randn(1, 2, control_grid, control_grid, generator=gen)
             control -= control.mean(dim=(-2, -1), keepdim=True)
             dense = _dense_field(control, height, width)
-            amplitude = torch.rand(1, generator=gen) * strength.local_max_hr_px
+            amplitude = strength.local_max_hr_px
+            if not exact_local_max:
+                amplitude = torch.rand(1, generator=gen) * amplitude
             control *= amplitude / torch.linalg.vector_norm(dense, dim=1).amax().clamp_min(1e-8)
             dense = _dense_field(control, height, width)
         elif local_deformation == "elastic":
@@ -207,7 +211,9 @@ def sample_fixed_geometry(height, width, strength, *, sample_index, case_index,
             control = torch.randn(1, 2, height, width, generator=gen)
             control -= control.mean(dim=(-2, -1), keepdim=True)
             dense = _elastic_field(control, elastic_sigma_hr_px, elastic_truncate)
-            amplitude = torch.rand(1, generator=gen) * strength.local_max_hr_px
+            amplitude = strength.local_max_hr_px
+            if not exact_local_max:
+                amplitude = torch.rand(1, generator=gen) * amplitude
             dense *= amplitude / torch.linalg.vector_norm(dense, dim=1).amax().clamp_min(1e-8)
         else:
             # TARCNet paper protocol: initialize zero-mean random displacement,

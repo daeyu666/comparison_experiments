@@ -1,0 +1,106 @@
+# PaviaU / CAVE 论文定性对比
+
+在 `comparison_experiments` 根目录运行两个独立入口（绘图需 NumPy、Pillow、Matplotlib）：
+
+```bash
+python export_paper_predictions.py --device cuda:0 --resume
+python render_paper_visualizations.py
+```
+
+默认输出到 `outputs/paper_visualization/`：
+
+```text
+raw/<dataset>/inputs/<sample>.npz
+raw/<dataset>/registered/<method>/<sample>/
+raw/<dataset>/unregistered/{registered,warp}/<method>/<sample>/
+figures/<dataset>/registered/<method>/<sample>/
+figures/<dataset>/unregistered/{registered,warp}/<method>/<sample>/
+figures/<dataset>/references/<sample>/gt_rgb.png
+```
+
+`PaviaU` 的样本名为 `center`。CAVE 样本名包含场景和左上角坐标，
+如 `jelly_beans__r192_c192`。每个原始结果目录保存 `prediction.npy`
+（CHW、float32、未裁剪）、`residual_rmse.npy`（逐像素的全波段 RMSE）、
+`sam_deg.npy`（SAM 角度，零谱向量处为 NaN）和 `metadata.json`。
+误差图使用裁剪至 [0,1] 的预测和 GT；SAM 作图中的灰色为无定义像素。
+输入 NPZ 是所有方法共用的，包含 GT、HR-MSI、两份 LR-HSI、SRF、
+局部形变场、裁块坐标、随机种子、实际形变强度和输入哈希。
+已有结果需要输入和权重哈希均一致才能用 `--resume` 跳过。
+
+绘图生成 `prediction_rgb.png`、`residual_rmse.png`、`sam_deg.png`。
+RGB 默认使用最接近 650/550/470 nm 的三个波段，拉伸区间由每个 GT 裁块
+的第 1 和第 99 百分位确定；同裁块所有方法、两种条件共用该区间。
+每个数据集的误差图共用色标，默认上限取全部已保存有效像素的第 99
+百分位（直方图近似），并导出色条和 `display_settings.json`。可显式传入
+`--residual_max` 和 `--sam_max` 固定上限；出图后又补入新方法时，请统一
+重画或继续使用原上限。默认只用最近邻将显示图放大 3 倍，可用 `--zoom 1`
+输出原始 128×128 像素。
+
+## 裁块与形变
+
+- PaviaU：复用正式中心 128×128 测试块。
+- CAVE：默认在 12 个留出场景各取一个 128×128 几何中心裁块，坐标
+  `[192:320,192:320]`。只用于定性展示，正式指标仍按每场景 16 个测试
+  网格块计算。要让定性裁块也属于正式测试网格，选
+  `--cave_crop central-grid`（中央四块中固定选左上，起点为 128,128），
+  或 `--cave_crop all-grid` 导出全部 192 块。改变裁块策略时建议用新输出目录。
+- Registered：`LR-HSI=P0(GT)`；Warp：先变形 GT，再用相同的物理 ×4
+  算子退化。HR-MSI 和 GT 都保持原坐标。刚性固定为横纵各 +4 HR px、+2°；
+  B 样条局部随机场的峰值固定为 4 HR px（向量 L2），局部最小 Jacobian
+  ≥0.5。几何按样本和 `--warp_seed` 固定，跨方法完全共享。
+  这是一组固定强度的定性示例，不是主表随机形变的均值。
+
+## 权重与选择器
+
+从两个仓库共同父目录的 `模型权重/` 查找：
+
+- 配准：CNMF、HySure（无权重）、MoG-DCN、PSRT、ESFS、CLSNet、EMR-Diff；
+  其余权重路径为 `<方法>-checkpoints/physical/<数据集>/best.pth.tar`。
+- 非配准：M2DTN、PMI-RFCoNet、MoE-PNP、SA-RFM、UAFL。每个方法读取
+  `<方法>-checkpoints/hsi_warp_final/<数据集>/best.pth.tar`，同一份权重
+  分别推理 Registered、Warp。
+- EMR-Diff 优先使用有的话 `best_base128`，再试 `best`，也支持
+  `--emr_width 128` 或 `--checkpoint EMR-Diff:registered:CAVE=/path/to/weights`。
+  各方法选定的权重见 `PLAN`；文件后缀也支持 `.pth`、`.pt`、`.ckpt`。
+- `ours` 出现在两组。默认查找 `S2Diff-MH-checkpoints`（或 `ours-checkpoints`）。
+  `physical/<数据集>/` 需要 Stage A 扩散和 Stage B HPGC-Refiner；
+  `hsi_warp_final/<数据集>/` 需要 geometry、适配扩散和 HPGC-Refiner。
+  可命名 `diffusion.pth`、`refiner.pth` 和 `geometry.pth`，也支持原始角色
+  文件名唯一匹配。非配准组沿用同一组混合训练权重；Registered 绕过 CDRDI，
+  Warp 执行完整三阶段。需要消歧时通过 `--ours_config` 传 JSON：
+
+```json
+{
+  "PaviaU": {
+    "registered": {
+      "weights": {
+        "diffusion": "S2Diff-MH-checkpoints/physical/PaviaU/raw_direct.pth",
+        "refiner": "S2Diff-MH-checkpoints/physical/PaviaU/refiner.pth"
+      },
+      "options": {"baseline_checkpoint_type": "legacy"}
+    },
+    "unregistered": {
+      "weights": {
+        "geometry": "S2Diff-MH-checkpoints/hsi_warp_final/PaviaU/geometry.pth",
+        "diffusion": "S2Diff-MH-checkpoints/hsi_warp_final/PaviaU/diffusion.pth",
+        "refiner": "S2Diff-MH-checkpoints/hsi_warp_final/PaviaU/refiner.pth"
+      }
+    }
+  }
+}
+```
+
+相对权重路径基于 `--weights_root`。示例的 `legacy` 只用于旧版
+Raw Direct；标准新权重用 `standard`。若 refiner 记录了模型配置，
+默认读取其元数据；需要时在 `options` 指定模型宽度、步数等。
+
+默认从任一仓库的 `data/raw/` 查找数据，也可传 `--data_root`。
+用 `--dry_run` 预览方法权重和阶段；缺权重会列明，不阻塞其他方法。
+运行日志在 `logs/<数据集>/<组>/<方法>.log`，汇总在 `export_summary.json`。
+选择器示例：
+
+```bash
+python export_paper_predictions.py --datasets CAVE --cave_scenes jelly_beans oil_painting \
+  --groups unregistered --methods SA-RFM ours --device cuda:0 --resume
+python render_paper_visualizations.py --datasets CAVE --samples jelly_beans oil_painting
+```
