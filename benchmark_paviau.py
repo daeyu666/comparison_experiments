@@ -345,6 +345,8 @@ def parse_args(argv=None):
     p.add_argument("--s2diff_root", type=Path, default=ROOT.parent / "S2Diff-MH")
     p.add_argument("--data_root", type=Path, help="Folder containing PaviaU.mat; default: detect in either repo")
     p.add_argument("--output_dir", type=Path)
+    p.add_argument("--keep_other_results", action="store_true",
+                   help="Replace only the selected methods in an existing summary.csv")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--cpu_threads", type=int, default=1)
     p.add_argument("--warmup", type=int, default=3)
@@ -413,6 +415,35 @@ def write_summary(output, rows):
     return path
 
 
+def weight_source_for(method, no_checkpoints):
+    if method in CLASSICAL:
+        return "not_applicable"
+    return "initialized" if no_checkpoints else "checkpoint"
+
+
+def read_other_results(output, methods, pair_sha, args):
+    path = output / "summary.csv"
+    if not path.is_file():
+        raise SystemExit(f"--keep_other_results requires an existing summary: {path}")
+    kept = {}
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            method = row.get("method")
+            if method in methods:
+                continue
+            if method not in METHODS or method in kept:
+                raise SystemExit(f"Unexpected or repeated method in {path}: {method!r}")
+            expected = {"input_sha256": pair_sha, "dataset": "PaviaU",
+                        "weight_source": weight_source_for(method, args.no_checkpoints),
+                        "seed": str(args.seed)}
+            for field, value in expected.items():
+                if row.get(field) != value:
+                    raise SystemExit(f"Cannot keep {method}: {field} differs in {path}. "
+                                     "Use the original benchmark settings or a new --output_dir.")
+            kept[method] = {key: row.get(key, "") for key in FIELDS}
+    return kept
+
+
 def main(argv=None):
     args = parse_args(argv)
     if args._pair:
@@ -442,6 +473,8 @@ def main(argv=None):
                 source = "initialized (no checkpoint)"
                 if method == "EMR-Diff":
                     source += f", backbone_width={args.emr_width or 64}"
+                if method == "ours":
+                    source += f", script={args.s2diff_root / Path(__file__).name}"
                 stage = "-"
             elif method == "ours":
                 source = args.s2diff_root / Path(__file__).name
@@ -460,10 +493,12 @@ def main(argv=None):
     with TemporaryDirectory(prefix="benchmark-paviau-") as directory:
         pair = Path(directory) / "pair.npz"
         pair_sha = save_shared_pair(args, pair)
+        kept = read_other_results(args.output_dir, methods, pair_sha, args) if args.keep_other_results else {}
+        if kept:
+            print(f"KEEP {len(kept)} existing method rows in {args.output_dir / 'summary.csv'}", flush=True)
         for method in methods:
             stage = stages.get(method, "registered" if method in REGISTERED else "mixed")
-            weight_source = ("not_applicable" if method in CLASSICAL else
-                             "initialized" if args.no_checkpoints else "checkpoint")
+            weight_source = weight_source_for(method, args.no_checkpoints)
             row = dict(method=method, dataset="PaviaU", weight_source=weight_source,
                        checkpoint_stage=stage if weight_source == "checkpoint" else "",
                        input_sha256=pair_sha, seed=args.seed)
@@ -480,7 +515,8 @@ def main(argv=None):
             try:
                 if method == "ours":
                     if not worker.is_file():
-                        raise FileNotFoundError(f"Install the S2Diff-MH benchmark script: {worker}")
+                        raise FileNotFoundError(f"Missing {worker}. Update the S2Diff-MH checkout "
+                                                "or point --s2diff_root at the updated checkout.")
                     command += ["--_runner", str(Path(__file__).resolve()), "--ours_args", *args.ours_args]
                 else:
                     command += ["--methods", method, "--data_root", str(args.data_root),
@@ -508,7 +544,11 @@ def main(argv=None):
             if row["status"] != "ok":
                 print(f"{row['status'].upper()} {method}: {row.get('error', '')}", flush=True)
             rows.append(row)
-            write_summary(args.output_dir, rows)
+            if args.keep_other_results:
+                kept[method] = row
+                write_summary(args.output_dir, (kept[m] for m in METHODS if m in kept))
+            else:
+                write_summary(args.output_dir, rows)
 
     print(f"{'Method':<14} {'Params (M)':>12} {'FLOPs (G)':>12} {'Median (ms)':>14}  Device / status")
     for row in rows:

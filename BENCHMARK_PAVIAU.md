@@ -11,6 +11,12 @@ python benchmark_paviau.py --device cuda:0
 各方法的执行日志位于表格旁的 `logs/`。可用 `--dry_run` 查看计划，
 或用 `--methods CNMF HySure ours --output_dir /path/to/smoke` 单独检查部分方法。
 
+若对比方法已跑完，只需补测 ours，请先更新两个仓库，再用原来的数据、设备、
+随机种子和权重模式运行 `--methods ours --keep_other_results`。这样只更新
+现有 `summary.csv` 的 ours 行，其余行保留。若上次传过 `--output_dir`，
+本次继续用同一个目录。找不到 S2Diff-MH 的 `benchmark_paviau.py` 时，
+请确认更新的是实际使用的 checkout，或用 `--s2diff_root` 指明其位置。
+
 权重不在同一台机器时，可在装好模型依赖且有 PaviaU 数据的服务器上运行：
 
 ```bash
