@@ -11,6 +11,20 @@ python benchmark_paviau.py --device cuda:0
 各方法的执行日志位于表格旁的 `logs/`。可用 `--dry_run` 查看计划，
 或用 `--methods CNMF HySure ours --output_dir /path/to/smoke` 单独检查部分方法。
 
+权重不在同一台机器时，可在装好模型依赖且有 PaviaU 数据的服务器上运行：
+
+```bash
+python benchmark_paviau.py --device cuda:0 --no_checkpoints --emr_width 128
+```
+
+该模式用固定种子和各模型自身的初始化方式执行完整推理，无需 `.pth` 文件。
+默认输出到 `outputs/benchmark_paviau_initialized/summary.csv`，表中标明
+`weight_source=initialized`。EMR-Diff 使用指定的骨干宽度（这里为 128），
+其他基线采用当前 PaviaU 标准架构。若 ours 的论文配置不同于默认值，
+用末尾的 `--ours_args` 指定与正式实验相同的宽度和迭代步数。
+同架构时，参数量与权重数值无关；FLOPs 和耗时对应实际跑过的路径。
+基于输入或权重动态选路的算子，可能在训练后执行不同的运算或耗时。
+
 ### 数据、配置与权重
 
 唯一输入为同一张 PaviaU 中心留出测试裁块生成的配准观测。批大小为 1，

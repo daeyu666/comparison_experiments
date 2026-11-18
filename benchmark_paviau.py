@@ -25,9 +25,9 @@ REGISTERED = CLASSICAL | {"MoG-DCN", "PSRT", "ESFS", "CLSNet", "EMR-Diff"}
 REGISTERED_ONLY = CLASSICAL | {"MoG-DCN", "ESFS"}
 LR_SHAPE, MSI_SHAPE, OUT_SHAPE = (1, 103, 32, 32), (1, 4, 128, 128), (1, 103, 128, 128)
 FIELDS = (
-    "method", "dataset", "status", "checkpoint_stage", "parameters", "params_M",
+    "method", "dataset", "status", "weight_source", "checkpoint_stage", "parameters", "params_M",
     "flops", "FLOPs_G", "flops_status", "latency_ms_median", "latency_ms_mean",
-    "latency_ms_std", "device", "hardware", "cpu_threads", "precision", "warmup", "repeats",
+    "latency_ms_std", "device", "hardware", "cpu_threads", "precision", "warmup", "repeats", "seed",
     "input_sha256", "diffusion_steps", "geometry_steps", "ode_steps", "backbone_width",
     "checkpoint", "flops_uncounted_ops", "error",
 )
@@ -230,6 +230,36 @@ def save_shared_pair(args, path):
     return sha.hexdigest()
 
 
+def initialized_baseline(method, cfg, srf, device):
+    """Build the same standard PaviaU modules as the test entry points."""
+    info = {"n_bands": srf.shape[1], "n_select_bands": srf.shape[0], "srf_weights": srf,
+            "scale_ratio": cfg.scale_ratio}
+    if method in ("UAFL", "EMR-Diff"):
+        from test_fixed_deformation import _load_evaluator
+
+        evaluator = _load_evaluator(method)
+        if method == "EMR-Diff":
+            trainer = evaluator.build_trainer(cfg)
+            trainer.Net.eval()
+            return trainer._reconstruct, [trainer.Net], {
+                "backbone_width": trainer.backbone_width, "diffusion_steps": trainer.num_timesteps,
+            }
+        model = evaluator.build_uafl(info["n_select_bands"]).to(device).eval()
+
+        def predict(lr, msi):
+            return model(evaluator.upsample_lr_hsi(lr, msi.shape[-2:]), msi)
+
+        return predict, [model], {}
+
+    if method in ("CLSNet", "M2DTN", "MoE-PNP"):
+        model = importlib.import_module(f"comparison.{method}.common").model_for_info(info, cfg, device)
+    else:
+        build = importlib.import_module(f"comparison.{method}.model").build_model
+        model = build(info).to(device) if method in ("MoG-DCN", "ESFS") else build(info, cfg, device)
+    details = {"ode_steps": model.ode_steps} if method == "SA-RFM" else {}
+    return model.eval(), [model], details
+
+
 def benchmark_baseline(args):
     import numpy as np
     import torch
@@ -264,15 +294,15 @@ def benchmark_baseline(args):
         with threadpool_limits(limits=args.cpu_threads):
             return measure(forward, [], device, classical=True, **options)
 
-    from test_fixed_deformation import MODEL_BUILDERS
-
     cfg = test_args(args)
     cfg.device = str(device)
     cfg.mode = args._stage
-    cfg.checkpoint = str(args._checkpoint)
+    cfg.checkpoint = str(args._checkpoint) if args._checkpoint else ""
     cfg.hidden_channels = args.emr_width if method == "EMR-Diff" else None
     modules = []
-    if method in ("MoG-DCN", "ESFS"):
+    if args.no_checkpoints:
+        predict, modules, details = initialized_baseline(method, cfg, srf, device)
+    elif method in ("MoG-DCN", "ESFS"):
         from comparison.registered_fusion.runner import make_model, load_state
 
         _, info = build_test_set(cfg)
@@ -283,6 +313,8 @@ def benchmark_baseline(args):
         predict.eval()
         details = {}
     else:
+        from test_fixed_deformation import MODEL_BUILDERS
+
         builder = MODEL_BUILDERS[method]
         data, predict, _, built_device, details = builder(cfg, profile_modules=modules) if method in (
             "UAFL", "EMR-Diff"
@@ -293,7 +325,7 @@ def benchmark_baseline(args):
             torch.as_tensor(data.srf_weights).cpu(), srf
         ):
             raise ValueError("PaviaU model/dataset SRF differs from the benchmark pair")
-    if isinstance(predict, torch.nn.Module):
+    if isinstance(predict, torch.nn.Module) and not modules:
         modules.append(predict)
     if not modules:
         raise RuntimeError(f"No parameter modules exposed for {method}")
@@ -312,7 +344,7 @@ def parse_args(argv=None):
     p.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
     p.add_argument("--s2diff_root", type=Path, default=ROOT.parent / "S2Diff-MH")
     p.add_argument("--data_root", type=Path, help="Folder containing PaviaU.mat; default: detect in either repo")
-    p.add_argument("--output_dir", type=Path, default=ROOT / "outputs/benchmark_paviau")
+    p.add_argument("--output_dir", type=Path)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--cpu_threads", type=int, default=1)
     p.add_argument("--warmup", type=int, default=3)
@@ -323,6 +355,8 @@ def parse_args(argv=None):
     p.add_argument("--emr_width", type=validate_hidden_channels)
     p.add_argument("--checkpoint", action="append", default=[], metavar="METHOD=PATH")
     p.add_argument("--model_stage", action="append", default=[], metavar="METHOD=registered|mixed")
+    p.add_argument("--no_checkpoints", action="store_true",
+                   help="Benchmark initialized models with the standard PaviaU architecture")
     p.add_argument("--dry_run", action="store_true")
     p.add_argument("--_pair", type=Path, help=argparse.SUPPRESS)
     p.add_argument("--_result", type=Path, help=argparse.SUPPRESS)
@@ -334,6 +368,8 @@ def parse_args(argv=None):
         args.seed, args.warmup, args.classical_warmup
     ) < 0:
         p.error("repeats and threads must be positive; seed and warmups must be nonnegative")
+    if args.no_checkpoints and (args.checkpoint or args.model_stage or args._checkpoint):
+        p.error("--no_checkpoints cannot be combined with checkpoint or model stage overrides")
     return args
 
 
@@ -389,6 +425,9 @@ def main(argv=None):
         dirs = [ROOT / "data/raw", args.s2diff_root / "data/raw"]
         args.data_root = next((d for d in dirs if (d / "PaviaU.mat").is_file()), dirs[0])
     args.data_root = args.data_root.expanduser().resolve()
+    if args.output_dir is None:
+        name = "benchmark_paviau_initialized" if args.no_checkpoints else "benchmark_paviau"
+        args.output_dir = ROOT / "outputs" / name
     args.output_dir = args.output_dir.expanduser().resolve()
     checkpoints = overrides(args.checkpoint, field="checkpoint")
     stages = overrides(args.model_stage, field="model_stage")
@@ -397,10 +436,15 @@ def main(argv=None):
     if args.dry_run:
         for method in methods:
             stage = stages.get(method, "registered" if method in REGISTERED else "mixed")
-            if method == "ours":
-                source = args.s2diff_root / Path(__file__).name
-            elif method in CLASSICAL:
+            if method in CLASSICAL:
                 source = "CPU solver"
+            elif args.no_checkpoints:
+                source = "initialized (no checkpoint)"
+                if method == "EMR-Diff":
+                    source += f", backbone_width={args.emr_width or 64}"
+                stage = "-"
+            elif method == "ours":
+                source = args.s2diff_root / Path(__file__).name
             else:
                 try:
                     source = resolve_checkpoint(method, stage, checkpoints.get(method), args.emr_width)
@@ -418,7 +462,11 @@ def main(argv=None):
         pair_sha = save_shared_pair(args, pair)
         for method in methods:
             stage = stages.get(method, "registered" if method in REGISTERED else "mixed")
-            row = dict(method=method, dataset="PaviaU", checkpoint_stage=stage, input_sha256=pair_sha)
+            weight_source = ("not_applicable" if method in CLASSICAL else
+                             "initialized" if args.no_checkpoints else "checkpoint")
+            row = dict(method=method, dataset="PaviaU", weight_source=weight_source,
+                       checkpoint_stage=stage if weight_source == "checkpoint" else "",
+                       input_sha256=pair_sha, seed=args.seed)
             result = Path(directory) / f"{method}.json"
             workdir = args.s2diff_root if method == "ours" else ROOT
             worker = workdir / Path(__file__).name
@@ -426,6 +474,8 @@ def main(argv=None):
                        "--device", args.device, "--cpu_threads", str(args.cpu_threads),
                        "--warmup", str(args.warmup), "--repeats", str(args.repeats),
                        "--seed", str(args.seed)]
+            if args.no_checkpoints:
+                command.append("--no_checkpoints")
             log = logs / f"{method}.log"
             try:
                 if method == "ours":
@@ -436,7 +486,7 @@ def main(argv=None):
                     command += ["--methods", method, "--data_root", str(args.data_root),
                                 "--_stage", stage, "--classical_warmup", str(args.classical_warmup),
                                 "--classical_repeats", str(args.classical_repeats)]
-                    if method not in CLASSICAL:
+                    if weight_source == "checkpoint":
                         path = resolve_checkpoint(method, stage, checkpoints.get(method), args.emr_width)
                         row["checkpoint"] = str(path)
                         if not path.is_file():
@@ -444,7 +494,7 @@ def main(argv=None):
                         command += ["--_checkpoint", str(path)]
                     if method == "EMR-Diff" and args.emr_width is not None:
                         command += ["--emr_width", str(args.emr_width)]
-                print(f"START {method} ({stage})", flush=True)
+                print(f"START {method} ({stage if weight_source == 'checkpoint' else weight_source})", flush=True)
                 with log.open("w", encoding="utf-8") as handle:
                     proc = subprocess.run(command, cwd=workdir, stdout=handle, stderr=subprocess.STDOUT)
                 if proc.returncode:
