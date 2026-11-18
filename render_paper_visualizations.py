@@ -18,6 +18,7 @@ TARGETS = (("residual_rmse", 1.0, "Spectral RMSE"),
            ("sam_deg", 90.0, "SAM (deg)"))
 ERROR_CMAP = "jet"
 COLORBAR_ORIENTATION = "vertical"
+DEFAULT_LIMIT_FACTORS = {("PaviaU", "residual_rmse"): 1.6}
 DEFAULT = ROOT / "outputs/paper_visualization"
 
 
@@ -121,13 +122,17 @@ def main(argv=None):
         # Cache only small display settings, not the raw cubes.
         settings = {}
         limits = {"residual_rmse": args.residual_max, "sam_deg": args.sam_max}
+        limit_factors = {}
         for field, bound, label in TARGETS:
             if limits[field] is None:
-                limits[field] = common_limit(results, field, bound, args.error_percentile)
+                factor = DEFAULT_LIMIT_FACTORS.get((dataset, field), 1.0)
+                limits[field] = min(bound, factor * common_limit(results, field, bound, args.error_percentile))
+                limit_factors[field] = factor
             path = output / dataset / (field + "_colorbar.png")
             path.parent.mkdir(parents=True, exist_ok=True)
             save_colorbar(path, ERROR_CMAP, limits[field], label)
         notes = {"error_percentile": args.error_percentile, "error_limits": limits,
+                 "auto_limit_factors": limit_factors,
                  "error_colormap": ERROR_CMAP, "colorbar_orientation": COLORBAR_ORIENTATION,
                  "rgb_wavelength_targets_nm": list(args.rgb_nm), "invalid_sam_gray": 180,
                  "samples": {}}
