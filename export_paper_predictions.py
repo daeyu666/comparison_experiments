@@ -19,6 +19,8 @@ REGISTERED = ("CNMF", "HySure", "MoG-DCN", "PSRT", "ESFS", "CLSNet", "EMR-Diff",
 UNREGISTERED = ("M2DTN", "PMI-RFCoNet", "MoE-PNP", "SA-RFM", "UAFL", "ours")
 GROUPS = {"registered": REGISTERED, "unregistered": UNREGISTERED}
 CLASSICAL = ("CNMF", "HySure")
+SRF_CHECKED = ("M2DTN", "PMI-RFCoNet", "SA-RFM")
+SPECTRAL_BANDS = {"PaviaU": 103, "CAVE": 31}
 SIZE = 128
 ARRAYS = ("prediction.npy", "residual_rmse.npy", "sam_deg.npy")
 
@@ -290,6 +292,21 @@ def result_dir(root, dataset, group, condition, method, sample):
     return path / method / sample
 
 
+def checkpoint_srf_audit(job, cfg, srf):
+    import torch
+    from paper_srf_audit import audit
+
+    try:
+        state = torch.load(job["checkpoint"], map_location="cpu", weights_only=False, mmap=True)
+    except RuntimeError as exc:
+        if "mmap can only be used" not in str(exc):
+            raise
+        state = torch.load(job["checkpoint"], map_location="cpu", weights_only=False)
+    report = audit(state, srf, cfg, job.get("training_srf"))
+    print(f"SRF_AUDIT {job['dataset']}/{job['method']} {json.dumps(report, ensure_ascii=False)}", flush=True)
+    return report
+
+
 def export_worker(job):
     import numpy as np
     import torch
@@ -300,7 +317,7 @@ def export_worker(job):
         raise RuntimeError("CUDA unavailable; pass --device cpu explicitly")
     torch.set_num_threads(job["cpu_threads"])
     torch.manual_seed(job["seed"])
-    cfg_paths, model_options = {}, {}
+    cfg_paths, model_options, srf_report = {}, {}, None
     first = Path(job["inputs"][0])
     with np.load(first, allow_pickle=False) as initial:
         srf = initial["srf"]
@@ -314,6 +331,12 @@ def export_worker(job):
         cfg.mode = "registered" if group == "registered" else "mixed"
         cfg.checkpoint = job["checkpoint"]
         cfg.hidden_channels = job["emr_width"] if method == "EMR-Diff" else None
+        if method in SRF_CHECKED:
+            srf_report = checkpoint_srf_audit(job, cfg, srf)
+            if srf_report["status"] not in ("exact", "roundoff"):
+                raise ValueError(f"Checkpoint SRF {srf_report['status']}; see SRF_AUDIT above. "
+                                 "If available, pass the exact training matrix with --training_srf.")
+            cfg._verified_shared_srf = (srf_report["checkpoint_sha256"], srf_report["shared_sha256"])
         if method in ("MoG-DCN", "ESFS"):
             from comparison.registered_fusion.runner import load_state, make_model
 
@@ -371,8 +394,11 @@ def export_worker(job):
                         tmp = final.with_suffix(".tmp.npy")
                         np.save(tmp, array, allow_pickle=False)
                         tmp.replace(final)
-                    write_json(meta_file, dict(identity=identity, input_file=str(Path(path).relative_to(root)),
-                                               device=str(device), valid_sam_pixels=int(np.isfinite(sam).sum())))
+                    metadata = dict(identity=identity, input_file=str(Path(path).relative_to(root)),
+                                    device=str(device), valid_sam_pixels=int(np.isfinite(sam).sum()))
+                    if srf_report is not None:
+                        metadata["sensor_srf_audit"] = srf_report
+                    write_json(meta_file, metadata)
                     done += 1
                     print(f"OK {dataset}/{group}/{condition}/{method}/{sample['sample']}", flush=True)
     print(f"SAVED {done} {dataset}/{group}/{method}", flush=True)
@@ -398,11 +424,16 @@ def parse_args(argv):
     p.add_argument("--emr_width", type=validate_hidden_channels)
     p.add_argument("--checkpoint", action="append", default=[], metavar="METHOD:GROUP:DATASET=PATH")
     p.add_argument("--ours_config", type=Path, help="JSON with dataset/group weight and architecture overrides")
+    p.add_argument("--srf_audit", action="store_true", help="Audit SRF hashes for M2DTN/PMI-RFCoNet/SA-RFM without data or inference")
+    p.add_argument("--training_srf", action="append", default=[], metavar="METHOD:DATASET=PATH",
+                   help="Exact SRF weights (.npy) from the checkpoint's training environment")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--dry_run", action="store_true")
     args = p.parse_args(argv)
     if args.cpu_threads < 1 or min(args.seed, args.warp_seed) < 0:
         p.error("Threads must be positive and seeds must be nonnegative")
+    if args.dry_run and args.srf_audit:
+        p.error("Use --dry_run or --srf_audit, not both")
     return args
 
 
@@ -412,6 +443,39 @@ def selected_data_root(args, dataset):
     roots = (ROOT / "data/raw", args.s2diff_root / "data/raw")
     marker = "PaviaU.mat" if dataset == "PaviaU" else "CAVE"
     return next((p for p in roots if (p / marker).exists()), roots[0])
+
+
+def audit_plans(plans):
+    from data_loader import _resolve_srf_spec
+    from srf_utils import build_srf_weights
+
+    failed = False
+    for job, error in plans:
+        if error:
+            failed = True
+            continue
+        cfg = model_args(job["dataset"], job["data_root"], "cpu", job["seed"])
+        try:
+            path, bands, wavelengths, _, _ = _resolve_srf_spec(cfg, SPECTRAL_BANDS[job["dataset"]])
+            srf, _ = build_srf_weights(path, wavelengths, bands, interp_kind=cfg.srf_interp)
+            report = checkpoint_srf_audit(job, cfg, srf)
+            failed |= report["status"] not in ("exact", "roundoff")
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"SRF_AUDIT {job['dataset']}/{job['method']} {type(exc).__name__}: {exc}", flush=True)
+            failed = True
+    return int(failed)
+
+
+def worker_error(log, code):
+    lines = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+    detail = lines[-1] if lines else f"Worker exited with code {code}"
+    if "CalledProcessError" in detail:
+        cause = next((line.strip() for line in lines if any(
+            key in line for key in ("fatal error:", "cannot find -l", "undefined reference", "error while loading")
+        )), None)
+        if cause:
+            detail = cause
+    return f"{detail}; see {log}"
 
 
 def main(argv=None):
@@ -435,6 +499,16 @@ def main(argv=None):
                 or parts[0] not in GROUPS[parts[1]] or parts[0] in (*CLASSICAL, "ours") or key in overrides):
             raise ValueError(f"Invalid --checkpoint override: {entry}")
         overrides[key] = value
+    training_srfs = {}
+    for entry in args.training_srf:
+        key, eq, value = entry.partition("=")
+        method, sep, dataset = key.partition(":")
+        if not eq or not value or not sep or method not in SRF_CHECKED or dataset not in DATASETS or key in training_srfs:
+            raise ValueError(f"Invalid --training_srf override: {entry}")
+        path = Path(value).expanduser().resolve()
+        if not path.is_file() or path.suffix != ".npy":
+            raise ValueError(f"--training_srf must point to an existing .npy file: {path}")
+        training_srfs[key] = str(path)
     ours_config = json.loads(args.ours_config.read_text(encoding="utf-8")) if args.ours_config else {}
     plans = []
     for dataset in dict.fromkeys(args.datasets):
@@ -442,13 +516,13 @@ def main(argv=None):
         for group in dict.fromkeys(args.groups):
             folder = "physical" if group == "registered" else "hsi_warp_final"
             for method in GROUPS[group]:
-                if args.methods and method not in args.methods:
+                if (args.methods and method not in args.methods) or (args.srf_audit and method not in SRF_CHECKED):
                     continue
                 job = dict(dataset=dataset, group=group, method=method, data_root=str(data_root),
                            output_dir=str(args.output_dir), device=args.device, seed=args.seed,
                            emr_width=args.emr_width, cpu_threads=args.cpu_threads,
                            s2diff_root=str(args.s2diff_root), weights_root=str(args.weights_root),
-                           resume=args.resume)
+                           resume=args.resume, training_srf=training_srfs.get(f"{method}:{dataset}"))
                 error, description = None, "CPU solver"
                 try:
                     if method == "ours":
@@ -469,6 +543,8 @@ def main(argv=None):
         return int(any(error for _, error in plans))
     if not plans:
         raise SystemExit("No selected methods in the requested groups")
+    if args.srf_audit:
+        return audit_plans(plans)
 
     import torch
     torch.set_num_threads(args.cpu_threads)
@@ -492,11 +568,11 @@ def main(argv=None):
                 log.parent.mkdir(parents=True, exist_ok=True)
                 cwd = args.s2diff_root if method == "ours" else ROOT
                 with log.open("w", encoding="utf-8") as stream:
+                    env = {**os.environ, "TORCHDYNAMO_DISABLE": "1"} if method == "M2DTN" else None
                     code = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--_worker", str(spec)],
-                                          cwd=cwd, stdout=stream, stderr=subprocess.STDOUT).returncode
+                                          cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT).returncode
                 if code:
-                    lines = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-                    error = f"{lines[-1] if lines else f'Worker exited with code {code}'}; see {log}"
+                    error = worker_error(log, code)
             manifest = dict(dataset=dataset, group=group, method=method, status="failed" if error else "ok",
                             error=error, log=str(log) if log.is_file() else None)
             manifests.append(manifest)

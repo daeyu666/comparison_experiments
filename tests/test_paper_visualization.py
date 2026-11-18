@@ -44,3 +44,31 @@ def test_emr_width_prefers_base128_and_keeps_training_stages_separate(tmp_path):
     assert checkpoint_for(tmp_path, "EMR-Diff", "physical", "CAVE", 64).name == "best.pth.tar"
     with pytest.raises(FileNotFoundError):
         checkpoint_for(tmp_path, "EMR-Diff", "hsi_warp_final", "CAVE", None)
+
+
+def test_paviau_srf_audit_proves_roundoff_but_rejects_a_different_sensor(tmp_path):
+    from data_loader import _resolve_srf_spec
+    from paper_srf_audit import audit, fingerprint
+    from srf_utils import build_srf_weights
+
+    cfg = SimpleNamespace(dataset="PaviaU", srf_interp="pchip")
+    path, bands, wavelengths, _, _ = _resolve_srf_spec(cfg, 103)
+    shared, _ = build_srf_weights(path, wavelengths, bands)
+    raw, _ = build_srf_weights(path, wavelengths, bands, normalize=False)
+    # Simulate an archive whose first normalization sum was rounded one ULP higher.
+    archived = shared.copy()
+    archived[0] = raw[0] / np.nextafter(raw[0].sum(), np.float32(np.inf))
+    assert not np.array_equal(archived, shared)
+    checkpoint = {"sensor_fingerprint": fingerprint(archived)}
+    result = audit(checkpoint, shared, cfg)
+    assert (result["status"], result["source"]) == ("roundoff", "float32_normalization")
+    assert 0 < result["max_band_l1"] <= 1e-6
+
+    linear, _ = build_srf_weights(path, wavelengths, bands, interp_kind="linear")
+    checkpoint = {"sensor_fingerprint": fingerprint(linear), "args": {"srf_interp": "linear"}}
+    result = audit(checkpoint, shared, cfg)
+    assert result["status"] == "different_sensor"
+    assert result["max_band_l1"] > 1e-6
+    proof = tmp_path / "original.npy"
+    np.save(proof, shared)
+    assert audit(checkpoint, shared, cfg, proof)["status"] == "unverified"

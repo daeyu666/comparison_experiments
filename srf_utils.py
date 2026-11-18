@@ -276,3 +276,8 @@ def sensor_protocol(dataset: str):
         if protocol[key] is not None:
             protocol[key] = os.path.join(os.path.dirname(os.path.abspath(__file__)), protocol[key])
     return protocol
+
+
+def verified_for_shared_export(recorded, current, args):
+    """An inference-only caller may supply an independently verified SHA pair."""
+    return getattr(args, "_verified_shared_srf", None) == (recorded, current) and current is not None

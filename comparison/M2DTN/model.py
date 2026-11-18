@@ -12,17 +12,16 @@ ARCHITECTURE_ID = "m2dtn_dynamic_heads_device_safe_v1"
 
 import torch
 from torch import nn
-from einops import rearrange
 from torch.nn import functional as F
 import numbers
 
 
 def to_3d(x):
-    return rearrange(x, 'b c h w -> b (h w) c')
+    return x.flatten(2).transpose(1, 2)
 
 
 def to_4d(x, h, w):
-    return rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
+    return x.transpose(1, 2).reshape(x.shape[0], x.shape[2], h, w)
 
 
 def findrate(chanHS, chanMS):
@@ -100,9 +99,8 @@ class Attention(nn.Module):
         qkv = self.qkv_dwconv(self.qkv(x))
         q, k, v = qkv.chunk(3, dim=1)
 
-        q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        # Shape changes only. Avoid einops' lazy torch.compile registration in eager inference.
+        q, k, v = (t.reshape(b, self.num_heads, c // self.num_heads, h * w) for t in (q, k, v))
 
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
@@ -112,7 +110,7 @@ class Attention(nn.Module):
 
         out = (attn @ v)
 
-        out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
+        out = out.reshape(b, c, h, w)
 
         out = self.project_out(out)
         return out

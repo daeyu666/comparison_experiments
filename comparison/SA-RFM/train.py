@@ -121,12 +121,17 @@ def checkpoint_payload(model, optimizer, args, epoch, best_psnr, bad_validations
 
 
 def load_checkpoint(path, model, args, *, expected_stage, fingerprint, optimizer=None):
+    from srf_utils import verified_for_shared_export
+
     state = torch.load(path, map_location="cpu", weights_only=False)
     if state.get("method") != "SA-RFM" or state.get("architecture_id") != ARCHITECTURE_ID:
         raise ValueError("Checkpoint is not compatible with this SA-RFM architecture")
     if state.get("training_stage") != expected_stage:
         raise ValueError(f"Expected {expected_stage} checkpoint, got {state.get('training_stage')}")
-    if state.get("sensor_fingerprint") != fingerprint:
+    recorded_srf = state.get("sensor_fingerprint")
+    if recorded_srf != fingerprint and not (
+        optimizer is None and verified_for_shared_export(recorded_srf, fingerprint, args)
+    ):
         raise ValueError("Checkpoint uses a different sensor SRF")
     if state.get("hsi_channels") != model.hsi_channels or state.get("msi_channels") != model.msi_channels:
         raise ValueError("Checkpoint HSI/MSI channel counts do not match current sensor")

@@ -16,6 +16,7 @@ from comparison.M2DTN.model import (
     UPSTREAM_COMMIT, architecture_metadata, build_m2dtn, verify_architecture,
 )
 from experiment_protocol import DATASETS, DATASET_VALIDATION_INTERVAL
+from srf_utils import verified_for_shared_export
 
 HERE = Path(__file__).resolve().parent
 PROTOCOL_KEYS = (
@@ -106,17 +107,21 @@ def checkpoint_payload(model, optimizer, epoch, best, bad, args, generator):
     )
 
 
-def verify_checkpoint(checkpoint, model, args, *, expected_stage):
+def verify_checkpoint(checkpoint, model, args, *, expected_stage, inference=False):
     if checkpoint.get("method") != "M2DTN":
         raise ValueError("M2DTN checkpoint method mismatch")
     verify_architecture(checkpoint, model)
     if checkpoint.get("training_stage") != expected_stage:
         raise ValueError(f"M2DTN checkpoint stage mismatch: expected {expected_stage}")
     fingerprint=getattr(model,"sensor_fingerprint",None)
-    if fingerprint is not None and checkpoint.get("sensor_fingerprint") != fingerprint:
+    recorded_fingerprint = checkpoint.get("sensor_fingerprint")
+    shared_export = inference and verified_for_shared_export(recorded_fingerprint, fingerprint, args)
+    if fingerprint is not None and recorded_fingerprint != fingerprint and not shared_export:
         raise ValueError("M2DTN checkpoint sensor SRF mismatch")
     recorded=checkpoint.get("args",{})
     for key in PROTOCOL_KEYS + (GEOMETRY_KEYS if expected_stage=="mixed" else ()):
+        if shared_export and key in ("srf_path", "wavelength_path", "wavelength_root", "srf_interp", "srf_band_set"):
+            continue  # The resulting matrix was verified against the checkpoint hash.
         if hasattr(args,key) and recorded.get(key) != getattr(args,key):
             raise ValueError(
                 f"M2DTN checkpoint protocol mismatch: {key}: "
@@ -126,7 +131,7 @@ def verify_checkpoint(checkpoint, model, args, *, expected_stage):
 
 def load_checkpoint(path, model, args, *, expected_stage, optimizer=None):
     checkpoint=torch.load(path,map_location=next(model.parameters()).device,weights_only=False)
-    verify_checkpoint(checkpoint,model,args,expected_stage=expected_stage)
+    verify_checkpoint(checkpoint,model,args,expected_stage=expected_stage,inference=optimizer is None)
     model.load_state_dict(checkpoint["model"],strict=True)
     if optimizer is not None:
         if checkpoint.get("optimizer") is None or "rng" not in checkpoint:
