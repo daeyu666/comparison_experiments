@@ -59,10 +59,11 @@ def test_paviau_srf_audit_proves_roundoff_but_rejects_a_different_sensor(tmp_pat
     archived = shared.copy()
     archived[0] = raw[0] / np.nextafter(raw[0].sum(), np.float32(np.inf))
     assert not np.array_equal(archived, shared)
-    checkpoint = {"sensor_fingerprint": fingerprint(archived)}
-    result = audit(checkpoint, shared, cfg)
-    assert (result["status"], result["source"]) == ("roundoff", "float32_normalization")
-    assert 0 < result["max_band_l1"] <= 1e-6
+    for checkpoint in ({"sensor_fingerprint": fingerprint(archived)},
+                       {"metadata": {"srf_sha256": fingerprint(archived)}}):
+        result = audit(checkpoint, shared, cfg)
+        assert (result["status"], result["source"]) == ("roundoff", "float32_normalization")
+        assert 0 < result["max_band_l1"] <= 1e-6
 
     linear, _ = build_srf_weights(path, wavelengths, bands, interp_kind="linear")
     checkpoint = {"sensor_fingerprint": fingerprint(linear), "args": {"srf_interp": "linear"}}

@@ -43,7 +43,7 @@ def audit(checkpoint, shared, cfg, source=None):
     """Recover the exact archived hash before accepting a numerically equivalent SRF."""
     from data_loader import _resolve_srf_spec
 
-    expected = checkpoint.get("sensor_fingerprint")
+    expected = checkpoint.get("sensor_fingerprint") or (checkpoint.get("metadata") or {}).get("srf_sha256")
     current = fingerprint(shared)
     recorded = checkpoint.get("args") or {}
     report = {"checkpoint_sha256": expected, "shared_sha256": current, "shape": list(shared.shape),

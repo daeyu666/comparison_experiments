@@ -111,7 +111,8 @@ python render_paper_visualizations.py --datasets CAVE --samples jelly_beans oil_
 python export_paper_predictions.py --datasets PaviaU --srf_audit
 ```
 
-此命令只读 M2DTN、PMI-RFCoNet、SA-RFM 的归档检查点及传感器文件，
+此命令只读配准组 MoG-DCN 和非配准组 M2DTN、PMI-RFCoNet、SA-RFM
+的归档检查点及传感器文件，
 无需场景数据或 GPU。 `SRF_AUDIT` 报告同时列出训练时的 SRF 参数、存档
 哈希和当前共享观测的哈希。 `exact` 是逐字节相同；`roundoff` 表示重现
 了存档哈希，且每个 MSI 波段权重的 L1 差值均不超过 `1e-6`，可继续
@@ -119,3 +120,11 @@ python export_paper_predictions.py --datasets PaviaU --srf_audit
 若能在训练环境中导出原始 SRF 矩阵，可传入
 `--training_srf M2DTN:PaviaU=/path/to/training_srf.npy` 重新核对。
 传入的文件只用于验证，所有方法仍读取同一份 HR-MSI。
+
+只重跑 CAVE 的 M2DTN 时，选择的是方法所属的 `unregistered` 组；
+这会用同一份权重导出 `registered` 和 `warp` 两种输入条件：
+
+```bash
+python export_paper_predictions.py --datasets CAVE --groups unregistered \
+  --methods M2DTN --device cuda:0 --resume
+```

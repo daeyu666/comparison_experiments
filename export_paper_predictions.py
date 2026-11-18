@@ -19,7 +19,7 @@ REGISTERED = ("CNMF", "HySure", "MoG-DCN", "PSRT", "ESFS", "CLSNet", "EMR-Diff",
 UNREGISTERED = ("M2DTN", "PMI-RFCoNet", "MoE-PNP", "SA-RFM", "UAFL", "ours")
 GROUPS = {"registered": REGISTERED, "unregistered": UNREGISTERED}
 CLASSICAL = ("CNMF", "HySure")
-SRF_CHECKED = ("M2DTN", "PMI-RFCoNet", "SA-RFM")
+SRF_CHECKED = ("MoG-DCN", "M2DTN", "PMI-RFCoNet", "SA-RFM")
 SPECTRAL_BANDS = {"PaviaU": 103, "CAVE": 31}
 SIZE = 128
 ARRAYS = ("prediction.npy", "residual_rmse.npy", "sam_deg.npy")
@@ -296,12 +296,13 @@ def checkpoint_srf_audit(job, cfg, srf):
     import torch
     from paper_srf_audit import audit
 
+    load_args = dict(map_location="cpu", weights_only=job["method"] == "MoG-DCN")
     try:
-        state = torch.load(job["checkpoint"], map_location="cpu", weights_only=False, mmap=True)
+        state = torch.load(job["checkpoint"], **load_args, mmap=True)
     except RuntimeError as exc:
         if "mmap can only be used" not in str(exc):
             raise
-        state = torch.load(job["checkpoint"], map_location="cpu", weights_only=False)
+        state = torch.load(job["checkpoint"], **load_args)
     report = audit(state, srf, cfg, job.get("training_srf"))
     print(f"SRF_AUDIT {job['dataset']}/{job['method']} {json.dumps(report, ensure_ascii=False)}", flush=True)
     return report
@@ -342,6 +343,11 @@ def export_worker(job):
 
             _, info = dataset_and_info(cfg)
             predict, _, expected = make_model(method, cfg, info)
+            if srf_report is not None:
+                if expected["srf_sha256"] != srf_report["shared_sha256"]:
+                    raise ValueError(f"{method} test SRF differs from the shared input SRF")
+                # Let the strict loader compare the archived digest already verified by the audit.
+                expected["srf_sha256"] = srf_report["checkpoint_sha256"]
             load_state(cfg.checkpoint, predict, expected)
             predict.eval()
             model_srf = info["srf_weights"]
@@ -424,7 +430,8 @@ def parse_args(argv):
     p.add_argument("--emr_width", type=validate_hidden_channels)
     p.add_argument("--checkpoint", action="append", default=[], metavar="METHOD:GROUP:DATASET=PATH")
     p.add_argument("--ours_config", type=Path, help="JSON with dataset/group weight and architecture overrides")
-    p.add_argument("--srf_audit", action="store_true", help="Audit SRF hashes for M2DTN/PMI-RFCoNet/SA-RFM without data or inference")
+    p.add_argument("--srf_audit", action="store_true",
+                   help="Audit SRF hashes for MoG-DCN/M2DTN/PMI-RFCoNet/SA-RFM without data or inference")
     p.add_argument("--training_srf", action="append", default=[], metavar="METHOD:DATASET=PATH",
                    help="Exact SRF weights (.npy) from the checkpoint's training environment")
     p.add_argument("--resume", action="store_true")
