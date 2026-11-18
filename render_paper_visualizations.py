@@ -14,8 +14,10 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent
 DATASETS = ("PaviaU", "CAVE")
-TARGETS = (("residual_rmse", 1.0, "magma", "Spectral RMSE"),
-           ("sam_deg", 90.0, "viridis", "SAM (deg)"))
+TARGETS = (("residual_rmse", 1.0, "Spectral RMSE"),
+           ("sam_deg", 90.0, "SAM (deg)"))
+ERROR_CMAP = "jet"
+COLORBAR_ORIENTATION = "vertical"
 DEFAULT = ROOT / "outputs/paper_visualization"
 
 
@@ -71,10 +73,10 @@ def map_rgb(values, cmap, limit):
 
 
 def save_colorbar(path, cmap, vmax, label):
-    fig = plt.figure(figsize=(3.6, 0.9), dpi=180)
-    axis = fig.add_axes((0.1, 0.59, 0.79, 0.17))
+    fig = plt.figure(figsize=(1.5, 3.6), dpi=180)
+    axis = fig.add_axes((0.13, 0.08, 0.13, 0.84))
     bar = fig.colorbar(matplotlib.cm.ScalarMappable(norm=Normalize(0, vmax), cmap=cmap),
-                       cax=axis, orientation="horizontal",
+                       cax=axis, orientation=COLORBAR_ORIENTATION,
                        ticks=np.linspace(0, vmax, 5), format="%.3g")
     bar.set_label(label)
     fig.savefig(path, facecolor="white")
@@ -119,13 +121,14 @@ def main(argv=None):
         # Cache only small display settings, not the raw cubes.
         settings = {}
         limits = {"residual_rmse": args.residual_max, "sam_deg": args.sam_max}
-        for field, bound, cmap, label in TARGETS:
+        for field, bound, label in TARGETS:
             if limits[field] is None:
                 limits[field] = common_limit(results, field, bound, args.error_percentile)
             path = output / dataset / (field + "_colorbar.png")
             path.parent.mkdir(parents=True, exist_ok=True)
-            save_colorbar(path, cmap, limits[field], label)
+            save_colorbar(path, ERROR_CMAP, limits[field], label)
         notes = {"error_percentile": args.error_percentile, "error_limits": limits,
+                 "error_colormap": ERROR_CMAP, "colorbar_orientation": COLORBAR_ORIENTATION,
                  "rgb_wavelength_targets_nm": list(args.rgb_nm), "invalid_sam_gray": 180,
                  "samples": {}}
         for meta, row in results:
@@ -158,9 +161,9 @@ def main(argv=None):
             dest = output / meta.parent.relative_to(raw)
             cube = np.load(meta.parent / "prediction.npy", allow_pickle=False)
             save_image(to_rgb(cube, *rgb), dest / "prediction_rgb.png", args.zoom)
-            for field, _, cmap, _ in TARGETS:
+            for field, _, _ in TARGETS:
                 values = np.load(meta.parent / (field + ".npy"), allow_pickle=False)
-                save_image(map_rgb(values, cmap, limits[field]), dest / (field + ".png"), args.zoom)
+                save_image(map_rgb(values, ERROR_CMAP, limits[field]), dest / (field + ".png"), args.zoom)
             rendered += 1
         (output / dataset / "display_settings.json").write_text(
             json.dumps(notes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

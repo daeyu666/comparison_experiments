@@ -30,8 +30,10 @@ figures/<dataset>/references/<sample>/gt_rgb.png
 绘图生成 `prediction_rgb.png`、`residual_rmse.png`、`sam_deg.png`。
 RGB 默认使用最接近 650/550/470 nm 的三个波段，拉伸区间由每个 GT 裁块
 的第 1 和第 99 百分位确定；同裁块所有方法、两种条件共用该区间。
-每个数据集的误差图共用色标，默认上限取全部已保存有效像素的第 99
-百分位（直方图近似），并导出色条和 `display_settings.json`。可显式传入
+每个数据集内，各方法的同一种误差图共用色标，默认上限取全部已保存
+有效像素的第 99 百分位（直方图近似）。RMSE 和 SAM 均使用 `jet` 配色，
+导出下端深蓝（低误差）、上端深红（高误差）的竖向色条，并在
+`display_settings.json` 记录色标设置。可显式传入
 `--residual_max` 和 `--sam_max` 固定上限；出图后又补入新方法时，请统一
 重画或继续使用原上限。默认只用最近邻将显示图放大 3 倍，可用 `--zoom 1`
 输出原始 128×128 像素。
