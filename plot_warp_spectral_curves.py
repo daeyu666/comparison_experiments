@@ -1,4 +1,4 @@
-"""Plot one GT-selected heterogeneous pixel per dataset from saved Warp cubes."""
+"""Plot bandwise absolute errors at a GT-selected pixel from saved Warp cubes."""
 from __future__ import annotations
 
 import argparse
@@ -17,12 +17,12 @@ ROOT = Path(__file__).resolve().parent
 DATASETS = ("PaviaU", "CAVE")
 METHODS = ("M2DTN", "PMI-RFCoNet", "MoE-PNP", "SA-RFM", "UAFL", "ours")
 STYLES = {
-    "GT": dict(color="black", linestyle="--", linewidth=2.2, zorder=10),
+    "GT": dict(color="black", linestyle="-", linewidth=2.2, zorder=10),
     "M2DTN": dict(color="#0072B2", linestyle="-", linewidth=1.3),
-    "PMI-RFCoNet": dict(color="#E69F00", linestyle=":", linewidth=1.5),
-    "MoE-PNP": dict(color="#009E73", linestyle="-.", linewidth=1.3),
-    "SA-RFM": dict(color="#CC79A7", linestyle="--", linewidth=1.3),
-    "UAFL": dict(color="#56B4E9", linestyle=(0, (5, 1, 1, 1)), linewidth=1.3),
+    "PMI-RFCoNet": dict(color="#E69F00", linestyle="-", linewidth=1.5),
+    "MoE-PNP": dict(color="#009E73", linestyle="-", linewidth=1.3),
+    "SA-RFM": dict(color="#CC79A7", linestyle="-", linewidth=1.3),
+    "UAFL": dict(color="#56B4E9", linestyle="-", linewidth=1.3),
     "ours": dict(color="#D55E00", linestyle="-", linewidth=2.0, zorder=9),
 }
 
@@ -112,6 +112,16 @@ def read_sample(root, base, dataset, sample):
 def choose_pixel(root, dataset, args):
     base, samples = complete_samples(root, dataset)
     manual = args.paviau_pixel if dataset == "PaviaU" else args.cave_pixel
+    frozen = getattr(args, "saved_selection", {}).get(dataset)
+    if manual is not None or (dataset == "CAVE" and args.cave_sample):
+        frozen = None
+    if frozen:
+        if frozen.get("dataset") != dataset or frozen.get("condition") != "warp":
+            raise ValueError(f"Invalid saved Warp selection for {dataset}")
+        if frozen["sample"] not in samples:
+            raise ValueError(f"Previously selected {dataset}/{frozen['sample']} is incomplete; use --reselect")
+        samples = [frozen["sample"]]
+        manual = frozen["pixel_rc_0based"]
     candidates, checked = [], []
     for sample in samples:
         gt, meta, records, wavelengths = read_sample(root, base, dataset, sample)
@@ -136,6 +146,8 @@ def choose_pixel(root, dataset, args):
         # Sorted traversal and strict greater-than keep tie-breaking deterministic.
         _, sample, r, c = max(candidates, key=lambda item: item[0])
     gt, meta, records, wavelengths = read_sample(root, base, dataset, sample)
+    if frozen and frozen["input_sha256"] != meta["tensor_sha256"]:
+        raise ValueError(f"Previously selected {dataset} observations changed; use --reselect or another output directory")
     scores, eligible, threshold = spectral_heterogeneity(gt, args.radius, args.margin, args.dark_floor)
     if not (0 <= r < gt.shape[1] and 0 <= c < gt.shape[2]) or not eligible[r, c]:
         raise ValueError(f"{dataset}: pixel {(r,c)} is dark, on the excluded border, or outside the image")
@@ -157,22 +169,32 @@ def choose_pixel(root, dataset, args):
     selected = dict(dataset=dataset, condition="warp", sample=sample, scene=meta["scene"],
                     pixel_rc_0based=[r, c], crop_rc_hw=crop,
                     scene_pixel_rc_0based=None if crop is None else [int(crop[0])+r, int(crop[1])+c],
-                    selection="manual" if manual else "maximum_GT_local_pairwise_cosine_dissimilarity",
+                    selection=(frozen["selection"] if frozen else "manual" if manual else
+                               "maximum_GT_local_pairwise_cosine_dissimilarity"),
                     heterogeneity=float(scores[r,c]), radius=args.radius, margin=args.margin,
                     dark_floor=args.dark_floor, brightness_threshold=threshold,
                     input_sha256=meta["tensor_sha256"], warp=meta.get("warp"),
-                    clip_predictions=args.clip_predictions, candidate_samples=checked, sources=sources)
+                    clip_predictions=args.clip_predictions,
+                    candidate_samples=frozen.get("candidate_samples", checked) if frozen else checked, sources=sources)
     return dict(gt=gt, meta=meta, scores=scores, selected=selected, wavelengths=wavelengths, spectra=spectra)
 
 
-def draw_curves(axis, data):
-    for name, spectrum in data["spectra"].items():
-        axis.plot(data["wavelengths"], spectrum, label="Ours" if name == "ours" else name, **STYLES[name])
+def absolute_errors(spectra):
+    return {name: np.abs(spectra[name] - spectra["GT"]) for name in METHODS}
+
+
+def draw_curves(axis, data, plot_type="error", x_axis="wavelength"):
+    values = absolute_errors(data["spectra"]) if plot_type == "error" else data["spectra"]
+    x = data["wavelengths"] if x_axis == "wavelength" else np.arange(1, len(data["wavelengths"]) + 1)
+    for name, spectrum in values.items():
+        axis.plot(x, spectrum, label="Ours" if name == "ours" else name, **STYLES[name])
     r, c = data["selected"]["pixel_rc_0based"]
     axis.set_title(f"{data['selected']['dataset']} (Warp), pixel ({r}, {c})", fontsize=11)
-    axis.set_xlabel("Wavelength (nm)")
-    axis.set_ylabel("Normalized spectral intensity")
-    axis.set_xlim(data["wavelengths"][[0, -1]])
+    axis.set_xlabel("Wavelength (nm)" if x_axis == "wavelength" else "Band")
+    axis.set_ylabel("Absolute spectral error" if plot_type == "error" else "Normalized spectral intensity")
+    axis.set_xlim(x[[0, -1]])
+    if plot_type == "error":
+        axis.set_ylim(0, max(1e-6, max(float(v.max()) for v in values.values())) * 1.08)
     axis.grid(True, alpha=.2, linewidth=.5)
     axis.spines[["top", "right"]].set_visible(False)
 
@@ -214,11 +236,24 @@ def main(argv=None):
     p.add_argument("--margin", type=int, default=8)
     p.add_argument("--dark_floor", type=float, default=.01)
     p.add_argument("--clip_predictions", action="store_true", help="Explicitly plot predictions clipped to [0,1]")
+    p.add_argument("--plot_type", choices=("error", "spectrum"), default="error",
+                   help="Default: absolute error |prediction-GT|; spectrum retains the original intensity plot")
+    p.add_argument("--x_axis", choices=("wavelength", "band"), default="wavelength")
+    p.add_argument("--selection_json", type=Path, help="Reuse previously selected pixels (default: OUTPUT_DIR/selected_pixels.json if present)")
+    p.add_argument("--reselect", action="store_true", help="Select pixels again from GT instead of reusing saved coordinates")
     args = p.parse_args(argv)
     if args.radius < 1 or args.margin < 0 or not np.isfinite(args.dark_floor) or not 0 <= args.dark_floor < 1:
         p.error("Require radius>=1, margin>=0, and 0<=dark_floor<1")
     root = args.input_dir.expanduser().resolve()
     output = (args.output_dir or root / "spectral_curves").expanduser().resolve()
+    if args.reselect and args.selection_json:
+        p.error("Use --reselect or --selection_json, not both")
+    selection_path = (args.selection_json.expanduser().resolve() if args.selection_json
+                      else output / "selected_pixels.json")
+    args.saved_selection = (json.loads(selection_path.read_text(encoding="utf-8"))
+                            if not args.reselect and selection_path.is_file() else {})
+    if args.selection_json and not selection_path.is_file():
+        raise FileNotFoundError(selection_path)
     data = [choose_pixel(root, dataset, args) for dataset in DATASETS]
     output.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10,
@@ -233,22 +268,29 @@ def main(argv=None):
             names = tuple(item["spectra"])
             writer.writerow(["wavelength_nm", *names])
             writer.writerows(zip(item["wavelengths"], *(item["spectra"][name] for name in names)))
+        errors = absolute_errors(item["spectra"])
+        with (out / "absolute_errors.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["band_1based", "wavelength_nm", *METHODS])
+            writer.writerows(zip(range(1, len(item["wavelengths"])+1), item["wavelengths"], *errors.values()))
         save_diagnostics(item, out)
         fig, axis = plt.subplots(figsize=(6.2, 4.0))
-        draw_curves(axis, item)
-        axis.legend(ncol=4, loc="lower center", bbox_to_anchor=(.5,1.12), fontsize=8, frameon=False)
+        draw_curves(axis, item, args.plot_type, args.x_axis)
+        axis.legend(ncol=3 if args.plot_type == "error" else 4, loc="lower center", bbox_to_anchor=(.5,1.12), fontsize=8, frameon=False)
         fig.subplots_adjust(top=.73)
-        save_figure(fig, out / "spectral_curves")
+        stem = "spectral_absolute_error" if args.plot_type == "error" else "spectral_curves"
+        save_figure(fig, out / stem)
+        item["selected"].update(plot_type=args.plot_type, x_axis=args.x_axis)
         selections[dataset] = item["selected"]
         print(f"SELECTED {dataset}: {item['selected']['sample']} pixel={item['selected']['pixel_rc_0based']} "
               f"heterogeneity={item['selected']['heterogeneity']:.6g}", flush=True)
     figure, axes = plt.subplots(1, 2, figsize=(11.5, 4.2))
     for axis, item in zip(axes, data):
-        draw_curves(axis, item)
+        draw_curves(axis, item, args.plot_type, args.x_axis)
     handles, labels = axes[0].get_legend_handles_labels()
-    figure.legend(handles, labels, loc="upper center", ncol=7, frameon=False, fontsize=9)
+    figure.legend(handles, labels, loc="upper center", ncol=len(handles), frameon=False, fontsize=9)
     figure.subplots_adjust(top=.80, bottom=.16, left=.07, right=.99, wspace=.25)
-    save_figure(figure, output / "PaviaU_CAVE_warp_spectral_curves")
+    save_figure(figure, output / f"PaviaU_CAVE_warp_{stem}")
     (output / "selected_pixels.json").write_text(json.dumps(selections, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     print(f"SPECTRAL_CURVES {output}", flush=True)
     return 0
