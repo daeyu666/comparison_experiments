@@ -65,7 +65,7 @@ def test_selection_uses_gt_and_rejects_mixed_inputs(tmp_path):
 def test_complete_warp_figures_and_csv(tmp_path):
     archive(tmp_path)
     sources = {p: p.stat().st_mtime_ns for p in (tmp_path / "raw").rglob("*") if p.is_file()}
-    assert curves.main(["--input_dir",str(tmp_path)]) == 0
+    assert curves.main(["--input_dir",str(tmp_path),"--plot_type","error"]) == 0
     out = tmp_path / "spectral_curves"
     selected = json.loads((out / "selected_pixels.json").read_text())
     assert set(selected) == {"PaviaU", "CAVE"}
@@ -88,9 +88,11 @@ def test_complete_warp_figures_and_csv(tmp_path):
     selected["PaviaU"]["pixel_rc_0based"] = [12,16]
     selected["PaviaU"]["selection"] = "manual"
     (out / "selected_pixels.json").write_text(json.dumps(selected))
-    assert curves.main(["--input_dir",str(tmp_path),"--plot_type","spectrum"]) == 0
+    assert curves.main(["--input_dir",str(tmp_path)]) == 0
     reused=json.loads((out / "selected_pixels.json").read_text())
     assert reused["PaviaU"]["pixel_rc_0based"] == [12,16]
+    assert reused["PaviaU"]["plot_type"] == "spectrum"
+    assert reused["PaviaU"]["x_axis"] == "band"
     assert (out / "PaviaU/spectral_curves.svg").is_file()
     missing=tmp_path / "raw/CAVE/unregistered/warp/UAFL/jelly_beans__r192_c192/prediction.npy"
     missing.unlink()
