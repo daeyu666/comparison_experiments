@@ -235,7 +235,7 @@ def save_csv(path, rows):
 
 def parser(argv):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--datasets", nargs="+", choices=DATASETS, default=DATASETS)
+    p.add_argument("--datasets", nargs="+", choices=DATASETS, default=("PaviaU",))
     p.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
     p.add_argument("--weights_root", type=Path, default=ROOT.parent / "模型权重")
     p.add_argument("--s2diff_root", type=Path, default=ROOT.parent / "S2Diff-MH")
