@@ -75,11 +75,41 @@ def test_complete_warp_figures_and_csv(tmp_path):
             rows=list(csv.DictReader(handle))
         assert len(rows) == bands
         assert tuple(rows[0]) == ("wavelength_nm", "GT", *curves.METHODS)
+        with (out / dataset / "absolute_errors.csv").open(encoding="utf-8-sig",newline="") as handle:
+            errors=list(csv.DictReader(handle))
+        assert len(errors)==bands
+        for spectrum, error in zip(rows, errors):
+            for method in curves.METHODS:
+                assert float(error[method]) == pytest.approx(abs(float(spectrum[method])-float(spectrum["GT"])))
         for ext in ("png","pdf","svg"):
-            assert (out / dataset / f"spectral_curves.{ext}").is_file()
-            assert (out / f"PaviaU_CAVE_warp_spectral_curves.{ext}").is_file()
+            assert (out / dataset / f"spectral_absolute_error.{ext}").is_file()
+            assert (out / f"PaviaU_CAVE_warp_spectral_absolute_error.{ext}").is_file()
     assert all(p.stat().st_mtime_ns==time for p,time in sources.items())
+    selected["PaviaU"]["pixel_rc_0based"] = [12,16]
+    selected["PaviaU"]["selection"] = "manual"
+    (out / "selected_pixels.json").write_text(json.dumps(selected))
+    assert curves.main(["--input_dir",str(tmp_path),"--plot_type","spectrum"]) == 0
+    reused=json.loads((out / "selected_pixels.json").read_text())
+    assert reused["PaviaU"]["pixel_rc_0based"] == [12,16]
+    assert (out / "PaviaU/spectral_curves.svg").is_file()
     missing=tmp_path / "raw/CAVE/unregistered/warp/UAFL/jelly_beans__r192_c192/prediction.npy"
     missing.unlink()
     with pytest.raises(FileNotFoundError,match="all six methods"):
         curves.complete_samples(tmp_path,"CAVE")
+
+
+def test_error_lines_are_solid_and_use_exact_absolute_difference():
+    import matplotlib.pyplot as plt
+    spectra={"GT":np.array([.1,.2,.3])}
+    spectra.update({method:np.array([-.1,.2,.5]) for method in curves.METHODS})
+    data=dict(spectra=spectra,wavelengths=np.array([400,500,600]),
+              selected=dict(dataset="CAVE",pixel_rc_0based=[10,20]))
+    fig,axis=plt.subplots()
+    curves.draw_curves(axis,data,x_axis="band")
+    assert len(axis.lines)==6
+    assert all(line.get_linestyle()=="-" for line in axis.lines)
+    for line in axis.lines:
+        np.testing.assert_allclose(line.get_xdata(),[1,2,3])
+        np.testing.assert_allclose(line.get_ydata(),[.2,0,.2])
+    assert axis.get_ylim()[0]==0
+    plt.close(fig)
