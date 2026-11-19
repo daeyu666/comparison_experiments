@@ -6,7 +6,7 @@
 python test_warp_strength.py --device cuda:0 --resume
 ```
 
-默认测试六个模拟数据集的完整正式测试集，以及 M2DTN、PMI-RFCoNet、
+默认仅测试 PaviaU 的完整正式测试集，以及 M2DTN、PMI-RFCoNet、
 MoE-PNP、SA-RFM、UAFL、ours。每个方法只读取一组混合训练权重，
 五档测试不重新训练。共同父目录的归档路径沿用可视化脚本：
 `模型权重/<方法>-checkpoints/hsi_warp_final/<数据集>/best.pth.tar`。
@@ -33,8 +33,8 @@ GT 和 HR-MSI 保持参考坐标，模型只能访问两份观测。测试模型
 几何上限始终保持 4/2/4。ours 在全部五档都运行完整几何估计、扩散及
 Refiner，不依据真实强度绕过几何估计。
 
-每档默认每块 10 组随机形变；CAVE 使用 12 场景×16 正式网格块，即
-192 块，不使用定性图的中心裁块。先对每个随机组遍历全测试集取块均值，
+每档默认每块 10 组随机形变，使用 PaviaU 正式中心 128×128 测试块。
+先对每个随机组遍历测试集取块均值，
 再报告 10 组的均值和总体标准差。0 档重复的观测相同，但为随机推理模型
 保留相同的 10 组重建随机种子。确定性模型在 0 档标准差应为 0。
 全部方法共用 `fixed_deformation_protocol.calc_metrics`，与现有 S2 正式
@@ -42,17 +42,17 @@ Refiner，不依据真实强度绕过几何估计。
 预测，SSIM 为全局统计版本。
 
 统一表格：`outputs/warp_strength/summary.csv`，一行对应一个数据集、方法、
-强度，默认共 6×6×5=180 行。包含 PSNR、SAM、RMSE、ERGAS、SSIM、CC
+强度，默认共 6 个方法×5 档强度=30 行。包含 PSNR、SAM、RMSE、ERGAS、SSIM、CC
 及各自标准差、样本数、随机种子、权重路径及哈希、输入哈希、状态及错误。
 失败行不填虚假指标，其余方法继续测试。日志位于 `logs/<数据集>/<方法>.log`，
 每档 JSON 位于 `results/<数据集>/<方法>/`。
 
 ```bash
 # 只看权重规划，不跑推理
-python test_warp_strength.py --datasets PaviaU CAVE --dry_run
+python test_warp_strength.py --datasets PaviaU --dry_run
 
-# 先运行两个数据集，全部非配准方法及 ours
-python test_warp_strength.py --datasets PaviaU CAVE --device cuda:0 --resume
+# 运行 PaviaU，全部非配准方法及 ours
+python test_warp_strength.py --datasets PaviaU --device cuda:0 --resume
 
 # 重试单个方法；汇总表保留未选择方法已经得到的行
 python test_warp_strength.py --datasets PaviaU --methods SA-RFM --device cuda:0 --resume
