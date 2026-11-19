@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize, PowerNorm
+from matplotlib.colors import LinearSegmentedColormap, Normalize, PowerNorm
 import numpy as np
 from PIL import Image
 
@@ -16,7 +16,10 @@ ROOT = Path(__file__).resolve().parent
 DATASETS = ("PaviaU", "CAVE")
 TARGETS = (("residual_rmse", 1.0, "Spectral RMSE"),
            ("sam_deg", 90.0, "SAM (deg)"))
-ERROR_CMAP = "jet"
+PALETTE_PATH = ROOT / "paper_error_colormap.json"
+PALETTE_COLORS = json.loads(PALETTE_PATH.read_text(encoding="utf-8"))["colors"]
+ERROR_CMAP = "paper_reference_error"
+matplotlib.colormaps.register(LinearSegmentedColormap.from_list(ERROR_CMAP, PALETTE_COLORS, N=1024), force=True)
 COLORBAR_ORIENTATION = "vertical"
 DEFAULT_LIMIT_FACTORS = {("PaviaU", "residual_rmse"): 1.25}
 DEFAULT_GAMMAS = {("PaviaU", "residual_rmse"): 3.0, ("PaviaU", "sam_deg"): 1.25}
@@ -74,16 +77,22 @@ def map_rgb(values, cmap, norm):
     return colors
 
 
-def save_colorbar(path, cmap, norm, label):
-    fig = plt.figure(figsize=(1.5, 3.6), dpi=180)
-    axis = fig.add_axes((0.13, 0.08, 0.13, 0.84))
-    ticks = norm.inverse(np.linspace(0, 1, 5))
-    bar = fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap),
-                       cax=axis, orientation=COLORBAR_ORIENTATION,
-                       ticks=ticks, format="%.3g")
-    bar.set_label(label)
-    fig.savefig(path, facecolor="white")
-    plt.close(fig)
+def save_colorbar(path, cmap):
+    """A shared qualitative legend; physical units and normalization live in JSON."""
+    rgba = matplotlib.colormaps[cmap](np.linspace(1, 0, 512), bytes=True)
+    strip = np.broadcast_to(rgba[:, None, :3], (512, 24, 3)).copy()
+    Image.fromarray(strip).save(path)
+    stops = "\n".join(
+        f'<stop offset="{100 * i / (len(PALETTE_COLORS) - 1):.6f}%" stop-color="{color}"/>'
+        for i, color in enumerate(reversed(PALETTE_COLORS))
+    )
+    path.with_suffix(".svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="512" viewBox="0 0 24 512">\n'
+        '<defs><linearGradient id="error" x1="0" y1="0" x2="0" y2="1">\n'
+        + stops + '\n</linearGradient></defs>\n'
+        '<rect width="24" height="512" fill="url(#error)" stroke="none"/>\n</svg>\n',
+        encoding="utf-8",
+    )
 
 
 def parse_args(argv=None):
@@ -145,12 +154,17 @@ def main(argv=None):
             limits_arg = dict(vmin=0, vmax=limits[field], clip=True)
             norms[field] = (Normalize(**limits_arg) if gammas[field] == 1.0
                             else PowerNorm(gammas[field], **limits_arg))
-            path = output / dataset / (field + "_colorbar.png")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            save_colorbar(path, ERROR_CMAP, norms[field], label)
+        legend = output / dataset / "error_colorbar.png"
+        legend.parent.mkdir(parents=True, exist_ok=True)
+        save_colorbar(legend, ERROR_CMAP)
+        # Keep the former PNG filenames compatible with existing paper layouts.
+        for field, _, _ in TARGETS:
+            (legend.parent / (field + "_colorbar.png")).write_bytes(legend.read_bytes())
         notes = {"error_percentile": args.error_percentile, "error_limits": limits,
                  "auto_limit_factors": limit_factors, "error_gamma": gammas,
                  "error_colormap": ERROR_CMAP, "colorbar_orientation": COLORBAR_ORIENTATION,
+                 "error_palette_sha256": hashlib.sha256(PALETTE_PATH.read_bytes()).hexdigest(),
+                 "colorbar_kind": "shared_qualitative_low_to_high", "colorbar_file": "error_colorbar.png",
                  "rgb_wavelength_targets_nm": list(args.rgb_nm), "invalid_sam_gray": 180,
                  "samples": {}}
         for meta, row in results:
