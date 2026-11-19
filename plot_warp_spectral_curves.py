@@ -1,4 +1,4 @@
-"""Plot bandwise absolute errors at a GT-selected pixel from saved Warp cubes."""
+"""Plot solid-color spectral signatures at GT-selected pixels from saved Warp cubes."""
 from __future__ import annotations
 
 import argparse
@@ -190,7 +190,7 @@ def draw_curves(axis, data, plot_type="error", x_axis="wavelength"):
         axis.plot(x, spectrum, label="Ours" if name == "ours" else name, **STYLES[name])
     r, c = data["selected"]["pixel_rc_0based"]
     axis.set_title(f"{data['selected']['dataset']} (Warp), pixel ({r}, {c})", fontsize=11)
-    axis.set_xlabel("Wavelength (nm)" if x_axis == "wavelength" else "Band")
+    axis.set_xlabel("Wavelength (nm)" if x_axis == "wavelength" else "Spectral band (channel)")
     axis.set_ylabel("Absolute spectral error" if plot_type == "error" else "Normalized spectral intensity")
     axis.set_xlim(x[[0, -1]])
     if plot_type == "error":
@@ -236,9 +236,9 @@ def main(argv=None):
     p.add_argument("--margin", type=int, default=8)
     p.add_argument("--dark_floor", type=float, default=.01)
     p.add_argument("--clip_predictions", action="store_true", help="Explicitly plot predictions clipped to [0,1]")
-    p.add_argument("--plot_type", choices=("error", "spectrum"), default="error",
-                   help="Default: absolute error |prediction-GT|; spectrum retains the original intensity plot")
-    p.add_argument("--x_axis", choices=("wavelength", "band"), default="wavelength")
+    p.add_argument("--plot_type", choices=("error", "spectrum"), default="spectrum",
+                   help="Default: GT and reconstructed intensity spectra; error optionally plots |prediction-GT|")
+    p.add_argument("--x_axis", choices=("wavelength", "band"), default="band")
     p.add_argument("--selection_json", type=Path, help="Reuse previously selected pixels (default: OUTPUT_DIR/selected_pixels.json if present)")
     p.add_argument("--reselect", action="store_true", help="Select pixels again from GT instead of reusing saved coordinates")
     args = p.parse_args(argv)
