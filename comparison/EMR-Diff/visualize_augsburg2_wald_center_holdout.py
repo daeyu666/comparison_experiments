@@ -245,6 +245,10 @@ def main():
         action="store_true",
         help="Compare S2Diff-MH, UAFL and EMR-Diff saved outputs",
     )
+    parser.add_argument("--all_saved", action="store_true",
+                        help="Batch-render the 12 archived methods (excluding UAFL) with one shared overview")
+    parser.add_argument("--results_root", type=Path,
+                        help="Archived result root; selects the new all-method batch mode")
     parser.add_argument("--hsi_rgb", default="43,28,10")
     parser.add_argument(
         "--savefig",
@@ -255,6 +259,22 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    if args.all_saved or args.results_root is not None:
+        root = THIS.parents[1]
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from visualize_real_augsburg import main as batch_main
+        forwarded = ["--hsi_rgb", args.hsi_rgb]
+        if args.results_root is not None:
+            forwarded += ["--results_root", str(args.results_root)]
+        if args.wald_root != parser.get_default("wald_root"):
+            forwarded += ["--wald_root", args.wald_root]
+        if args.output_dir != parser.get_default("output_dir"):
+            forwarded += ["--output_dir", args.output_dir]
+        for name, file_path in args.method:
+            forwarded += ["--method", name, file_path]
+        raise SystemExit(batch_main(forwarded))
 
     bands = tuple(int(value) for value in args.hsi_rgb.split(","))
     if len(bands) != 3 or any(value < 0 or value >= 242 for value in bands):
