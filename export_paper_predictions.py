@@ -200,6 +200,14 @@ def ours_paths(job):
     directory = base / folder / job["dataset"]
     config = job.get("ours_config", {})
     configured = config.get("weights", {})
+    options = dict(config.get("options", {}))
+    requested_mode = job.get("diffusion_output")
+    if requested_mode is not None:
+        if requested_mode not in ("state", "terminal_correction"):
+            raise ValueError(f"Unsupported ours diffusion_output: {requested_mode}")
+        if options.get("diffusion_output", requested_mode) != requested_mode:
+            raise ValueError("--diffusion_output conflicts with --ours_config")
+        options["diffusion_output"] = requested_mode
     files = sorted(p for p in directory.glob("*") if p.is_file() and p.name.endswith((".pth", ".pt", ".pth.tar"))
                    and "last" not in p.stem.lower())
 
@@ -211,18 +219,28 @@ def ours_paths(job):
             if not path.is_file():
                 raise FileNotFoundError(path)
             return path.resolve()
+        candidates = files
+        if role == "refiner" and requested_mode is not None:
+            candidates = [p for p in files if
+                          ("terminal_correction" in p.name.lower()) == (requested_mode == "terminal_correction")]
+        role_name = (role + "_terminal_correction"
+                     if role == "refiner" and requested_mode == "terminal_correction" else role)
         for ext in (".pth", ".pth.tar", ".pt"):
-            if (directory / (role + ext)).is_file():
-                return (directory / (role + ext)).resolve()
+            if (directory / (role_name + ext)).is_file():
+                return (directory / (role_name + ext)).resolve()
         if recorded:
             moved = directory / Path(recorded).name
             if moved.is_file():
                 return moved.resolve()
         clues = {"refiner": ("refiner", "gigi"), "geometry": ("geometry", "recursive"),
                  "diffusion": ("diffusion", "raw_direct")}[role]
-        matches = [p for p in files if any(c in p.name.lower() for c in clues)]
+        matches = [p for p in candidates if any(c in p.name.lower() for c in clues)]
         if len(matches) == 1:
             return matches[0].resolve()
+        if role == "refiner" and requested_mode == "terminal_correction" and not matches:
+            raise FileNotFoundError(
+                f"No terminal_correction refiner in {directory}; expected refiner_terminal_correction.pth "
+                "or an original refiner/gigi checkpoint name containing terminal_correction")
         raise ValueError(f"Cannot uniquely find ours {role} in {directory}; set weights.{role} in --ours_config")
 
     paths = {"refiner": role_path("refiner")}
@@ -230,11 +248,14 @@ def ours_paths(job):
     extra = state.get("extra", {})
     if extra.get("dataset", job["dataset"]) != job["dataset"]:
         raise ValueError("ours refiner checkpoint has another dataset")
+    recorded_mode = extra.get("diffusion_output", "state")
+    if requested_mode is not None and requested_mode != recorded_mode:
+        raise ValueError(f"ours requested diffusion_output={requested_mode}, but refiner checkpoint mode={recorded_mode}")
     registered = job["group"] == "registered"
     paths["diffusion"] = role_path("diffusion", extra.get("baseline_checkpoint" if registered else "diffusion_checkpoint"))
     if not registered:
         paths["geometry"] = role_path("geometry", extra.get("geometry_checkpoint"))
-    return paths, extra, config.get("options", {})
+    return paths, extra, options
 
 
 def ours_predictor(job, srf, device):

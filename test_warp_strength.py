@@ -151,6 +151,8 @@ def worker(job):
                     method=job["method"], dataset=job["dataset"], eval_seed=job["eval_seed"],
                     ours_config=job.get("ours_config") if job["method"] == "ours" else None,
                     device=str(device), torch_version=str(torch.__version__))
+    if job["method"] == "ours" and job.get("diffusion_output") is not None:
+        identity["diffusion_output"] = job["diffusion_output"]
     completed, pending = [], []
     for level, alpha in enumerate(STRENGTHS):
         path = Path(job["result_dir"]) / f"strength_{alpha:.2f}.json"
@@ -242,6 +244,8 @@ def parser(argv):
     p.add_argument("--data_root", type=Path)
     p.add_argument("--output_dir", type=Path, default=ROOT / "outputs/warp_strength")
     p.add_argument("--ours_config", type=Path)
+    p.add_argument("--diffusion_output", choices=("state", "terminal_correction"),
+                   help="Ours output mode; terminal_correction selects the correspondingly named refiner")
     p.add_argument("--checkpoint", action="append", default=[], metavar="METHOD:DATASET=PATH")
     p.add_argument("--training_srf", action="append", default=[], metavar="METHOD:DATASET=PATH")
     p.add_argument("--device", default="cuda:0")
@@ -306,6 +310,8 @@ def main(argv=None):
                        cases=args.cases, seed=args.seed, eval_seed=args.eval_seed, cpu_threads=args.cpu_threads,
                        resume=args.resume, training_srf=srfs.get(f"{method}:{dataset}"),
                        ours_config=ours.get(dataset, {}).get("unregistered", {}))
+            if method == "ours" and args.diffusion_output is not None:
+                job["diffusion_output"] = args.diffusion_output
             error = None
             try:
                 if method == "ours":

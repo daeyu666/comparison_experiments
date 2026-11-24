@@ -69,19 +69,25 @@ python test_warp_strength.py --datasets PaviaU --methods SA-RFM --device cuda:0 
 ## 只重测 Ours（PaviaU 和 CAVE）
 
 ```bash
-python test_warp_strength.py --datasets PaviaU CAVE --methods ours \
-  --device cuda:0 --ours_config ours_warp_weights.json \
-  --output_dir outputs/warp_strength_ours_terminal_correction
+python test_warp_strength.py \
+  --datasets PaviaU CAVE \
+  --methods ours \
+  --diffusion_output terminal_correction \
+  --device cuda:0 \
+  --output_dir outputs/warp_strength
 ```
 
-只规划和读取 Ours 的 geometry、diffusion、refiner 权重；其他方法的权重无需存在。
-CAVE 使用正式 12 张测试图的 128×128 网格块（每张 16 块），不使用可视化中心裁剪。
-校正版 Refiner 的 `extra.diffusion_output=terminal_correction` 会自动传入 S2Diff-MH；
-旧检查点默认 `state`，不兼容的显式覆盖会报错。两份仓库都应更新。
-`--ours_config` 格式沿用上述权重配置，分别填写 PaviaU/CAVE 的
-`unregistered.weights.geometry/diffusion/refiner`，Refiner 应指向新训练的非配准校正版。
-若只有唯一一套归档角色权重，可省略此配置；新旧权重共存时应显式指定。
+无需额外 JSON 配置。只读取 Ours 的 geometry、diffusion、refiner，其他方法的权重无需存在。
+在 `模型权重/S2Diff-MH-checkpoints/hsi_warp_final/<数据集>/`（也接受 `ours-checkpoints`）中，
+该参数选择名称包含 `terminal_correction` 的 Refiner：
+优先 `refiner_terminal_correction.pth`（也支持 `.pth.tar`、`.pt`），
+否则匹配唯一一个原始 refiner/gigi 文件名中含 `terminal_correction` 的检查点。
+geometry、diffusion 继续读取原来的对应权重。
+缺少校正版或检查点元数据模式不符会明确报错，不会退回旧版 Refiner。
+新旧 Refiner 可放在同一目录。显式 `--diffusion_output state` 则选择旧版名称。
+不传此参数时保留原有自动读取检查点模式的行为，`--ours_config` 仍可选用。
 
-新权重建议使用新输出目录。原目录重跑时不加 `--resume` 可覆盖所选 Ours 行，
-汇总表会保留其他方法已有行；加 `--resume` 则会核对权重/配置，
-旧权重生成的结果不能作为新权重的缓存复用。后续中断续跑同一组权重可加 `--resume`。
+CAVE 使用正式 12 张测试图的 128×128 网格块（每张 16 块），不使用可视化中心裁剪。
+新权重第一次重测不要加 `--resume`；只覆盖所选 Ours 的汇总行，
+保留其他方法已有结果。后续中断续跑同一组权重可加 `--resume`。
+参数会传入完整推理链并记录在缓存身份中，不能复用另一种输出模式的缓存。
