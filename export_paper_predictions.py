@@ -245,7 +245,8 @@ def ours_predictor(job, srf, device):
     args = mixed.build_arg_parser(fixed_suite=True).parse_args([])
     args.dataset, args.stage, args.device, args.seed = job["dataset"], "test", str(device), job["seed"]
     paths, extra, configured = ours_paths(job)
-    opts = ["diffusion_steps", "time_dim", "spectral_hidden", "dropout", "refine_hidden", "heads", "disable_tangent"]
+    opts = ["diffusion_steps", "time_dim", "spectral_hidden", "dropout", "refine_hidden", "heads", "disable_tangent",
+            "diffusion_output"]
     if registered:
         args.base_channels, args.baseline_checkpoint_type = 64, "standard"
         opts += ["base_channels", "baseline_checkpoint_type"]
@@ -256,6 +257,17 @@ def ours_predictor(job, srf, device):
     for key in opts:
         if key in configured or key in extra:
             setattr(args, key, configured.get(key, extra.get(key)))
+    mode = getattr(args, "diffusion_output", "state")
+    if mode not in ("state", "terminal_correction"):
+        raise ValueError(f"Unsupported ours diffusion_output: {mode}")
+    args.diffusion_output = mode
+    recorded_mode = extra.get("diffusion_output", "state")
+    if mode != recorded_mode:
+        raise ValueError(f"ours diffusion_output={mode} differs from refiner checkpoint mode={recorded_mode}")
+    if mode != "state":
+        import inspect
+        if "output_mode" not in inspect.signature(mixed.reconstruct_from_terminal_lr).parameters:
+            raise RuntimeError("Update S2Diff-MH to support terminal_correction before loading this refiner")
     args.refiner_checkpoint = str(paths["refiner"])
     info = {"n_bands": srf.shape[1], "n_msi_bands": srf.shape[0], "srf_weights": srf}
     if registered:
@@ -270,7 +282,8 @@ def ours_predictor(job, srf, device):
 
         def predict(lr, msi):
             pred = reg.reconstruct_from_terminal_lr(base, process, lr,
-                                                   target_size=tuple(msi.shape[-2:]), hr_msi=msi)
+                                                   target_size=tuple(msi.shape[-2:]), hr_msi=msi,
+                                                   **({"output_mode": mode} if mode != "state" else {}))
             residual = reg._physical_residual(process, projector, lr, pred)
             return refiner(pred, msi, residual, reg.ranked_msi_heterogeneity(msi))
 
