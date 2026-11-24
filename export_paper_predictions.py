@@ -464,6 +464,8 @@ def parse_args(argv):
     p.add_argument("--emr_width", type=validate_hidden_channels)
     p.add_argument("--checkpoint", action="append", default=[], metavar="METHOD:GROUP:DATASET=PATH")
     p.add_argument("--ours_config", type=Path, help="JSON with dataset/group weight and architecture overrides")
+    p.add_argument("--diffusion_output", choices=("state", "terminal_correction"),
+                   help="Ours output mode; select the correspondingly named refiner")
     p.add_argument("--srf_audit", action="store_true",
                    help="Audit SRF hashes for MoG-DCN/M2DTN/PMI-RFCoNet/SA-RFM without data or inference")
     p.add_argument("--training_srf", action="append", default=[], metavar="METHOD:DATASET=PATH",
@@ -570,6 +572,8 @@ def main(argv=None):
                         if not (args.s2diff_root / "train_innovation3_gigi_cdrdi.py").is_file():
                             raise FileNotFoundError(f"S2Diff-MH checkout not found: {args.s2diff_root}")
                         job["ours_config"] = ours_config.get(dataset, {}).get(group, {})
+                        if args.diffusion_output is not None:
+                            job["diffusion_output"] = args.diffusion_output
                         description = "S2Diff-MH " + folder + " (separate checkpoint roles)"
                     elif method not in CLASSICAL:
                         override = overrides.get(f"{method}:{group}:{dataset}")

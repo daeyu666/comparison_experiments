@@ -103,6 +103,8 @@ def parse_args(argv=None):
     p.add_argument("--groups", nargs="+", choices=("registered", "unregistered"))
     p.add_argument("--methods", nargs="+")
     p.add_argument("--samples", nargs="+", help="Scene names or exact crop IDs, e.g. jelly_beans")
+    p.add_argument("--reuse_display_settings", action="store_true",
+                   help="Reuse this output directory's existing scales when updating selected methods")
     p.add_argument("--rgb_nm", type=float, nargs=3, default=(650, 550, 470), metavar=("R", "G", "B"))
     p.add_argument("--residual_max", type=float, help="Override the pooled spectral RMSE scale")
     p.add_argument("--residual_gamma", type=float,
@@ -122,6 +124,9 @@ def parse_args(argv=None):
         value = getattr(args, field)
         if value is not None and not (np.isfinite(value) and value > 0):
             p.error(f"--{field} must be positive and finite")
+    if args.reuse_display_settings and any(v is not None for v in
+            (args.residual_max, args.sam_max, args.residual_gamma, args.sam_gamma)):
+        p.error("--reuse_display_settings cannot be combined with error scale overrides")
     if not np.isfinite(args.rgb_nm).all():
         p.error("RGB wavelengths must be finite")
     return args
@@ -138,6 +143,15 @@ def main(argv=None):
         if not results:
             print(f"No exported {dataset} results under {raw}")
             continue
+        saved_display = None
+        if args.reuse_display_settings:
+            settings_path = output / dataset / "display_settings.json"
+            if not settings_path.is_file():
+                raise FileNotFoundError(f"No existing display settings: {settings_path}; omit --reuse_display_settings for a first render")
+            saved_display = json.loads(settings_path.read_text(encoding="utf-8"))
+            rgb_nm = saved_display["rgb_wavelength_targets_nm"]
+        else:
+            rgb_nm = args.rgb_nm
         # Cache only small display settings, not the raw cubes.
         settings = {}
         limits = {"residual_rmse": args.residual_max, "sam_deg": args.sam_max}
@@ -145,6 +159,14 @@ def main(argv=None):
         limit_factors = {}
         norms = {}
         for field, bound, label in TARGETS:
+            if saved_display is not None:
+                limits[field] = float(saved_display["error_limits"][field])
+                gammas[field] = float(saved_display.get("error_gamma", {}).get(field, 1.0))
+                if not (np.isfinite(limits[field]) and limits[field] > 0 and
+                        np.isfinite(gammas[field]) and gammas[field] > 0):
+                    raise ValueError(f"Invalid existing display settings for {dataset}/{field}")
+                if field in saved_display.get("auto_limit_factors", {}):
+                    limit_factors[field] = saved_display["auto_limit_factors"][field]
             if gammas[field] is None:
                 gammas[field] = DEFAULT_GAMMAS.get((dataset, field), 1.0)
             if limits[field] is None:
@@ -179,7 +201,7 @@ def main(argv=None):
                 with np.load(input_path, allow_pickle=False) as data:
                     info = json.loads(data["metadata"].item())
                     gt = data["gt"]
-                rgb = rgb_parameters(gt, info["wavelengths_nm"], args.rgb_nm)
+                rgb = rgb_parameters(gt, info["wavelengths_nm"], rgb_nm)
                 settings[sample] = (info, rgb)
             info, rgb = settings[sample]
             if args.samples and sample not in args.samples and info["scene"] not in args.samples:

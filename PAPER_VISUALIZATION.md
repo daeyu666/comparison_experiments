@@ -141,3 +141,28 @@ python export_paper_predictions.py --datasets PaviaU --srf_audit
 python export_paper_predictions.py --datasets CAVE --groups unregistered \
   --methods M2DTN --device cuda:0 --resume
 ```
+
+## 更新 Ours mixed 校正版可视化
+
+使用同一套非配准 mixed 校正版权重分别推理 Registered、Warp。只选择 `unregistered` 组，
+不加载 `physical` 下独立训练的配准权重，不检查其他方法权重。
+Refiner 自动按 `terminal_correction` 文件名查找，规则与形变强度实验一致。
+在原输出目录覆盖 Ours 时第一次不加 `--resume`，避免复用旧权重结果。
+
+```bash
+python export_paper_predictions.py \
+  --datasets PaviaU CAVE --groups unregistered --methods ours \
+  --diffusion_output terminal_correction --device cuda:0 \
+  --output_dir outputs/paper_visualization
+
+python render_paper_visualizations.py \
+  --datasets PaviaU CAVE --groups unregistered --methods ours \
+  --input_dir outputs/paper_visualization --reuse_display_settings
+```
+
+第二步仅更新 Ours 的 `prediction_rgb.png`、`residual_rmse.png`、`sam_deg.png`，
+复用各数据集原 `figures/<数据集>/display_settings.json` 中的误差上限、gamma 和 RGB 波长，
+保证与已经排版的其他方法保持相同显示尺度；不改写其他方法的图。
+如果是首次可视化且没有上述设置文件，省略 `--reuse_display_settings`。
+CAVE 默认仍是每个测试场景中心 128×128，可通过 `--cave_crop` 保持与之前一致。
+输出位于 `figures/<数据集>/unregistered/{registered,warp}/ours/<样本>/`。
